@@ -55,7 +55,7 @@ jobs:
       - name: Stamp version into build.gradle.kts
         run: |
           sed -i "s/versionCode = [0-9]\+/versionCode = ${{ steps.version.outputs.code }}/" app/build.gradle.kts
-          sed -i "s/versionName = \"[^\"]*\"/versionName = \"${{ steps.version.outputs.name }}\"/" app/build.gradle.ktsl
+          sed -i "s/versionName = \"[^\"]*\"/versionName = \"${{ steps.version.outputs.name }}\"/" app/build.gradle.kts
 
       - name: Build release APK
         run: gradle :app:assembleRelease --no-daemon
