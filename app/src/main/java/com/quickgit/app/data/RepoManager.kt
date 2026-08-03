@@ -22,8 +22,11 @@ import org.eclipse.jgit.transport.UsernamePasswordCredentialsProvider
 import org.eclipse.jgit.treewalk.CanonicalTreeParser
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.util.concurrent.ConcurrentHashMap
 
 class RepoManager(private val context: Context, private val credentialStore: CredentialStore) {
+
+    private val repoOperationLocks = ConcurrentHashMap<String, Any>()
 
     /**
      * Local clones live under Documents/QuickGit so they are visible in the
@@ -139,11 +142,26 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         openGit(path).use { git -> git.add().addFilepattern(".").call() }
     }
 
-    fun discardChanges(path: String, files: List<String>) {
-        openGit(path).use { git ->
-            val cmd = git.checkout()
-            files.forEach { cmd.addPath(it) }
-            cmd.call()
+    fun discardChanges(path: String, files: List<String>): GitOpResult {
+        val operationLock = repoOperationLocks.getOrPut(path) { Any() }
+        return synchronized(operationLock) {
+            try {
+                val indexLock = File(path, ".git/index.lock")
+                if (indexLock.exists() && !indexLock.delete()) {
+                    return@synchronized GitOpResult.Error(
+                        "Git index is locked. Close other Git operations and delete .git/index.lock, then retry."
+                    )
+                }
+
+                openGit(path).use { git ->
+                    val cmd = git.checkout()
+                    files.forEach { cmd.addPath(it) }
+                    cmd.call()
+                }
+                GitOpResult.Success
+            } catch (e: Exception) {
+                GitOpResult.Error(e.message ?: "Failed to discard changes", e)
+            }
         }
     }
 

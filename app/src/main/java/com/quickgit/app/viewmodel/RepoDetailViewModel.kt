@@ -60,9 +60,13 @@ class RepoDetailViewModel(private val repoManager: RepoManager) : ViewModel() {
     }
 
     fun discard(filePath: String) {
-        viewModelScope.launch(Dispatchers.IO) {
-            repoManager.discardChanges(repoPath, listOf(filePath))
-            withContext(Dispatchers.Main) { refresh() }
+        viewModelScope.launch {
+            _state.value = _state.value.copy(busy = true)
+            val result = withContext(Dispatchers.IO) {
+                repoManager.discardChanges(repoPath, listOf(filePath))
+            }
+            _state.value = _state.value.copy(busy = false, lastResult = result)
+            if (result is GitOpResult.Success) refresh()
         }
     }
 
