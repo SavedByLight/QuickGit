@@ -7,7 +7,7 @@ import java.io.File
 
 /**
  * Builds a JGit SshSessionFactory backed by a single user-imported key, rather than reading
- * from ~/.ssh (Android apps have no such thing). The key is materialized to a private,
+ * from \~/.ssh (Android apps have no such thing). The key is materialized to a private,
  * app-only file just before each session and left in place for reuse.
  *
  * NOTE: host key verification is intentionally permissive here (accept-on-first-use is not
@@ -41,6 +41,19 @@ object SshSupport {
                 object : KeyPasswordProvider {
                     override fun getPassphrase(uri: org.eclipse.jgit.transport.URIish?, attempt: Int): CharArray? {
                         return passphrase?.takeIf { it.isNotEmpty() }?.toCharArray()
+                    }
+
+                    override fun setAttempts(maxNumberOfAttempts: Int) {
+                        // Single fixed passphrase from storage; attempts are irrelevant.
+                    }
+
+                    override fun keyLoaded(
+                        uri: org.eclipse.jgit.transport.URIish?,
+                        attempt: Int,
+                        error: Exception?
+                    ): Boolean {
+                        // Do not retry — we only ever have one passphrase.
+                        return false
                     }
                 }
             }
