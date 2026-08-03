@@ -1,2 +1,78 @@
-# QuickGit
-QuickGit
+# QuickGit — a GitHub Desktop-style git client for Android
+
+A native Android app (Kotlin + Jetpack Compose) for cloning, browsing, staging,
+committing, pushing/pulling, branching, and resolving merge conflicts on git
+repositories — the mobile equivalent of GitHub Desktop. Git operations run
+locally on-device via [JGit](https://www.eclipse.org/jgit/); nothing is sent
+to any third-party server other than the git remote you configure.
+
+## What's implemented
+
+- **Repo list** — shows locally cloned repos, current branch, and a dirty-state dot
+- **Clone** — clone over HTTPS (with PAT) or SSH (with an imported private key), with live progress
+- **Changes / staging** — see staged, unstaged, and untracked files; tap to stage/unstage
+  individually or stage all; discard unstaged changes; write a commit message and commit
+- **Push / Pull** — with auth-required detection that routes you to the credentials screen
+- **Diff viewer** — colorized unified diff for a file, for working-tree changes, staged
+  changes, or a specific historical commit
+- **History** — scrollable commit log (message, author, short SHA, date)
+- **Branches** — list local + remote branches, create, checkout, delete
+- **Merge conflicts** — lists conflicting files after a failed pull; per-file "keep ours /
+  keep theirs / hand-edit" resolution, then commit the merge or abort it
+- **Credentials** — encrypted-at-rest (Android Keystore via `EncryptedSharedPreferences`)
+  storage for per-host HTTPS personal access tokens and a single SSH private key + passphrase
+
+## Architecture
+
+```
+app/src/main/java/com/quickgit/app/
+  data/
+    RepoManager.kt       All JGit calls: clone/status/stage/commit/push/pull/branches/diff/merge
+    CredentialStore.kt   Encrypted storage for PAT + SSH key
+    SshSupport.kt        JGit SSH transport wired to the stored key
+    models/Models.kt     Plain data classes shared by ViewModels + UI
+  viewmodel/              One StateFlow-based ViewModel per screen, IO on Dispatchers.IO
+  ui/screens/             Jetpack Compose screens (Material 3)
+  navigation/             Compose Navigation graph + typed destinations
+  MainActivity.kt / QuickGitApp.kt
+```
+
+Git operations are all synchronous JGit calls wrapped in `withContext(Dispatchers.IO)` —
+no background service or WorkManager is used yet, so a killed app mid-clone will need to
+restart the clone (see Known limitations).
+
+## Building it
+
+You'll need **Android Studio (Koala or newer)** with the Android SDK (compileSdk 34) and a
+JDK 17.
+
+1. Open this folder (`QuickGit/`) directly in Android Studio — it will detect the Gradle
+   project and offer to generate the Gradle wrapper automatically. (The wrapper jar isn't
+   checked in here since it's a binary; Android Studio's "Sync now" prompt handles it, or
+   run `gradle wrapper` once if you have a system Gradle install.)
+2. Let Gradle sync — it will pull JGit, the Apache MINA SSH transport, and AndroxX/Compose
+   dependencies from Maven Central.
+3. Run on a device or emulator running **API 26+**.
+
+No Anthropic/Claude systems are involved at runtime — this is a plain offline Android app;
+it just talks to whatever git remote you point it at.
+
+## Known limitations / good next steps
+
+- **SSH host key verification is disabled** (`SshSupport.kt` accepts any host key). Fine for
+  personal use, not hardened — wire up a persisted known_hosts store before shipping this.
+- **Single SSH identity** — only one key pair is stored app-wide, not per-host.
+- **No background/foreground service** — large clones or pushes are tied to the screen's
+  lifecycle; consider a `WorkManager` job with a persistent notification for big repos.
+- **Diff viewer is read-only** — no inline "stage this hunk" (partial staging), only whole-file
+  staging.
+- **Conflict resolution UI** is a simple ours/theirs/manual-edit dialog, not a 3-way visual
+  merge view.
+- **No biometric lock** on the credentials screen — worth adding given it stores tokens/keys.
+- Large repos / large binary files aren't specially handled (no LFS support).
+
+## Permissions
+
+Only `INTERNET` and `ACCESS_NETWORK_STATE` — no storage or contacts permissions. Repos live
+in the app's private storage (`context.filesDir/repos`), not shared storage, so they're not
+visible to other apps and are wiped if the app is uninstalled.
