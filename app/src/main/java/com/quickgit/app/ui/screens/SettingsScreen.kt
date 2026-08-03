@@ -5,11 +5,14 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import com.quickgit.app.ui.theme.GitGreen
 import com.quickgit.app.viewmodel.SettingsViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -19,12 +22,11 @@ fun SettingsScreen(
     initialHost: String? = null,
     onBack: () -> Unit
 ) {
-    var host by remember { mutableStateOf(initialHost ?: "github.com") }
-    var username by remember { mutableStateOf("") }
-    var token by remember { mutableStateOf("") }
-    var sshKey by remember { mutableStateOf("") }
-    var sshPassphrase by remember { mutableStateOf("") }
-    var savedMessage by remember { mutableStateOf<String?>(null) }
+    val state by vm.state.collectAsState()
+
+    LaunchedEffect(initialHost) {
+        if (!initialHost.isNullOrBlank()) vm.loadForHost(initialHost)
+    }
 
     Scaffold(topBar = {
         TopAppBar(
@@ -33,7 +35,11 @@ fun SettingsScreen(
         )
     }) { padding ->
         Column(
-            Modifier.padding(padding).padding(16.dp).fillMaxSize().verticalScroll(rememberScrollState())
+            Modifier
+                .padding(padding)
+                .padding(16.dp)
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
         ) {
             Text("HTTPS personal access token", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(4.dp))
@@ -42,35 +48,64 @@ fun SettingsScreen(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            if (state.hasStoredToken) {
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.CheckCircle, null, tint = GitGreen, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        "A token is saved for ${state.host}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = GitGreen
+                    )
+                }
+            }
             Spacer(Modifier.height(12.dp))
             OutlinedTextField(
-                value = host, onValueChange = { host = it },
-                label = { Text("Host") }, placeholder = { Text("github.com") },
-                modifier = Modifier.fillMaxWidth(), singleLine = true
+                value = state.host,
+                onValueChange = {
+                    vm.setHost(it)
+                },
+                label = { Text("Host") },
+                placeholder = { Text("github.com") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
+            // Reload stored username when host field loses focus-ish: button below
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(onClick = { vm.loadForHost(state.host) }, modifier = Modifier.fillMaxWidth()) {
+                Text("Load saved credentials for host")
+            }
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = state.username,
+                onValueChange = vm::setUsername,
+                label = { Text("Username") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
             )
             Spacer(Modifier.height(8.dp))
             OutlinedTextField(
-                value = username, onValueChange = { username = it },
-                label = { Text("Username") }, modifier = Modifier.fillMaxWidth(), singleLine = true
-            )
-            Spacer(Modifier.height(8.dp))
-            OutlinedTextField(
-                value = token, onValueChange = { token = it },
-                label = { Text("Personal access token") },
+                value = state.token,
+                onValueChange = vm::setToken,
+                label = {
+                    Text(
+                        if (state.hasStoredToken) "New personal access token (leave blank to keep)"
+                        else "Personal access token"
+                    )
+                },
                 visualTransformation = PasswordVisualTransformation(),
-                modifier = Modifier.fillMaxWidth(), singleLine = true
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
             )
             Spacer(Modifier.height(12.dp))
             Row {
-                Button(onClick = {
-                    vm.saveHttpsToken(host.trim(), username.trim().ifBlank { "x-access-token" }, token.trim())
-                    savedMessage = "Saved token for $host"
-                }, enabled = host.isNotBlank() && token.isNotBlank()) { Text("Save") }
+                Button(
+                    onClick = { vm.saveHttpsToken() },
+                    enabled = state.host.isNotBlank() && state.token.isNotBlank()
+                ) { Text("Save") }
                 Spacer(Modifier.width(8.dp))
-                OutlinedButton(onClick = {
-                    vm.clearHttpsToken(host.trim())
-                    savedMessage = "Cleared token for $host"
-                }) { Text("Clear") }
+                OutlinedButton(onClick = { vm.clearHttpsToken() }) { Text("Clear") }
             }
 
             Spacer(Modifier.height(28.dp))
@@ -84,35 +119,57 @@ fun SettingsScreen(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            if (state.hasStoredSshKey) {
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.CheckCircle, null, tint = GitGreen, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        "An SSH private key is stored",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = GitGreen
+                    )
+                }
+            }
             Spacer(Modifier.height(12.dp))
             OutlinedTextField(
-                value = sshKey, onValueChange = { sshKey = it },
-                label = { Text("Private key (PEM)") },
+                value = state.sshKey,
+                onValueChange = vm::setSshKey,
+                label = {
+                    Text(
+                        if (state.hasStoredSshKey) "Replace private key (PEM) — optional"
+                        else "Private key (PEM)"
+                    )
+                },
                 modifier = Modifier.fillMaxWidth().height(160.dp)
             )
             Spacer(Modifier.height(8.dp))
             OutlinedTextField(
-                value = sshPassphrase, onValueChange = { sshPassphrase = it },
+                value = state.sshPassphrase,
+                onValueChange = vm::setSshPassphrase,
                 label = { Text("Passphrase (optional)") },
                 visualTransformation = PasswordVisualTransformation(),
-                modifier = Modifier.fillMaxWidth(), singleLine = true
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
             )
             Spacer(Modifier.height(12.dp))
             Row {
-                Button(onClick = {
-                    vm.saveSshKey(sshKey, sshPassphrase.ifBlank { null })
-                    savedMessage = "SSH key saved"
-                }, enabled = sshKey.isNotBlank()) { Text("Save") }
+                Button(
+                    onClick = { vm.saveSshKey() },
+                    // Allow save when pasting a new key, or when a key exists and user is setting passphrase
+                    enabled = state.sshKey.isNotBlank() || state.hasStoredSshKey
+                ) { Text("Save") }
                 Spacer(Modifier.width(8.dp))
-                OutlinedButton(onClick = {
-                    vm.clearSshKey()
-                    savedMessage = "SSH key cleared"
-                }) { Text("Clear") }
+                OutlinedButton(onClick = { vm.clearSshKey() }) { Text("Clear") }
             }
 
-            savedMessage?.let {
+            state.statusMessage?.let { msg ->
                 Spacer(Modifier.height(16.dp))
-                Text(it, color = MaterialTheme.colorScheme.primary)
+                Text(
+                    msg,
+                    color = if (state.isError) MaterialTheme.colorScheme.error
+                    else MaterialTheme.colorScheme.primary
+                )
             }
         }
     }

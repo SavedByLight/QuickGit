@@ -15,12 +15,13 @@ class CredentialStore(context: Context) {
     private val prefs: SharedPreferences
 
     init {
-        val masterKey = MasterKey.Builder(context)
+        val appContext = context.applicationContext
+        val masterKey = MasterKey.Builder(appContext)
             .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
             .build()
 
         prefs = EncryptedSharedPreferences.create(
-            context,
+            appContext,
             "quickgit_secure_prefs",
             masterKey,
             EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
@@ -31,10 +32,11 @@ class CredentialStore(context: Context) {
     // ---- HTTPS personal access tokens, keyed by host (e.g. "github.com") ----
 
     fun saveHttpsToken(host: String, username: String, token: String) {
-        prefs.edit()
+        val ok = prefs.edit()
             .putString("https_user_$host", username)
             .putString("https_token_$host", token)
-            .apply()
+            .commit()
+        if (!ok) throw IllegalStateException("Failed to persist HTTPS credentials")
     }
 
     fun getHttpsUsername(host: String): String? = prefs.getString("https_user_$host", null)
@@ -43,24 +45,34 @@ class CredentialStore(context: Context) {
     fun hasHttpsCredential(host: String): Boolean = getHttpsToken(host) != null
 
     fun clearHttpsToken(host: String) {
-        prefs.edit().remove("https_user_$host").remove("https_token_$host").apply()
+        prefs.edit().remove("https_user_$host").remove("https_token_$host").commit()
     }
 
     // ---- SSH identity (single key pair imported by the user) ----
 
     fun saveSshKey(privateKeyPem: String, passphrase: String?) {
-        prefs.edit()
+        val ok = prefs.edit()
             .putString("ssh_private_key", privateKeyPem)
             .putString("ssh_passphrase", passphrase ?: "")
-            .apply()
+            .commit()
+        if (!ok) throw IllegalStateException("Failed to persist SSH key")
+    }
+
+    /** Update passphrase only (keeps existing private key). */
+    fun saveSshPassphrase(passphrase: String?) {
+        if (!hasSshKey()) throw IllegalStateException("No SSH key stored — paste a private key first")
+        val ok = prefs.edit()
+            .putString("ssh_passphrase", passphrase ?: "")
+            .commit()
+        if (!ok) throw IllegalStateException("Failed to persist SSH passphrase")
     }
 
     fun getSshPrivateKey(): String? = prefs.getString("ssh_private_key", null)
-    fun getSshPassphrase(): String? = prefs.getString("ssh_passphrase", null)
+    fun getSshPassphrase(): String? = prefs.getString("ssh_passphrase", null)?.takeIf { it.isNotEmpty() }
     fun hasSshKey(): Boolean = getSshPrivateKey() != null
 
     fun clearSshKey() {
-        prefs.edit().remove("ssh_private_key").remove("ssh_passphrase").apply()
+        prefs.edit().remove("ssh_private_key").remove("ssh_passphrase").commit()
     }
 
     fun preferredAuthType(remoteUrl: String): AuthType {

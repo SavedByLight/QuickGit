@@ -418,6 +418,31 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         file.writeText(content, Charsets.UTF_8)
     }
 
+    /**
+     * Creates a new empty text file (or with optional initial content) under the repo.
+     * Parent directories are created as needed. Fails if the path already exists.
+     */
+    fun createTextFile(repoPath: String, relativePath: String, initialContent: String = ""): String {
+        val cleaned = relativePath.trim().trimStart('/').replace("\\", "/")
+        if (cleaned.isBlank()) throw IllegalArgumentException("File name is required")
+        if (cleaned.contains("..")) throw IllegalArgumentException("Invalid path")
+        val file = File(repoPath, cleaned)
+        if (file.exists()) throw IllegalArgumentException("Already exists: $cleaned")
+        file.parentFile?.mkdirs()
+        file.writeText(initialContent, Charsets.UTF_8)
+        return cleaned
+    }
+
+    fun createDirectory(repoPath: String, relativePath: String): String {
+        val cleaned = relativePath.trim().trimStart('/').replace("\\", "/")
+        if (cleaned.isBlank()) throw IllegalArgumentException("Folder name is required")
+        if (cleaned.contains("..")) throw IllegalArgumentException("Invalid path")
+        val dir = File(repoPath, cleaned)
+        if (dir.exists()) throw IllegalArgumentException("Already exists: $cleaned")
+        if (!dir.mkdirs()) throw IllegalStateException("Could not create folder: $cleaned")
+        return cleaned
+    }
+
     // ---------------- Transport / auth helpers ----------------
 
     private fun applyTransportConfig(cmd: org.eclipse.jgit.api.TransportCommand<*, *>, url: String) {

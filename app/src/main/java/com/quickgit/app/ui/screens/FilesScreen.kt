@@ -5,10 +5,13 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.InsertDriveFile
+import androidx.compose.material.icons.filled.NoteAdd
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -30,8 +33,29 @@ fun FilesScreen(
 ) {
     LaunchedEffect(repoPath) { vm.init(repoPath) }
     val state by vm.state.collectAsState()
+    val snackbarHost = remember { SnackbarHostState() }
+    var showNewMenu by remember { mutableStateOf(false) }
+    var createMode by remember { mutableStateOf<CreateMode?>(null) }
+
+    LaunchedEffect(state.openAfterCreate) {
+        state.openAfterCreate?.let { path ->
+            vm.consumeOpenAfterCreate()
+            onOpenFile(path)
+        }
+    }
+    LaunchedEffect(state.statusMessage, state.error) {
+        state.statusMessage?.let {
+            snackbarHost.showSnackbar(it)
+            vm.consumeMessages()
+        }
+        state.error?.let {
+            snackbarHost.showSnackbar(it)
+            vm.consumeMessages()
+        }
+    }
 
     Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHost) },
         topBar = {
             TopAppBar(
                 title = {
@@ -52,6 +76,34 @@ fun FilesScreen(
                     }) {
                         Icon(Icons.Default.ArrowBack, "Back")
                     }
+                },
+                actions = {
+                    Box {
+                        IconButton(onClick = { showNewMenu = true }) {
+                            Icon(Icons.Default.Add, "New")
+                        }
+                        DropdownMenu(
+                            expanded = showNewMenu,
+                            onDismissRequest = { showNewMenu = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("New file") },
+                                onClick = {
+                                    showNewMenu = false
+                                    createMode = CreateMode.FILE
+                                },
+                                leadingIcon = { Icon(Icons.Default.NoteAdd, null) }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("New folder") },
+                                onClick = {
+                                    showNewMenu = false
+                                    createMode = CreateMode.FOLDER
+                                },
+                                leadingIcon = { Icon(Icons.Default.CreateNewFolder, null) }
+                            )
+                        }
+                    }
                 }
             )
         }
@@ -61,19 +113,19 @@ fun FilesScreen(
                 state.loading && state.entries.isEmpty() -> {
                     CircularProgressIndicator(Modifier.align(Alignment.Center))
                 }
-                state.error != null && state.entries.isEmpty() -> {
-                    Text(
-                        state.error ?: "",
-                        color = MaterialTheme.colorScheme.error,
-                        modifier = Modifier.align(Alignment.Center).padding(24.dp)
-                    )
-                }
                 state.entries.isEmpty() -> {
-                    Text(
-                        "Empty folder",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.align(Alignment.Center)
-                    )
+                    Column(
+                        Modifier.align(Alignment.Center).padding(32.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text("Empty folder", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Spacer(Modifier.height(12.dp))
+                        OutlinedButton(onClick = { createMode = CreateMode.FILE }) {
+                            Icon(Icons.Default.NoteAdd, null, Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("New file")
+                        }
+                    }
                 }
                 else -> {
                     LazyColumn(Modifier.fillMaxSize()) {
@@ -92,6 +144,69 @@ fun FilesScreen(
             }
         }
     }
+
+    createMode?.let { mode ->
+        CreateEntryDialog(
+            mode = mode,
+            currentDir = state.currentDir,
+            onDismiss = { createMode = null },
+            onConfirm = { name ->
+                when (mode) {
+                    CreateMode.FILE -> vm.createFile(name)
+                    CreateMode.FOLDER -> vm.createFolder(name)
+                }
+                createMode = null
+            }
+        )
+    }
+}
+
+private enum class CreateMode { FILE, FOLDER }
+
+@Composable
+private fun CreateEntryDialog(
+    mode: CreateMode,
+    currentDir: String,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit
+) {
+    var name by remember { mutableStateOf("") }
+    val title = if (mode == CreateMode.FILE) "New file" else "New folder"
+    val label = if (mode == CreateMode.FILE) "File name" else "Folder name"
+    val placeholder = if (mode == CreateMode.FILE) "README.md" else "src"
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            Column {
+                Text(
+                    if (currentDir.isBlank()) "Creating in /"
+                    else "Creating in /$currentDir",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text(label) },
+                    placeholder = { Text(placeholder) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onConfirm(name.trim()) },
+                enabled = name.isNotBlank() && !name.contains("..") && !name.contains('/')
+            ) { Text("Create") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
 }
 
 @Composable
