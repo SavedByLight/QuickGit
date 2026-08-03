@@ -1,7 +1,6 @@
 package com.quickgit.app.data
 
-import org.apache.sshd.client.config.hosts.HostConfigEntry
-import org.apache.sshd.common.config.keys.FilePasswordProvider
+import org.eclipse.jgit.transport.sshd.KeyPasswordProvider
 import org.eclipse.jgit.transport.sshd.SshdSessionFactory
 import org.eclipse.jgit.transport.sshd.SshdSessionFactoryBuilder
 import java.io.File
@@ -36,11 +35,11 @@ object SshSupport {
             .setPreferredAuthentications("publickey")
             .setHomeDirectory(context.filesDir)
             .setSshDirectory(sshDir)
-            .setDefaultIdentities { _ -> if (keyFile.exists()) listOf(keyFile) else emptyList() }
+            .setDefaultIdentities { _ -> if (keyFile.exists()) listOf(keyFile.toPath()) else emptyList() }
             .setDefaultKeysProvider { _ -> emptyList() }
             .setKeyPasswordProvider { _ ->
-                object : FilePasswordProvider {
-                    override fun getPassword(session: org.apache.sshd.common.session.SessionContext?, resourceKey: org.apache.sshd.common.NamedResource?, retryIndex: Int): CharArray? {
+                object : KeyPasswordProvider {
+                    override fun getPassphrase(uri: org.eclipse.jgit.transport.URIish?, attempt: Int): CharArray? {
                         return passphrase?.takeIf { it.isNotEmpty() }?.toCharArray()
                     }
                 }
@@ -49,17 +48,17 @@ object SshSupport {
             .setServerKeyDatabase { _, _ ->
                 object : org.eclipse.jgit.transport.sshd.ServerKeyDatabase {
                     override fun lookup(
-                        connectAddress: String?,
-                        remoteAddress: java.net.SocketAddress?,
-                        config: org.eclipse.jgit.transport.sshd.ServerKeyDatabase.Configuration?
+                        connectAddress: String,
+                        remoteAddress: java.net.InetSocketAddress,
+                        config: org.eclipse.jgit.transport.sshd.ServerKeyDatabase.Configuration
                     ): List<java.security.PublicKey> = emptyList()
 
                     override fun accept(
-                        connectAddress: String?,
-                        remoteAddress: java.net.SocketAddress?,
-                        serverKey: java.security.PublicKey?,
-                        config: org.eclipse.jgit.transport.sshd.ServerKeyDatabase.Configuration?,
-                        provider: org.apache.sshd.common.config.keys.KeyRandomArtGenerator?
+                        connectAddress: String,
+                        remoteAddress: java.net.InetSocketAddress,
+                        serverKey: java.security.PublicKey,
+                        config: org.eclipse.jgit.transport.sshd.ServerKeyDatabase.Configuration,
+                        provider: org.eclipse.jgit.transport.CredentialsProvider?
                     ): Boolean = true
                 }
             }

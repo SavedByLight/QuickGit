@@ -1,4 +1,4 @@
-NJpackage com.quickgit.app.viewmodel
+package com.quickgit.app.viewmodel
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope

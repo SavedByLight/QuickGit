@@ -362,16 +362,15 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         val repo = openGit(path).use { it.repository }
         val reader = repo.newObjectReader()
         try {
-            org.eclipse.jgit.dircache.DirCache.read(repo).use { cache ->
-                fun stageText(stage: Int): String? {
-                    val entry = (0 until cache.entryCount)
-                        .map { cache.getEntry(it) }
-                        .firstOrNull { it.path == filePath && it.stage == stage } ?: return null
-                    val bytes = reader.open(entry.objectId).bytes
-                    return String(bytes, Charsets.UTF_8)
-                }
-                return Triple(stageText(1), stageText(2), stageText(3)) // base, ours, theirs
+            val cache = org.eclipse.jgit.dircache.DirCache.read(repo)
+            fun stageText(stage: Int): String? {
+                val entry = (0 until cache.entryCount)
+                    .map { cache.getEntry(it) }
+                    .firstOrNull { it.pathString == filePath && it.stage == stage } ?: return null
+                val bytes = reader.open(entry.objectId).bytes
+                return String(bytes, Charsets.UTF_8)
             }
+            return Triple(stageText(1), stageText(2), stageText(3)) // base, ours, theirs
         } finally {
             reader.close()
         }
@@ -411,11 +410,13 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     }
 
     private class TextProgress(val onProgress: (String) -> Unit) : org.eclipse.jgit.lib.BatchingProgressMonitor() {
-        override fun onUpdate(taskName: String?, workCurr: Int) { onProgress("$taskName: $workCurr") }
-        override fun onUpdate(taskName: String?, workCurr: Int, workTotal: Int, percentDone: Int) {
+        override fun onUpdate(taskName: String?, workCurr: Int, duration: java.time.Duration?) {
+            onProgress("$taskName: $workCurr")
+        }
+        override fun onUpdate(taskName: String?, workCurr: Int, workTotal: Int, percentDone: Int, duration: java.time.Duration?) {
             onProgress("$taskName: $percentDone%")
         }
-        override fun onEndTask(taskName: String?, workCurr: Int) {}
-        override fun onEndTask(taskName: String?, workCurr: Int, workTotal: Int, percentDone: Int) {}
+        override fun onEndTask(taskName: String?, workCurr: Int, duration: java.time.Duration?) {}
+        override fun onEndTask(taskName: String?, workCurr: Int, workTotal: Int, percentDone: Int, duration: java.time.Duration?) {}
     }
 }
