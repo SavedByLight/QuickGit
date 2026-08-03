@@ -292,6 +292,39 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         timeEpochSeconds = commitTime.toLong()
     )
 
+    /**
+     * Reverts an existing commit by creating a new inverse commit.
+     * The repository is left in JGit's normal conflict state when a revert
+     * cannot be applied cleanly, allowing the UI to surface the affected paths.
+     */
+    fun revertCommit(path: String, commitHash: String): GitOpResult = try {
+        openGit(path).use { git ->
+            val repository = git.repository
+            val objectId = repository.resolve(commitHash)
+                ?: return GitOpResult.Error("Commit not found: $commitHash")
+
+            RevWalk(repository).use { walk ->
+                val commit = walk.parseCommit(objectId)
+                val reverted = git.revert().include(commit).call()
+
+                if (reverted != null) {
+                    GitOpResult.Success
+                } else {
+                    val conflicts = git.status().call().conflicting.toList().sorted()
+                    if (conflicts.isNotEmpty()) {
+                        GitOpResult.Conflict(conflicts)
+                    } else {
+                        GitOpResult.Error("Could not revert commit ${commitHash.take(7)}")
+                    }
+                }
+            }
+        }
+    } catch (e: GitAPIException) {
+        GitOpResult.Error(e.message ?: "Revert failed", e)
+    } catch (e: Exception) {
+        GitOpResult.Error(e.message ?: "Revert failed", e)
+    }
+
     // ---------------- Diff ----------------
 
     /** Working-tree diff for a single path (index vs. working tree), unstaged changes. */
