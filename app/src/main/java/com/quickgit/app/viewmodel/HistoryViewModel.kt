@@ -1,28 +1,47 @@
 package com.quickgit.app.viewmodel
 
-import androidx.lifecycle.ViewModel
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.quickgit.app.data.RepoManager
-import com.quickgit.app.data.models.CommitInfo
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import java.io.File
 
-class HistoryViewModel(private val repoManager: RepoManager) : ViewModel() {
-    private val _commits = MutableStateFlow<List<CommitInfo>>(emptyList())
-    val commits: StateFlow<List<CommitInfo>> = _commits.asStateFlow()
+class HistoryViewModel(application: Application, private val repoManager: RepoManager) : AndroidViewModel(application) {
+    
+    private val _isRefreshing = MutableStateFlow(false)
+    val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
 
-    private val _loading = MutableStateFlow(false)
-    val loading: StateFlow<Boolean> = _loading.asStateFlow()
+    private val _errorMessage = MutableStateFlow<String?>(null)
+    val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
 
-    fun load(repoPath: String) {
+    fun refreshHistory(repoDir: File) {
         viewModelScope.launch {
-            _loading.value = true
-            _commits.value = withContext(Dispatchers.IO) { repoManager.getLog(repoPath, 200) }
-            _loading.value = false
+            _isRefreshing.value = true
+            try {
+                // Background refresh execution logic placeholder or synchronization trigger
+            } catch (e: Exception) {
+                _errorMessage.value = e.localizedMessage
+            } finally {
+                _isRefreshing.value = false
+            }
         }
+    }
+
+    fun revertCommit(repoDir: File, commitHash: String, onComplete: (Result<Unit>) -> Unit) {
+        viewModelScope.launch {
+            val result = repoManager.revertCommit(repoDir, commitHash)
+            if (result.isFailure) {
+                _errorMessage.value = result.exceptionOrNull()?.localizedMessage
+            }
+            onComplete(result)
+        }
+    }
+
+    fun clearError() {
+        _errorMessage.value = null
     }
 }
