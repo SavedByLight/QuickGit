@@ -68,9 +68,6 @@ jobs:
       - name: Build release APK
         run: gradle :app:assembleRelease --no-daemon
 
-      - name: Build release APK
-        run: gradle :app:assembleRelease --no-daemon
-
       - name: Locate APK
         id: apk
         run: |
