@@ -570,8 +570,8 @@ Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS),
     }
 
     private class TextProgress(val onProgress: (String) -> Unit) : org.eclipse.jgit.lib.BatchingProgressMonitor() {
-       override fun onUpdate(taskName: String, workCurr: Int, totalWork: Int, percentDone: Int, duration: java.time.Duration) {
-          onProgress("$taskName: $percentDone%")
+       override fun onUpdate(taskName: String, workCurr: Int, duration: java.time.Duration) {
+          onProgress("$taskName: $workCurr")
        }
        override fun onEndTask(taskName: String, workCurr: Int, duration: java.time.Duration) {}
     }
