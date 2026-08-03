@@ -15,6 +15,32 @@ android {
         versionName = "0.1.0"
     }
 
+    signingConfigs {
+        create("release") {
+            // Prefer env vars (CI). Fall back to local.properties for local builds.
+            val props = rootProject.file("local.properties").takeIf { it.exists() }?.let {
+                java.util.Properties().apply { load(it.inputStream()) }
+            }
+            fun prop(name: String): String? =
+                System.getenv(name) ?: props?.getProperty(name)
+
+            val store = prop("SIGNING_STORE_FILE")
+            if (store != null) {
+                storeFile = file(store)
+                storePassword = prop("SIGNING_STORE_PASSWORD")
+                keyAlias = prop("SIGNING_KEY_ALIAS")
+                keyPassword = prop("SIGNING_KEY_PASSWORD")
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            signingConfig = signingConfigs.getByName("release")
+            isMinifyEnabled = false
+        }
+    }
+
     buildFeatures {
         compose = true
     }
