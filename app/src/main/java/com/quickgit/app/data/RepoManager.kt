@@ -380,6 +380,44 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         File(path, filePath).writeText(content)
     }
 
+
+    // ---------------- File browser / editor ----------------
+
+    fun listDirectory(repoPath: String, relativeDir: String = ""): List<RepoEntry> {
+        val root = File(repoPath)
+        val dir = if (relativeDir.isBlank()) root else File(root, relativeDir)
+        if (!dir.isDirectory) return emptyList()
+        val files = dir.listFiles() ?: return emptyList()
+        return files
+            .filter { it.name != ".git" }
+            .sortedWith(compareBy<File> { !it.isDirectory }.thenBy { it.name.lowercase() })
+            .map { f ->
+                val rel = if (relativeDir.isBlank()) f.name else "$relativeDir/${f.name}"
+                RepoEntry(
+                    name = f.name,
+                    relativePath = rel,
+                    isDirectory = f.isDirectory,
+                    sizeBytes = if (f.isFile) f.length() else 0L
+                )
+            }
+    }
+
+    fun readTextFile(repoPath: String, relativePath: String, maxBytes: Long = 1_500_000L): String {
+        val file = File(repoPath, relativePath)
+        if (!file.isFile) throw IllegalArgumentException("Not a file: $relativePath")
+        if (file.length() > maxBytes) throw IllegalArgumentException("File too large to edit in-app (${file.length()} bytes)")
+        // Reject obvious binaries by sampling NUL bytes
+        val sample = file.inputStream().use { it.readNBytes(8192) }
+        if (sample.any { it == 0.toByte() }) throw IllegalArgumentException("Binary file — cannot edit as text")
+        return file.readText(Charsets.UTF_8)
+    }
+
+    fun writeTextFile(repoPath: String, relativePath: String, content: String) {
+        val file = File(repoPath, relativePath)
+        file.parentFile?.mkdirs()
+        file.writeText(content, Charsets.UTF_8)
+    }
+
     // ---------------- Transport / auth helpers ----------------
 
     private fun applyTransportConfig(cmd: org.eclipse.jgit.api.TransportCommand<*, *>, url: String) {

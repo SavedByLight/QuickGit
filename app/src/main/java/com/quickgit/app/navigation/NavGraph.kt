@@ -3,7 +3,6 @@ package com.quickgit.app.navigation
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.viewmodel.compose.viewModel
-import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -60,6 +59,7 @@ fun QuickGitNavGraph() {
                 onOpenDiff = { filePath, mode -> navController.navigate(Dest.diff(repoPath, filePath, mode)) },
                 onOpenHistory = { navController.navigate(Dest.history(repoPath)) },
                 onOpenBranches = { navController.navigate(Dest.branches(repoPath)) },
+                onOpenFiles = { navController.navigate(Dest.files(repoPath)) },
                 onConflicts = { navController.navigate(Dest.merge(repoPath)) },
                 onNeedsAuth = { navController.navigate(Dest.SETTINGS) }
             )
@@ -81,6 +81,38 @@ fun QuickGitNavGraph() {
             val repoPath = Dest.decode(backStackEntry.arguments!!.getString("repoPath")!!)
             val vm: BranchesViewModel = viewModel(factory = factory)
             BranchesScreen(repoPath = repoPath, vm = vm, onBack = { navController.popBackStack() })
+        }
+
+        composable(
+            Dest.FILES,
+            arguments = listOf(navArgument("repoPath") { type = NavType.StringType })
+        ) { backStackEntry ->
+            val repoPath = Dest.decode(backStackEntry.arguments!!.getString("repoPath")!!)
+            val vm: FilesViewModel = viewModel(factory = factory)
+            FilesScreen(
+                repoPath = repoPath,
+                vm = vm,
+                onBack = { navController.popBackStack() },
+                onOpenFile = { filePath -> navController.navigate(Dest.editor(repoPath, filePath)) }
+            )
+        }
+
+        composable(
+            Dest.EDITOR,
+            arguments = listOf(
+                navArgument("repoPath") { type = NavType.StringType },
+                navArgument("filePath") { type = NavType.StringType }
+            )
+        ) { backStackEntry ->
+            val repoPath = Dest.decode(backStackEntry.arguments!!.getString("repoPath")!!)
+            val filePath = Dest.decode(backStackEntry.arguments!!.getString("filePath")!!)
+            val vm: EditorViewModel = viewModel(factory = factory)
+            EditorScreen(
+                repoPath = repoPath,
+                relativePath = filePath,
+                vm = vm,
+                onBack = { navController.popBackStack() }
+            )
         }
 
         composable(

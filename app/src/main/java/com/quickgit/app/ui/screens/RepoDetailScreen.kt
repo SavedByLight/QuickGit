@@ -30,6 +30,7 @@ fun RepoDetailScreen(
     onOpenDiff: (filePath: String, mode: String) -> Unit,
     onOpenHistory: () -> Unit,
     onOpenBranches: () -> Unit,
+    onOpenFiles: () -> Unit,
     onConflicts: () -> Unit,
     onNeedsAuth: (String) -> Unit
 ) {
@@ -54,6 +55,7 @@ fun RepoDetailScreen(
                 title = { Column { Text(repoName); Text(state.branch, style = MaterialTheme.typography.bodySmall) } },
                 navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back") } },
                 actions = {
+                    IconButton(onClick = onOpenFiles) { Icon(Icons.Default.FolderOpen, "Files") }
                     IconButton(onClick = onOpenHistory) { Icon(Icons.Default.History, "History") }
                     IconButton(onClick = onOpenBranches) { Icon(Icons.Default.AccountTree, "Branches") }
                 }

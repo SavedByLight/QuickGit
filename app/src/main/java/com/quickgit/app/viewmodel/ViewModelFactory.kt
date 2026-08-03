@@ -20,6 +20,8 @@ class ViewModelFactory(private val app: Application) : ViewModelProvider.Factory
             DiffViewModel::class.java -> DiffViewModel(gitApp.repoManager) as T
             MergeViewModel::class.java -> MergeViewModel(gitApp.repoManager) as T
             SettingsViewModel::class.java -> SettingsViewModel(gitApp.credentialStore) as T
+            FilesViewModel::class.java -> FilesViewModel(gitApp.repoManager) as T
+            EditorViewModel::class.java -> EditorViewModel(gitApp.repoManager) as T
             else -> throw IllegalArgumentException("Unknown ViewModel: $modelClass")
         }
     }

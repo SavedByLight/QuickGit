@@ -66,3 +66,11 @@ sealed class GitOpResult {
 }
 
 enum class AuthType { HTTPS_TOKEN, SSH_KEY, NONE }
+
+/** Entry in the repo file browser (file or directory). */
+data class RepoEntry(
+    val name: String,
+    val relativePath: String,
+    val isDirectory: Boolean,
+    val sizeBytes: Long = 0L
+)
