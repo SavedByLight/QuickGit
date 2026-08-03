@@ -1,0 +1,97 @@
+name: Build and Release
+
+# Runs on every push to main — i.e. after every commit that lands on main
+# (including merged PRs). Each run gets its own monotonically increasing
+# version number derived from the workflow run number, builds the app,
+# tags the commit, and publishes a GitHub Release with the APK attached.
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch: {} # allows manually re-running from the Actions tab
+
+# Prevent two releases from racing each other if commits land close together.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write # needed to push tags and create releases
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history, so tagging/describe works cleanly
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+          # No gradlew is committed (it ships a binary wrapper jar), so this
+          # action provisions Gradle itself and we invoke `gradle` directly.
+
+      - name: Compute version number
+        id: version
+        run: |
+          VERSION_CODE="${{ github.run_number }}"
+          VERSION_NAME="1.0.${{ github.run_number }}"
+          TAG="v${VERSION_NAME}"
+          echo "code=$VERSION_CODE" >> "$GITHUB_OUTPUT"
+          echo "name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Stamp version into build.gradle.kts
+        run: |
+          sed -i "s/versionCode = [0-9]\+/versionCode = ${{ steps.version.outputs.code }}/" app/build.gradle.kts
+          sed -i "s/versionName = \"[^\"]*\"/versionName = \"${{ steps.version.outputs.name }}\"/" app/build.gradle.kts
+
+      - name: Decode signing keystore (if configured)
+        if: ${{ secrets.SIGNING_KEYSTORE_BASE64 != '' }}
+        run: |
+          echo "${{ secrets.SIGNING_KEYSTORE_BASE64 }}" | base64 -d > "$RUNNER_TEMP/release.keystore"
+          echo "SIGNING_KEYSTORE_PATH=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
+          echo "SIGNING_KEYSTORE_PASSWORD=${{ secrets.SIGNING_KEYSTORE_PASSWORD }}" >> "$GITHUB_ENV"
+          echo "SIGNING_KEY_ALIAS=${{ secrets.SIGNING_KEY_ALIAS }}" >> "$GITHUB_ENV"
+          echo "SIGNING_KEY_PASSWORD=${{ secrets.SIGNING_KEY_PASSWORD }}" >> "$GITHUB_ENV"
+
+      - name: Build release APK
+        run: gradle :app:assembleRelease --no-daemon
+
+      - name: Locate APK
+        id: apk
+        run: |
+          APK_PATH=$(find app/build/outputs/apk/release -name '*.apk' | head -n 1)
+          echo "path=$APK_PATH" >> "$GITHUB_OUTPUT"
+          cp "$APK_PATH" "quickgit-${{ steps.version.outputs.name }}.apk"
+
+      - name: Tag the release commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "${{ steps.version.outputs.tag }}"
+          git push origin "${{ steps.version.outputs.tag }}"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: QuickGit ${{ steps.version.outputs.name }}
+          body: |
+            Automated build from commit ${{ github.sha }}.
+
+            **Commit message:**
+            ${{ github.event.head_commit.message }}
+          files: quickgit-${{ steps.version.outputs.name }}.apk
+          
