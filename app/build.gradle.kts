@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -18,11 +20,13 @@ android {
     signingConfigs {
         create("release") {
             // Prefer env vars (CI). Fall back to local.properties for local builds.
-            val props = rootProject.file("local.properties").takeIf { it.exists() }?.let {
-                java.util.Properties().apply { load(it.inputStream()) }
+            val propsFile = rootProject.file("local.properties")
+            val props = Properties()
+            if (propsFile.exists()) {
+                propsFile.inputStream().use { props.load(it) }
             }
             fun prop(name: String): String? =
-                System.getenv(name) ?: props?.getProperty(name)
+                System.getenv(name) ?: props.getProperty(name)
 
             val store = prop("SIGNING_STORE_FILE")
             if (store != null) {
