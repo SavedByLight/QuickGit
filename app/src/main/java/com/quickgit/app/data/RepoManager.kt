@@ -1,6 +1,7 @@
 package com.quickgit.app.data
 
 import android.content.Context
+import android.os.Environment
 import com.quickgit.app.data.models.*
 import org.eclipse.jgit.api.CreateBranchCommand
 import org.eclipse.jgit.api.Git
@@ -24,8 +25,32 @@ import java.io.File
 
 class RepoManager(private val context: Context, private val credentialStore: CredentialStore) {
 
-    private val reposRoot: File
-        get() = File(context.filesDir, "repos").apply { mkdirs() }
+    /**
+     * Local clones live under Documents/QuickGit so they are visible in the
+     * system file manager. Falls back to app-specific external storage if the
+     * public Documents tree is not writable (scoped storage / missing permission).
+     */
+    val reposRoot: File
+        get() {
+            val publicRoot = File(
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS),
+                "QuickGit"
+            )
+            return try {
+                if (!publicRoot.exists()) publicRoot.mkdirs()
+                if (publicRoot.isDirectory && publicRoot.canWrite()) publicRoot
+                else fallbackReposRoot()
+            } catch (_: Exception) {
+                fallbackReposRoot()
+            }
+        }
+
+    private fun fallbackReposRoot(): File {
+        val base = context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS)
+            ?: context.getExternalFilesDir(null)
+            ?: context.filesDir
+        return File(base, "QuickGit").apply { mkdirs() }
+    }
 
     private val sshFactory by lazy { SshSupport.buildSessionFactory(context, credentialStore) }
 

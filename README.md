@@ -73,6 +73,8 @@ it just talks to whatever git remote you point it at.
 
 ## Permissions
 
-Only `INTERNET` and `ACCESS_NETWORK_STATE` — no storage or contacts permissions. Repos live
-in the app's private storage (`context.filesDir/repos`), not shared storage, so they're not
-visible to other apps and are wiped if the app is uninstalled.
+`INTERNET`, `ACCESS_NETWORK_STATE`, and (on API ≤ 28) external storage so clones can live
+under **Documents/QuickGit** on shared storage. On newer Android versions the app still
+tries `Documents/QuickGit` first and falls back to app-specific external storage if the
+public folder is not writable. Uninstalling the app does **not** delete `Documents/QuickGit`
+when the public location is used.
