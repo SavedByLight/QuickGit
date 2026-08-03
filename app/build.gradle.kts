@@ -35,7 +35,9 @@ android {
                 "META-INF/LICENSE",
                 "META-INF/LICENSE.txt",
                 "META-INF/NOTICE",
-                "META-INF/NOTICE.txt"
+                "META-INF/NOTICE.txt",
+                // Both org.eclipse.jgit and org.eclipse.jgit.ssh.apache ship this
+                "OSGI-INF/l10n/plugin.properties"
             )
         }
     }
