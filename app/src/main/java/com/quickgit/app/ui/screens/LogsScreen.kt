@@ -6,11 +6,14 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -19,6 +22,7 @@ import com.quickgit.app.data.LogLevel
 import com.quickgit.app.ui.theme.GitAmber
 import com.quickgit.app.ui.theme.GitRed
 import com.quickgit.app.viewmodel.LogsViewModel
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -28,12 +32,16 @@ fun LogsScreen(
 ) {
     val entries by vm.entries.collectAsState()
     val listState = rememberLazyListState()
+    val clipboard = LocalClipboardManager.current
+    val snackbarHost = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
 
     LaunchedEffect(entries.size) {
         if (entries.isNotEmpty()) listState.animateScrollToItem(entries.size - 1)
     }
 
     Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHost) },
         topBar = {
             TopAppBar(
                 title = { Text("Logs") },
@@ -41,7 +49,16 @@ fun LogsScreen(
                     IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back") }
                 },
                 actions = {
-                    IconButton(onClick = vm::clear) { Icon(Icons.Default.DeleteSweep, "Clear logs") }
+                    IconButton(
+                        onClick = {
+                            clipboard.setText(AnnotatedString(vm.asPlainText()))
+                            scope.launch { snackbarHost.showSnackbar("Logs copied to clipboard") }
+                        },
+                        enabled = entries.isNotEmpty()
+                    ) { Icon(Icons.Default.ContentCopy, "Copy logs") }
+                    IconButton(onClick = vm::clear, enabled = entries.isNotEmpty()) {
+                        Icon(Icons.Default.DeleteSweep, "Clear logs")
+                    }
                 }
             )
         }
