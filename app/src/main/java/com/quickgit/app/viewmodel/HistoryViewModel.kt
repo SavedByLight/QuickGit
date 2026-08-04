@@ -48,11 +48,17 @@ class HistoryViewModel(private val repoManager: RepoManager) : ViewModel() {
         }
     }
 
-    fun revertCommit(commitHash: String) {
+    fun revertCommit(commitHash: String, message: String? = null) {
         if (!::repoPath.isInitialized) return
         viewModelScope.launch {
             _state.value = _state.value.copy(loading = true, errorMessage = null, statusMessage = null)
-            val result = withContext(Dispatchers.IO) { repoManager.revertCommit(repoPath, commitHash) }
+            val result = withContext(Dispatchers.IO) { repoManager.revertCommit(repoPath, commitHash, message) }
+            if (result is GitOpResult.Success) {
+                // Pull the new revert commit into the list; otherwise the screen looks
+                // like nothing happened until the user manually refreshes.
+                val commits = withContext(Dispatchers.IO) { repoManager.getLog(repoPath) }
+                _state.value = _state.value.copy(commits = commits)
+            }
             _state.value = when (result) {
                 is GitOpResult.Success -> _state.value.copy(
                     loading = false,

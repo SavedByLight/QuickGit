@@ -154,11 +154,11 @@ fun HistoryScreen(
             title = { Text("Revert commit?") },
             text = {
                 Column {
-                    Text(revertMessage)
+                    Text("This will create a new commit that undoes the changes.")
+                    Spacer(Modifier.padding(top = 8.dp))
                     OutlinedTextField(
-                        value = "",
-                        onValueChange = {},
-                        enabled = false,
+                        value = revertMessage,
+                        onValueChange = { revertMessage = it },
                         label = { Text("Message") },
                         singleLine = true
                     )
@@ -167,7 +167,7 @@ fun HistoryScreen(
             confirmButton = {
                 TextButton(onClick = {
                     val hash = revertTarget ?: return@TextButton
-                    vm.revertCommit(hash)
+                    vm.revertCommit(hash, revertMessage)
                     showRevertDialog = false
                     revertTarget = null
                 }) { Text("Revert") }

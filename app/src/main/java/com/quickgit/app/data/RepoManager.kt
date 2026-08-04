@@ -124,9 +124,23 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
 
     fun stage(path: String, files: List<String>) {
         openGit(path).use { git ->
-            val cmd = git.add()
-            files.forEach { cmd.addFilepattern(it) }
-            cmd.call()
+            // JGit's AddCommand mirrors old git semantics: it happily stages new/modified
+            // content but silently skips paths that no longer exist on disk, so deletions
+            // never make it into the index. Route those through RmCommand(cached) instead.
+            val status = git.status().call()
+            val missing = files.filter { it in status.missing || it in status.removed }
+            val present = files - missing.toSet()
+
+            if (present.isNotEmpty()) {
+                val cmd = git.add()
+                present.forEach { cmd.addFilepattern(it) }
+                cmd.call()
+            }
+            if (missing.isNotEmpty()) {
+                val cmd = git.rm().setCached(true)
+                missing.forEach { cmd.addFilepattern(it) }
+                cmd.call()
+            }
         }
     }
 
@@ -139,7 +153,16 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     }
 
     fun stageAll(path: String) {
-        openGit(path).use { git -> git.add().addFilepattern(".").call() }
+        openGit(path).use { git ->
+            git.add().addFilepattern(".").call()
+            // Same deletion gap as stage() above — catch any remaining missing paths.
+            val missing = git.status().call().missing
+            if (missing.isNotEmpty()) {
+                val cmd = git.rm().setCached(true)
+                missing.forEach { cmd.addFilepattern(it) }
+                cmd.call()
+            }
+        }
     }
 
     fun discardChanges(path: String, files: List<String>): GitOpResult {
@@ -315,7 +338,7 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
      * The repository is left in JGit's normal conflict state when a revert
      * cannot be applied cleanly, allowing the UI to surface the affected paths.
      */
-    fun revertCommit(path: String, commitHash: String): GitOpResult = try {
+    fun revertCommit(path: String, commitHash: String, message: String? = null): GitOpResult = try {
         openGit(path).use { git ->
             val repository = git.repository
             val objectId = repository.resolve(commitHash)
@@ -326,6 +349,11 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                 val reverted = git.revert().include(commit).call()
 
                 if (reverted != null) {
+                    // RevertCommand always generates its own "Revert \"...\"" message and has
+                    // no setter for a custom one, so honor a user-edited message by amending.
+                    if (!message.isNullOrBlank() && message != reverted.fullMessage.trim()) {
+                        git.commit().setAmend(true).setMessage(message).call()
+                    }
                     GitOpResult.Success
                 } else {
                     val conflicts = git.status().call().conflicting.toList().sorted()
