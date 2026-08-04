@@ -14,7 +14,10 @@ import kotlinx.coroutines.withContext
 
 data class MergeUiState(
     val conflicts: List<FileChange> = emptyList(),
+    /** True while resolving/aborting/finishing is running — used to disable buttons. */
     val busy: Boolean = false,
+    /** True only while a pull-to-refresh (or the initial load) is in flight — drives the refresh indicator. */
+    val refreshing: Boolean = false,
     val lastResult: GitOpResult? = null
 )
 
@@ -25,14 +28,20 @@ class MergeViewModel(private val repoManager: RepoManager) : ViewModel() {
 
     fun init(repoPath: String) {
         this.repoPath = repoPath
-        refresh()
+        loadConflicts(showRefreshing = true)
     }
 
-    fun refresh() {
+    /** Pull-to-refresh entry point — reloads conflicts and shows the refresh indicator while doing so. */
+    fun refresh() = loadConflicts(showRefreshing = true)
+
+    private fun loadConflicts(showRefreshing: Boolean) {
         viewModelScope.launch {
-            _state.value = _state.value.copy(busy = true)
+            if (showRefreshing) _state.value = _state.value.copy(refreshing = true)
             val status = withContext(Dispatchers.IO) { repoManager.getStatus(repoPath) }
-            _state.value = _state.value.copy(conflicts = status.conflicting, busy = false)
+            _state.value = _state.value.copy(
+                conflicts = status.conflicting,
+                refreshing = if (showRefreshing) false else _state.value.refreshing
+            )
         }
     }
 
@@ -47,7 +56,7 @@ class MergeViewModel(private val repoManager: RepoManager) : ViewModel() {
         viewModelScope.launch(Dispatchers.IO) {
             repoManager.writeResolvedContent(repoPath, filePath, content)
             repoManager.markResolved(repoPath, filePath)
-            withContext(Dispatchers.Main) { refresh() }
+            withContext(Dispatchers.Main) { loadConflicts(showRefreshing = false) }
         }
     }
 
@@ -71,7 +80,7 @@ class MergeViewModel(private val repoManager: RepoManager) : ViewModel() {
             _state.value = _state.value.copy(busy = true)
             val result = withContext(Dispatchers.IO) { repoManager.abortMerge(repoPath) }
             _state.value = _state.value.copy(busy = false, lastResult = result)
-            refresh()
+            loadConflicts(showRefreshing = false)
         }
     }
 

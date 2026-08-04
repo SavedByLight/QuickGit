@@ -49,7 +49,7 @@ fun MergeScreen(repoPath: String, vm: MergeViewModel, onBack: () -> Unit, onFini
     ) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
             PullToRefreshBox(
-                isRefreshing = state.busy,
+                isRefreshing = state.refreshing,
                 onRefresh = vm::refresh,
                 modifier = Modifier.weight(1f).fillMaxWidth()
             ) {

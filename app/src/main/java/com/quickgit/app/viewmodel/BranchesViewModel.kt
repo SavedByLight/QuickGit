@@ -14,7 +14,10 @@ import kotlinx.coroutines.withContext
 
 data class BranchesUiState(
     val branches: List<BranchInfo> = emptyList(),
+    /** True while create/checkout/delete is running — used to disable buttons. */
     val busy: Boolean = false,
+    /** True only while a pull-to-refresh (or the initial load) is in flight — drives the refresh indicator. */
+    val refreshing: Boolean = false,
     val lastResult: GitOpResult? = null
 )
 
@@ -25,14 +28,20 @@ class BranchesViewModel(private val repoManager: RepoManager) : ViewModel() {
 
     fun init(repoPath: String) {
         this.repoPath = repoPath
-        refresh()
+        loadBranches(showRefreshing = true)
     }
 
-    fun refresh() {
+    /** Pull-to-refresh entry point — reloads the branch list and shows the refresh indicator while doing so. */
+    fun refresh() = loadBranches(showRefreshing = true)
+
+    private fun loadBranches(showRefreshing: Boolean) {
         viewModelScope.launch {
-            _state.value = _state.value.copy(busy = true)
+            if (showRefreshing) _state.value = _state.value.copy(refreshing = true)
             val branches = withContext(Dispatchers.IO) { repoManager.listBranches(repoPath) }
-            _state.value = _state.value.copy(branches = branches, busy = false)
+            _state.value = _state.value.copy(
+                branches = branches,
+                refreshing = if (showRefreshing) false else _state.value.refreshing
+            )
         }
     }
 
@@ -41,7 +50,7 @@ class BranchesViewModel(private val repoManager: RepoManager) : ViewModel() {
             _state.value = _state.value.copy(busy = true)
             val result = withContext(Dispatchers.IO) { repoManager.createBranch(repoPath, name, checkout) }
             _state.value = _state.value.copy(busy = false, lastResult = result)
-            refresh()
+            loadBranches(showRefreshing = false)
         }
     }
 
@@ -50,7 +59,7 @@ class BranchesViewModel(private val repoManager: RepoManager) : ViewModel() {
             _state.value = _state.value.copy(busy = true)
             val result = withContext(Dispatchers.IO) { repoManager.checkoutBranch(repoPath, name) }
             _state.value = _state.value.copy(busy = false, lastResult = result)
-            refresh()
+            loadBranches(showRefreshing = false)
         }
     }
 
@@ -59,7 +68,7 @@ class BranchesViewModel(private val repoManager: RepoManager) : ViewModel() {
             _state.value = _state.value.copy(busy = true)
             val result = withContext(Dispatchers.IO) { repoManager.deleteBranch(repoPath, name, false) }
             _state.value = _state.value.copy(busy = false, lastResult = result)
-            refresh()
+            loadBranches(showRefreshing = false)
         }
     }
 

@@ -15,7 +15,10 @@ import kotlinx.coroutines.withContext
 data class RepoDetailUiState(
     val status: RepoStatus? = null,
     val branch: String = "",
+    /** True while a git operation (stage, commit, push, pull, discard...) is running — used to disable buttons. */
     val busy: Boolean = false,
+    /** True only while a pull-to-refresh (or the initial load) is in flight — drives the refresh indicator. */
+    val refreshing: Boolean = false,
     val commitMessage: String = "",
     val lastResult: GitOpResult? = null,
     val authorName: String = "Mobile User",
@@ -30,17 +33,24 @@ class RepoDetailViewModel(private val repoManager: RepoManager) : ViewModel() {
 
     fun init(repoPath: String) {
         this.repoPath = repoPath
-        refresh()
+        loadStatus(showRefreshing = true)
     }
 
-    fun refresh() {
+    /** Pull-to-refresh entry point — reloads status and shows the refresh indicator while doing so. */
+    fun refresh() = loadStatus(showRefreshing = true)
+
+    private fun loadStatus(showRefreshing: Boolean) {
         viewModelScope.launch {
-            _state.value = _state.value.copy(busy = true)
+            if (showRefreshing) _state.value = _state.value.copy(refreshing = true)
             val status = withContext(Dispatchers.IO) { repoManager.getStatus(repoPath) }
             val branch = withContext(Dispatchers.IO) {
                 repoManager.openGit(repoPath).use { it.repository.branch }
             }
-            _state.value = _state.value.copy(status = status, branch = branch ?: "", busy = false)
+            _state.value = _state.value.copy(
+                status = status,
+                branch = branch ?: "",
+                refreshing = if (showRefreshing) false else _state.value.refreshing
+            )
         }
     }
 
@@ -48,14 +58,14 @@ class RepoDetailViewModel(private val repoManager: RepoManager) : ViewModel() {
         viewModelScope.launch(Dispatchers.IO) {
             if (currentlyStaged) repoManager.unstage(repoPath, listOf(filePath))
             else repoManager.stage(repoPath, listOf(filePath))
-            withContext(Dispatchers.Main) { refresh() }
+            withContext(Dispatchers.Main) { loadStatus(showRefreshing = false) }
         }
     }
 
     fun stageAll() {
         viewModelScope.launch(Dispatchers.IO) {
             repoManager.stageAll(repoPath)
-            withContext(Dispatchers.Main) { refresh() }
+            withContext(Dispatchers.Main) { loadStatus(showRefreshing = false) }
         }
     }
 
@@ -66,7 +76,7 @@ class RepoDetailViewModel(private val repoManager: RepoManager) : ViewModel() {
                 repoManager.discardChanges(repoPath, listOf(filePath))
             }
             _state.value = _state.value.copy(busy = false, lastResult = result)
-            if (result is GitOpResult.Success) refresh()
+            if (result is GitOpResult.Success) loadStatus(showRefreshing = false)
         }
     }
 
@@ -81,7 +91,7 @@ class RepoDetailViewModel(private val repoManager: RepoManager) : ViewModel() {
                 repoManager.commit(repoPath, msg, _state.value.authorName, _state.value.authorEmail)
             }
             _state.value = _state.value.copy(busy = false, lastResult = result, commitMessage = "")
-            refresh()
+            loadStatus(showRefreshing = false)
         }
     }
 
@@ -98,7 +108,7 @@ class RepoDetailViewModel(private val repoManager: RepoManager) : ViewModel() {
             _state.value = _state.value.copy(busy = true)
             val result = withContext(Dispatchers.IO) { repoManager.pull(repoPath) }
             _state.value = _state.value.copy(busy = false, lastResult = result)
-            refresh()
+            loadStatus(showRefreshing = false)
         }
     }
 

@@ -42,11 +42,11 @@ fun BranchesScreen(repoPath: String, vm: BranchesViewModel, onBack: () -> Unit) 
         }
     ) { padding ->
         PullToRefreshBox(
-            isRefreshing = state.busy,
+            isRefreshing = state.refreshing,
             onRefresh = vm::refresh,
             modifier = Modifier.padding(padding).fillMaxSize()
         ) {
-            if (state.busy && state.branches.isEmpty()) {
+            if ((state.busy || state.refreshing) && state.branches.isEmpty()) {
                 CircularProgressIndicator(Modifier.align(Alignment.Center))
             } else {
                 LazyColumn(Modifier.fillMaxSize()) {

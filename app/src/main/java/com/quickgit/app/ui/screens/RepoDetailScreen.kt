@@ -88,11 +88,11 @@ fun RepoDetailScreen(
             }
 
             PullToRefreshBox(
-                isRefreshing = state.busy,
+                isRefreshing = state.refreshing,
                 onRefresh = vm::refresh,
                 modifier = Modifier.weight(1f).fillMaxWidth()
             ) {
-                if (state.busy && status == null) {
+                if ((state.busy || state.refreshing) && status == null) {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
                 } else if (status != null) {
                     Column(Modifier.fillMaxSize()) {
