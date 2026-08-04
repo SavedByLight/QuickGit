@@ -13,6 +13,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.quickgit.app.data.models.BranchInfo
 import com.quickgit.app.data.models.GitOpResult
+import com.quickgit.app.ui.components.PullToRefreshBox
 import com.quickgit.app.viewmodel.BranchesViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -40,7 +41,11 @@ fun BranchesScreen(repoPath: String, vm: BranchesViewModel, onBack: () -> Unit) 
             )
         }
     ) { padding ->
-        Box(Modifier.padding(padding).fillMaxSize()) {
+        PullToRefreshBox(
+            isRefreshing = state.busy,
+            onRefresh = vm::refresh,
+            modifier = Modifier.padding(padding).fillMaxSize()
+        ) {
             if (state.busy && state.branches.isEmpty()) {
                 CircularProgressIndicator(Modifier.align(Alignment.Center))
             } else {

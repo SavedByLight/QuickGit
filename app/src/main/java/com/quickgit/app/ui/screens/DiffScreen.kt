@@ -16,6 +16,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.quickgit.app.data.models.DiffLineType
+import com.quickgit.app.ui.components.PullToRefreshBox
 import com.quickgit.app.ui.theme.GitGreen
 import com.quickgit.app.ui.theme.GitRed
 import com.quickgit.app.viewmodel.DiffViewModel
@@ -33,7 +34,11 @@ fun DiffScreen(repoPath: String, filePath: String, mode: String, vm: DiffViewMod
             navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back") } }
         )
     }) { padding ->
-        Box(Modifier.padding(padding).fillMaxSize()) {
+        PullToRefreshBox(
+            isRefreshing = loading,
+            onRefresh = { vm.load(repoPath, filePath, mode) },
+            modifier = Modifier.padding(padding).fillMaxSize()
+        ) {
             when {
                 loading -> CircularProgressIndicator(Modifier.align(Alignment.Center))
                 diff == null || (diff!!.lines.isEmpty() && !diff!!.isBinary) ->

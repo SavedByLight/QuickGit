@@ -16,6 +16,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.quickgit.app.data.models.RepoInfo
+import com.quickgit.app.ui.components.PullToRefreshBox
 import com.quickgit.app.viewmodel.RepoListViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -43,7 +44,11 @@ fun RepoListScreen(
             ExtendedFloatingActionButton(onClick = onClone, icon = { Icon(Icons.Default.Add, null) }, text = { Text("Clone") })
         }
     ) { padding ->
-        Box(Modifier.padding(padding).fillMaxSize()) {
+        PullToRefreshBox(
+            isRefreshing = loading,
+            onRefresh = vm::refresh,
+            modifier = Modifier.padding(padding).fillMaxSize()
+        ) {
             if (loading && repos.isEmpty()) {
                 CircularProgressIndicator(Modifier.align(Alignment.Center))
             } else if (repos.isEmpty()) {

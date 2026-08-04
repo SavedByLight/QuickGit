@@ -16,6 +16,7 @@ import androidx.compose.ui.unit.dp
 import com.quickgit.app.data.models.ChangeType
 import com.quickgit.app.data.models.FileChange
 import com.quickgit.app.data.models.GitOpResult
+import com.quickgit.app.ui.components.PullToRefreshBox
 import com.quickgit.app.ui.theme.GitAmber
 import com.quickgit.app.ui.theme.GitGreen
 import com.quickgit.app.ui.theme.GitRed
@@ -86,49 +87,57 @@ fun RepoDetailScreen(
                 }
             }
 
-            if (state.busy && status == null) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
-            } else if (status != null) {
-                LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
-                    if (status.staged.isNotEmpty()) {
-                        item { SectionHeader("Staged changes (${status.staged.size})") }
-                        items(status.staged, key = { "s_" + it.path }) { fc ->
-                            ChangeRow(fc, onToggle = { vm.toggleStage(fc.path, true) }, onClick = { onOpenDiff(fc.path, "staged") })
-                        }
-                    }
-                    val unstagedAll = status.unstaged + status.untracked
-                    if (unstagedAll.isNotEmpty()) {
-                        item {
-                            Row(Modifier.fillMaxWidth().padding(16.dp, 8.dp, 16.dp, 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Text("Changes (${unstagedAll.size})", style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f))
-                                TextButton(onClick = { vm.stageAll() }) { Text("Stage all") }
+            PullToRefreshBox(
+                isRefreshing = state.busy,
+                onRefresh = vm::refresh,
+                modifier = Modifier.weight(1f).fillMaxWidth()
+            ) {
+                if (state.busy && status == null) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+                } else if (status != null) {
+                    Column(Modifier.fillMaxSize()) {
+                        LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
+                            if (status.staged.isNotEmpty()) {
+                                item { SectionHeader("Staged changes (${status.staged.size})") }
+                                items(status.staged, key = { "s_" + it.path }) { fc ->
+                                    ChangeRow(fc, onToggle = { vm.toggleStage(fc.path, true) }, onClick = { onOpenDiff(fc.path, "staged") })
+                                }
                             }
-                        }
-                        items(unstagedAll, key = { "u_" + it.path }) { fc ->
-                            ChangeRow(
-                                fc,
-                                onToggle = { vm.toggleStage(fc.path, false) },
-                                onClick = { onOpenDiff(fc.path, "working") },
-                                onDiscard = { vm.discard(fc.path) }
-                            )
-                        }
-                    }
-                    if (status.isClean) {
-                        item {
-                            Box(Modifier.fillParentMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
-                                Text("Nothing to commit — working tree clean", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            val unstagedAll = status.unstaged + status.untracked
+                            if (unstagedAll.isNotEmpty()) {
+                                item {
+                                    Row(Modifier.fillMaxWidth().padding(16.dp, 8.dp, 16.dp, 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        Text("Changes (${unstagedAll.size})", style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f))
+                                        TextButton(onClick = { vm.stageAll() }) { Text("Stage all") }
+                                    }
+                                }
+                                items(unstagedAll, key = { "u_" + it.path }) { fc ->
+                                    ChangeRow(
+                                        fc,
+                                        onToggle = { vm.toggleStage(fc.path, false) },
+                                        onClick = { onOpenDiff(fc.path, "working") },
+                                        onDiscard = { vm.discard(fc.path) }
+                                    )
+                                }
                             }
+                            if (status.isClean) {
+                                item {
+                                    Box(Modifier.fillParentMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
+                                        Text("Nothing to commit — working tree clean", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                }
+                            }
+                            item { Spacer(Modifier.height(140.dp)) }
                         }
-                    }
-                    item { Spacer(Modifier.height(140.dp)) }
-                }
 
-                CommitBar(
-                    message = state.commitMessage,
-                    onMessageChange = vm::setCommitMessage,
-                    enabled = status.staged.isNotEmpty() && !state.busy,
-                    onCommit = vm::commit
-                )
+                        CommitBar(
+                            message = state.commitMessage,
+                            onMessageChange = vm::setCommitMessage,
+                            enabled = status.staged.isNotEmpty() && !state.busy,
+                            onCommit = vm::commit
+                        )
+                    }
+                }
             }
         }
     }

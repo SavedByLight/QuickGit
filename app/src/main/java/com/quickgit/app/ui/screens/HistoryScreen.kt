@@ -40,6 +40,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.quickgit.app.ui.components.PullToRefreshBox
 import com.quickgit.app.viewmodel.HistoryViewModel
 import java.text.DateFormat
 import java.util.Date
@@ -86,7 +87,9 @@ fun HistoryScreen(
             )
         }
     ) { padding ->
-        Box(
+        PullToRefreshBox(
+            isRefreshing = state.loading,
+            onRefresh = vm::refreshHistory,
             modifier = Modifier
                 .padding(padding)
                 .fillMaxSize()

@@ -83,6 +83,9 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
+    // Pull-to-refresh (androidx.compose.material.pullrefresh) still lives in the M2 "material"
+    // artifact even for Material3 apps; version is resolved by the compose-bom platform above.
+    implementation("androidx.compose.material:material")
     implementation("androidx.navigation:navigation-compose:2.7.7")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.4")
     implementation("androidx.security:security-crypto:1.1.0-alpha06")

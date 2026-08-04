@@ -49,6 +49,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.quickgit.app.ui.components.PullToRefreshBox
 import com.quickgit.app.viewmodel.FilesViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -150,7 +151,9 @@ fun FilesScreen(
             }
         }
     ) { padding ->
-        Box(
+        PullToRefreshBox(
+            isRefreshing = state.loading,
+            onRefresh = { vm.openDir(state.currentDir) },
             modifier = Modifier
                 .padding(padding)
                 .fillMaxSize()

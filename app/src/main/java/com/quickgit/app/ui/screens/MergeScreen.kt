@@ -17,6 +17,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.quickgit.app.data.models.FileChange
 import com.quickgit.app.data.models.GitOpResult
+import com.quickgit.app.ui.components.PullToRefreshBox
 import com.quickgit.app.ui.theme.GitAmber
 import com.quickgit.app.viewmodel.MergeViewModel
 
@@ -47,23 +48,29 @@ fun MergeScreen(repoPath: String, vm: MergeViewModel, onBack: () -> Unit, onFini
         }
     ) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
-            if (state.conflicts.isEmpty() && !state.busy) {
-                Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    Text("No conflicts remaining. Ready to finish the merge.")
-                }
-            } else {
-                LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
-                    items(state.conflicts, key = { it.path }) { fc ->
-                        Row(
-                            Modifier.fillMaxWidth().padding(16.dp, 10.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(Icons.Default.Warning, null, tint = GitAmber)
-                            Spacer(Modifier.width(12.dp))
-                            Text(fc.path, Modifier.weight(1f), maxLines = 1)
-                            TextButton(onClick = { editing = fc }) { Text("Resolve") }
+            PullToRefreshBox(
+                isRefreshing = state.busy,
+                onRefresh = vm::refresh,
+                modifier = Modifier.weight(1f).fillMaxWidth()
+            ) {
+                if (state.conflicts.isEmpty() && !state.busy) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text("No conflicts remaining. Ready to finish the merge.")
+                    }
+                } else {
+                    LazyColumn(Modifier.fillMaxSize()) {
+                        items(state.conflicts, key = { it.path }) { fc ->
+                            Row(
+                                Modifier.fillMaxWidth().padding(16.dp, 10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Default.Warning, null, tint = GitAmber)
+                                Spacer(Modifier.width(12.dp))
+                                Text(fc.path, Modifier.weight(1f), maxLines = 1)
+                                TextButton(onClick = { editing = fc }) { Text("Resolve") }
+                            }
+                            HorizontalDivider()
                         }
-                        HorizontalDivider()
                     }
                 }
             }
