@@ -33,11 +33,15 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun requestStorageIfNeeded() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            // Public Documents access uses scoped rules; mkdirs on Documents/QuickGit
-            // is attempted without legacy write permission on Q+.
+        if (Build.VERSION.SDK_INT > Build.VERSION_CODES.Q) {
+            // API 30+ ignores requestLegacyExternalStorage and enforces scoped
+            // storage no matter what permissions are held, so there's nothing
+            // to request here — RepoManager.reposRoot falls back to
+            // app-private storage on these versions instead.
             return
         }
+        // API 29 (Q) still needs WRITE_EXTERNAL_STORAGE granted for the legacy
+        // flag to actually restore public-folder write access.
         val needed = mutableListOf<String>()
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE)
             != PackageManager.PERMISSION_GRANTED

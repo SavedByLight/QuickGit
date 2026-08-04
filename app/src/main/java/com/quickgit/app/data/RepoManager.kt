@@ -36,22 +36,48 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     /**
      * Local clones live under Documents/QuickGit so they are visible in the
      * system file manager. Falls back to app-specific external storage if the
-     * public Documents tree is not writable (scoped storage / missing permission).
+     * public Documents tree isn't actually writable (scoped storage on API 30+,
+     * or missing permission below that).
+     *
+     * Resolved once and cached — re-checking on every access let the two
+     * roots flip mid-session (canWrite() is racy under scoped storage), which
+     * made JGit's index see files as missing right after a resolve, showing
+     * up in the UI as every file being "deleted". A real probe write, done
+     * once, avoids both problems.
      */
-    val reposRoot: File
-        get() {
-            val publicRoot = File(
-                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS),
-                "QuickGit"
-            )
-            return try {
-                if (!publicRoot.exists()) publicRoot.mkdirs()
-                if (publicRoot.isDirectory && publicRoot.canWrite()) publicRoot
-                else fallbackReposRoot()
-            } catch (_: Exception) {
-                fallbackReposRoot()
-            }
+    val reposRoot: File by lazy { resolveReposRoot() }
+
+    private fun resolveReposRoot(): File {
+        val publicRoot = File(
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS),
+            "QuickGit"
+        )
+        val usablePublic = try {
+            if (!publicRoot.exists() && !publicRoot.mkdirs()) false
+            else publicRoot.isDirectory && canActuallyWrite(publicRoot)
+        } catch (_: Exception) {
+            false
         }
+        AppLog.i(TAG, "reposRoot: public Documents/QuickGit usable=$usablePublic")
+        return if (usablePublic) publicRoot else fallbackReposRoot()
+    }
+
+    /**
+     * File.canWrite() reads POSIX permission bits, not scoped-storage
+     * enforcement, so it can report true on API 29+ even when writes will
+     * actually fail. Do a real probe write+delete instead.
+     */
+    private fun canActuallyWrite(dir: File): Boolean {
+        val probe = File(dir, ".quickgit_write_probe")
+        return try {
+            FileOutputStream(probe).use { it.write(1) }
+            probe.delete()
+            true
+        } catch (_: Exception) {
+            probe.delete()
+            false
+        }
+    }
 
     private fun fallbackReposRoot(): File {
         val base = context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS)

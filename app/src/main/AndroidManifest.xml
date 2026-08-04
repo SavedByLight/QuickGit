@@ -3,10 +3,14 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    <!-- Needed on API 28 and below to create Documents/QuickGit -->
+    <!-- Needed through API 29 (Android 10) to create Documents/QuickGit.
+         Paired with requestLegacyExternalStorage below, which only has any
+         effect through API 29 — API 30+ ignores it and enforces scoped
+         storage regardless, so the public Documents path there always
+         falls back to app-private storage (see RepoManager.reposRoot). -->
     <uses-permission
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
-        android:maxSdkVersion="28" />
+        android:maxSdkVersion="29" />
     <uses-permission
         android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
