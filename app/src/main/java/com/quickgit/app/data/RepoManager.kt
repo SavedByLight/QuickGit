@@ -20,8 +20,10 @@ import org.eclipse.jgit.transport.SshTransport
 import org.eclipse.jgit.transport.Transport
 import org.eclipse.jgit.transport.UsernamePasswordCredentialsProvider
 import org.eclipse.jgit.treewalk.CanonicalTreeParser
+import org.eclipse.jgit.treewalk.TreeWalk
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.FileOutputStream
 import java.util.concurrent.ConcurrentHashMap
 
 class RepoManager(private val context: Context, private val credentialStore: CredentialStore) {
@@ -165,6 +167,17 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         }
     }
 
+    /**
+     * Discards local changes to the given paths, restoring both the working tree and the
+     * index entry to match HEAD.
+     *
+     * This intentionally avoids JGit's `git.checkout().addPath(...)`, which (a) checks out
+     * from the INDEX rather than HEAD — so a file with staged changes doesn't actually get
+     * reset to HEAD — and (b) runs through DirCacheCheckout's conflict-safety checks, which
+     * routinely throw CheckoutConflictException for exactly the "overwrite my local edits"
+     * case a discard button is meant to perform (e.g. on app/build.gradle.kts). Reading the
+     * blob straight out of the HEAD tree and writing it to disk sidesteps both problems.
+     */
     fun discardChanges(path: String, files: List<String>): GitOpResult {
         val operationLock = repoOperationLocks.getOrPut(path) { Any() }
         return synchronized(operationLock) {
@@ -177,14 +190,51 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                 }
 
                 openGit(path).use { git ->
-                    val cmd = git.checkout()
-                    files.forEach { cmd.addPath(it) }
-                    cmd.call()
+                    val repository = git.repository
+                    val headTreeId = repository.resolve("HEAD^{tree}")
+                        ?: return@synchronized GitOpResult.Error("No HEAD commit to discard to")
+
+                    RevWalk(repository).use { walk ->
+                        val headTree = walk.parseTree(headTreeId)
+                        files.forEach { filePath ->
+                            val outFile = File(path, filePath)
+                            TreeWalk.forPath(repository, filePath, headTree)?.use { tw ->
+                                val loader = repository.open(tw.getObjectId(0))
+                                outFile.parentFile?.mkdirs()
+                                FileOutputStream(outFile).use { out -> loader.copyTo(out) }
+                            } ?: outFile.delete() // didn't exist at HEAD (newly added) — discard removes it
+                        }
+                    }
+
+                    // Bring the index back in line with HEAD for these paths too, so a
+                    // partially-staged file ends up fully clean rather than still staged.
+                    val resetCmd = git.reset().setRef("HEAD")
+                    files.forEach { resetCmd.addPath(it) }
+                    resetCmd.call()
                 }
                 GitOpResult.Success
             } catch (e: Exception) {
                 GitOpResult.Error(e.message ?: "Failed to discard changes", e)
             }
+        }
+    }
+
+    /** Discards every unstaged/untracked change in the working tree — the bulk version of discardChanges(). */
+    fun discardAll(path: String): GitOpResult {
+        val status = openGit(path).use { it.status().call() }
+        val paths = (status.modified + status.missing + status.untracked + status.conflicting).distinct()
+        if (paths.isEmpty()) return GitOpResult.Success
+        return discardChanges(path, paths)
+    }
+
+    fun unstageAll(path: String) {
+        openGit(path).use { git ->
+            val status = git.status().call()
+            val staged = (status.added + status.changed + status.removed).distinct()
+            if (staged.isEmpty()) return
+            val cmd = git.reset()
+            staged.forEach { cmd.addPath(it) }
+            cmd.call()
         }
     }
 

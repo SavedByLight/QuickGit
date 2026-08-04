@@ -69,12 +69,29 @@ class RepoDetailViewModel(private val repoManager: RepoManager) : ViewModel() {
         }
     }
 
+    fun unstageAll() {
+        viewModelScope.launch(Dispatchers.IO) {
+            repoManager.unstageAll(repoPath)
+            withContext(Dispatchers.Main) { loadStatus(showRefreshing = false) }
+        }
+    }
+
     fun discard(filePath: String) {
         viewModelScope.launch {
             _state.value = _state.value.copy(busy = true)
             val result = withContext(Dispatchers.IO) {
                 repoManager.discardChanges(repoPath, listOf(filePath))
             }
+            _state.value = _state.value.copy(busy = false, lastResult = result)
+            if (result is GitOpResult.Success) loadStatus(showRefreshing = false)
+        }
+    }
+
+    /** "Revert all" — discards every unstaged/untracked change in one go. */
+    fun discardAll() {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(busy = true)
+            val result = withContext(Dispatchers.IO) { repoManager.discardAll(repoPath) }
             _state.value = _state.value.copy(busy = false, lastResult = result)
             if (result is GitOpResult.Success) loadStatus(showRefreshing = false)
         }

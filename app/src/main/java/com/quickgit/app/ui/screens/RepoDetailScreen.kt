@@ -98,7 +98,12 @@ fun RepoDetailScreen(
                     Column(Modifier.fillMaxSize()) {
                         LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
                             if (status.staged.isNotEmpty()) {
-                                item { SectionHeader("Staged changes (${status.staged.size})") }
+                                item {
+                                    Row(Modifier.fillMaxWidth().padding(16.dp, 8.dp, 16.dp, 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        Text("Staged changes (${status.staged.size})", style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f))
+                                        TextButton(onClick = { vm.unstageAll() }, enabled = !state.busy) { Text("Unstage all") }
+                                    }
+                                }
                                 items(status.staged, key = { "s_" + it.path }) { fc ->
                                     ChangeRow(fc, onToggle = { vm.toggleStage(fc.path, true) }, onClick = { onOpenDiff(fc.path, "staged") })
                                 }
@@ -108,6 +113,7 @@ fun RepoDetailScreen(
                                 item {
                                     Row(Modifier.fillMaxWidth().padding(16.dp, 8.dp, 16.dp, 4.dp), verticalAlignment = Alignment.CenterVertically) {
                                         Text("Changes (${unstagedAll.size})", style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f))
+                                        TextButton(onClick = { vm.discardAll() }, enabled = !state.busy) { Text("Revert all") }
                                         TextButton(onClick = { vm.stageAll() }) { Text("Stage all") }
                                     }
                                 }
@@ -141,11 +147,6 @@ fun RepoDetailScreen(
             }
         }
     }
-}
-
-@Composable
-private fun SectionHeader(text: String) {
-    Text(text, style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(16.dp, 8.dp, 16.dp, 4.dp))
 }
 
 @Composable
