@@ -586,9 +586,20 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     fun abortMerge(path: String): GitOpResult = try {
         AppLog.i(TAG, "abortMerge: $path")
         openGit(path).use { git ->
+            // A real merge abort must restore working tree AND index to HEAD as it was
+            // before the merge started. The previous implementation did
+            // checkout().setAllPaths(true) with no start point, which checks out from
+            // the *current index* — mid-merge (especially MERGING_RESOLVED, where
+            // conflicts were staged but never committed) that index is a half-resolved,
+            // unreliable snapshot, not HEAD. Any path missing or mis-staged in that
+            // index silently vanished from the working tree instead of being restored.
+            // A hard reset to HEAD rebuilds both from the last real commit instead.
+            git.reset()
+                .setMode(org.eclipse.jgit.api.ResetCommand.ResetType.HARD)
+                .setRef(org.eclipse.jgit.lib.Constants.HEAD)
+                .call()
             git.repository.writeMergeCommitMsg(null)
             git.repository.writeMergeHeads(null)
-            git.checkout().setAllPaths(true).call()
         }
         AppLog.i(TAG, "abortMerge succeeded")
         GitOpResult.Success
