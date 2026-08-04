@@ -26,8 +26,14 @@ fun QuickGitNavGraph() {
                 vm = vm,
                 onOpenRepo = { repo: RepoInfo -> navController.navigate(Dest.repoDetail(repo.localPath)) },
                 onClone = { navController.navigate(Dest.CLONE) },
-                onSettings = { navController.navigate(Dest.SETTINGS) }
+                onSettings = { navController.navigate(Dest.SETTINGS) },
+                onLogs = { navController.navigate(Dest.LOGS) }
             )
+        }
+
+        composable(Dest.LOGS) {
+            val vm: LogsViewModel = viewModel(factory = factory)
+            LogsScreen(vm = vm, onBack = { navController.popBackStack() })
         }
 
         composable(Dest.CLONE) {

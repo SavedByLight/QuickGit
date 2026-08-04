@@ -22,6 +22,7 @@ class ViewModelFactory(private val app: Application) : ViewModelProvider.Factory
             SettingsViewModel::class.java -> SettingsViewModel(gitApp.credentialStore) as T
             FilesViewModel::class.java -> FilesViewModel(gitApp.repoManager) as T
             EditorViewModel::class.java -> EditorViewModel(gitApp.repoManager) as T
+            LogsViewModel::class.java -> LogsViewModel() as T
             else -> throw IllegalArgumentException("Unknown ViewModel: $modelClass")
         }
     }

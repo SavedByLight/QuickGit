@@ -11,6 +11,7 @@ object Dest {
     const val SETTINGS = "settings"
     const val FILES = "files/{repoPath}"
     const val EDITOR = "editor/{repoPath}/{filePath}"
+    const val LOGS = "logs"
 
     fun repoDetail(path: String) = "repo_detail/${encode(path)}"
     fun history(path: String) = "history/${encode(path)}"

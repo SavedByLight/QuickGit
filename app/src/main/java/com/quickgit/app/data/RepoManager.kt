@@ -28,6 +28,8 @@ import java.util.concurrent.ConcurrentHashMap
 
 class RepoManager(private val context: Context, private val credentialStore: CredentialStore) {
 
+    private val TAG = "RepoManager"
+
     private val repoOperationLocks = ConcurrentHashMap<String, Any>()
 
     /**
@@ -84,6 +86,7 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     ): GitOpResult {
         val dest = File(reposRoot, folderName)
         if (dest.exists()) return GitOpResult.Error("A repo named '$folderName' already exists locally")
+        AppLog.i(TAG, "clone: $url -> $folderName")
         return try {
             val cmd = Git.cloneRepository()
                 .setURI(url)
@@ -91,12 +94,15 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                 .setProgressMonitor(TextProgress(onProgress))
             applyTransportConfig(cmd, url)
             cmd.call().close()
+            AppLog.i(TAG, "clone succeeded: $folderName")
             GitOpResult.Success
         } catch (e: org.eclipse.jgit.api.errors.TransportException) {
             dest.deleteRecursively()
+            AppLog.e(TAG, "clone failed (transport): $folderName", e)
             if (isAuthFailure(e)) GitOpResult.AuthRequired(url) else GitOpResult.Error(e.message ?: "Transport error", e)
         } catch (e: Exception) {
             dest.deleteRecursively()
+            AppLog.e(TAG, "clone failed: $folderName", e)
             GitOpResult.Error(e.message ?: "Clone failed", e)
         }
     }
@@ -125,6 +131,7 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     }
 
     fun stage(path: String, files: List<String>) {
+        AppLog.i(TAG, "stage: $files")
         openGit(path).use { git ->
             // JGit's AddCommand mirrors old git semantics: it happily stages new/modified
             // content but silently skips paths that no longer exist on disk, so deletions
@@ -147,6 +154,7 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     }
 
     fun unstage(path: String, files: List<String>) {
+        AppLog.i(TAG, "unstage: $files")
         openGit(path).use { git ->
             val cmd = git.reset()
             files.forEach { cmd.addPath(it) }
@@ -155,6 +163,7 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     }
 
     fun stageAll(path: String) {
+        AppLog.i(TAG, "stageAll: $path")
         openGit(path).use { git ->
             git.add().addFilepattern(".").call()
             // Same deletion gap as stage() above — catch any remaining missing paths.
@@ -179,11 +188,13 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
      * blob straight out of the HEAD tree and writing it to disk sidesteps both problems.
      */
     fun discardChanges(path: String, files: List<String>): GitOpResult {
+        AppLog.i(TAG, "discard: $files")
         val operationLock = repoOperationLocks.getOrPut(path) { Any() }
         return synchronized(operationLock) {
             try {
                 val indexLock = File(path, ".git/index.lock")
                 if (indexLock.exists() && !indexLock.delete()) {
+                    AppLog.w(TAG, "discard blocked: index.lock present")
                     return@synchronized GitOpResult.Error(
                         "Git index is locked. Close other Git operations and delete .git/index.lock, then retry."
                     )
@@ -212,8 +223,10 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                     files.forEach { resetCmd.addPath(it) }
                     resetCmd.call()
                 }
+                AppLog.i(TAG, "discard succeeded: $files")
                 GitOpResult.Success
             } catch (e: Exception) {
+                AppLog.e(TAG, "discard failed: $files", e)
                 GitOpResult.Error(e.message ?: "Failed to discard changes", e)
             }
         }
@@ -223,6 +236,7 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     fun discardAll(path: String): GitOpResult {
         val status = openGit(path).use { it.status().call() }
         val paths = (status.modified + status.missing + status.untracked + status.conflicting).distinct()
+        AppLog.i(TAG, "discardAll: ${paths.size} path(s)")
         if (paths.isEmpty()) return GitOpResult.Success
         return discardChanges(path, paths)
     }
@@ -231,6 +245,7 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         openGit(path).use { git ->
             val status = git.status().call()
             val staged = (status.added + status.changed + status.removed).distinct()
+            AppLog.i(TAG, "unstageAll: ${staged.size} path(s)")
             if (staged.isEmpty()) return
             val cmd = git.reset()
             staged.forEach { cmd.addPath(it) }
@@ -249,8 +264,10 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                     .setCommitter(PersonIdent(authorName, authorEmail))
                     .call()
             }
+            AppLog.i(TAG, "commit succeeded: \"${message.take(50)}\"")
             GitOpResult.Success
         } catch (e: GitAPIException) {
+            AppLog.e(TAG, "commit failed", e)
             GitOpResult.Error(e.message ?: "Commit failed", e)
         }
     }
@@ -258,6 +275,7 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     // ---------------- Push / Pull / Fetch ----------------
 
     fun push(path: String): GitOpResult {
+        AppLog.i(TAG, "push: $path")
         return try {
             openGit(path).use { git ->
                 val remoteUrl = git.repository.config.getString("remote", "origin", "url") ?: ""
@@ -267,22 +285,27 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                 val rejected = results.flatMap { it.remoteUpdates }
                     .filter { it.status.name.contains("REJECTED") }
                 if (rejected.isNotEmpty()) {
+                    AppLog.w(TAG, "push rejected: ${rejected.size} ref(s)")
                     GitOpResult.Error("Push rejected — pull first (${rejected.size} ref(s) rejected)")
                 } else {
+                    AppLog.i(TAG, "push succeeded")
                     GitOpResult.Success
                 }
             }
         } catch (e: org.eclipse.jgit.api.errors.TransportException) {
+            AppLog.e(TAG, "push failed (transport)", e)
             if (isAuthFailure(e)) {
                 val url = openGit(path).use { it.repository.config.getString("remote", "origin", "url") } ?: ""
                 GitOpResult.AuthRequired(url)
             } else GitOpResult.Error(e.message ?: "Push failed", e)
         } catch (e: Exception) {
+            AppLog.e(TAG, "push failed", e)
             GitOpResult.Error(e.message ?: "Push failed", e)
         }
     }
 
     fun pull(path: String): GitOpResult {
+        AppLog.i(TAG, "pull: $path")
         return try {
             openGit(path).use { git ->
                 val remoteUrl = git.repository.config.getString("remote", "origin", "url") ?: ""
@@ -292,19 +315,31 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                 when {
                     !result.isSuccessful && result.mergeResult?.mergeStatus == MergeResult.MergeStatus.CONFLICTING -> {
                         val paths = result.mergeResult.conflicts?.keys?.toList() ?: emptyList()
+                        AppLog.w(TAG, "pull conflict: ${paths.size} path(s)")
                         GitOpResult.Conflict(paths)
                     }
-                    result.mergeResult?.mergeStatus == MergeResult.MergeStatus.ALREADY_UP_TO_DATE -> GitOpResult.UpToDate()
-                    result.isSuccessful -> GitOpResult.Success
-                    else -> GitOpResult.Error("Pull did not complete: ${result.mergeResult?.mergeStatus}")
+                    result.mergeResult?.mergeStatus == MergeResult.MergeStatus.ALREADY_UP_TO_DATE -> {
+                        AppLog.i(TAG, "pull: already up to date")
+                        GitOpResult.UpToDate()
+                    }
+                    result.isSuccessful -> {
+                        AppLog.i(TAG, "pull succeeded")
+                        GitOpResult.Success
+                    }
+                    else -> {
+                        AppLog.w(TAG, "pull incomplete: ${result.mergeResult?.mergeStatus}")
+                        GitOpResult.Error("Pull did not complete: ${result.mergeResult?.mergeStatus}")
+                    }
                 }
             }
         } catch (e: org.eclipse.jgit.api.errors.TransportException) {
+            AppLog.e(TAG, "pull failed (transport)", e)
             if (isAuthFailure(e)) {
                 val url = openGit(path).use { it.repository.config.getString("remote", "origin", "url") } ?: ""
                 GitOpResult.AuthRequired(url)
             } else GitOpResult.Error(e.message ?: "Pull failed", e)
         } catch (e: Exception) {
+            AppLog.e(TAG, "pull failed", e)
             GitOpResult.Error(e.message ?: "Pull failed", e)
         }
     }
@@ -389,6 +424,7 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
      * cannot be applied cleanly, allowing the UI to surface the affected paths.
      */
     fun revertCommit(path: String, commitHash: String, message: String? = null): GitOpResult = try {
+        AppLog.i(TAG, "revert: $commitHash")
         openGit(path).use { git ->
             val repository = git.repository
             val objectId = repository.resolve(commitHash)
@@ -404,20 +440,25 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                     if (!message.isNullOrBlank() && message != reverted.fullMessage.trim()) {
                         git.commit().setAmend(true).setMessage(message).call()
                     }
+                    AppLog.i(TAG, "revert succeeded: $commitHash")
                     GitOpResult.Success
                 } else {
                     val conflicts = git.status().call().conflicting.toList().sorted()
                     if (conflicts.isNotEmpty()) {
+                        AppLog.w(TAG, "revert conflict: $commitHash, ${conflicts.size} path(s)")
                         GitOpResult.Conflict(conflicts)
                     } else {
+                        AppLog.w(TAG, "revert produced no change: $commitHash")
                         GitOpResult.Error("Could not revert commit ${commitHash.take(7)}")
                     }
                 }
             }
         }
     } catch (e: GitAPIException) {
+        AppLog.e(TAG, "revert failed: $commitHash", e)
         GitOpResult.Error(e.message ?: "Revert failed", e)
     } catch (e: Exception) {
+        AppLog.e(TAG, "revert failed: $commitHash", e)
         GitOpResult.Error(e.message ?: "Revert failed", e)
     }
 

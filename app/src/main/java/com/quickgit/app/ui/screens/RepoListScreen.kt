@@ -9,6 +9,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -25,7 +26,8 @@ fun RepoListScreen(
     vm: RepoListViewModel,
     onOpenRepo: (RepoInfo) -> Unit,
     onClone: () -> Unit,
-    onSettings: () -> Unit
+    onSettings: () -> Unit,
+    onLogs: () -> Unit
 ) {
     val repos by vm.repos.collectAsState()
     val loading by vm.loading.collectAsState()
@@ -44,34 +46,43 @@ fun RepoListScreen(
             ExtendedFloatingActionButton(onClick = onClone, icon = { Icon(Icons.Default.Add, null) }, text = { Text("Clone") })
         }
     ) { padding ->
-        PullToRefreshBox(
-            isRefreshing = loading,
-            onRefresh = vm::refresh,
-            modifier = Modifier.padding(padding).fillMaxSize()
-        ) {
-            if (loading && repos.isEmpty()) {
-                CircularProgressIndicator(Modifier.align(Alignment.Center))
-            } else if (repos.isEmpty()) {
-                Column(
-                    Modifier.align(Alignment.Center).padding(32.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Text("No repositories yet", style = MaterialTheme.typography.titleMedium)
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        "Tap Clone to pull down a repo from GitHub, GitLab, or any git remote.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            } else {
-                LazyColumn(Modifier.fillMaxSize()) {
-                    items(repos, key = { it.localPath }) { repo ->
-                        RepoRow(repo, onClick = { onOpenRepo(repo) }, onDelete = { repoToDelete = repo })
-                        HorizontalDivider()
+        Box(Modifier.padding(padding).fillMaxSize()) {
+            PullToRefreshBox(
+                isRefreshing = loading,
+                onRefresh = vm::refresh,
+                modifier = Modifier.fillMaxSize()
+            ) {
+                if (loading && repos.isEmpty()) {
+                    CircularProgressIndicator(Modifier.align(Alignment.Center))
+                } else if (repos.isEmpty()) {
+                    Column(
+                        Modifier.align(Alignment.Center).padding(32.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text("No repositories yet", style = MaterialTheme.typography.titleMedium)
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "Tap Clone to pull down a repo from GitHub, GitLab, or any git remote.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
-                    item { Spacer(Modifier.height(80.dp)) }
+                } else {
+                    LazyColumn(Modifier.fillMaxSize()) {
+                        items(repos, key = { it.localPath }) { repo ->
+                            RepoRow(repo, onClick = { onOpenRepo(repo) }, onDelete = { repoToDelete = repo })
+                            HorizontalDivider()
+                        }
+                        item { Spacer(Modifier.height(80.dp)) }
+                    }
                 }
+            }
+
+            FilledTonalIconButton(
+                onClick = onLogs,
+                modifier = Modifier.align(Alignment.BottomStart).padding(16.dp)
+            ) {
+                Icon(Icons.Default.Terminal, "Logs")
             }
         }
     }
