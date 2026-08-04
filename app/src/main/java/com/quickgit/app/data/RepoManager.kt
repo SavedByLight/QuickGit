@@ -519,6 +519,48 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         return cleaned
     }
 
+    /** Resolves a human-readable file name for a content Uri picked via the system file picker. */
+    fun displayNameFor(uri: android.net.Uri): String {
+        var name: String? = null
+        context.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)
+            ?.use { cursor ->
+                val idx = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                if (idx >= 0 && cursor.moveToFirst()) name = cursor.getString(idx)
+            }
+        return (name ?: uri.lastPathSegment ?: "file").substringAfterLast('/')
+    }
+
+    /** Whether [fileName] already exists directly under [relativeDir] in the repo. */
+    fun fileExists(repoPath: String, relativeDir: String, fileName: String): Boolean {
+        val dir = if (relativeDir.isBlank()) File(repoPath) else File(repoPath, relativeDir)
+        return File(dir, fileName).exists()
+    }
+
+    /**
+     * Copies the content behind [uri] (picked from local/device storage) into the repo under
+     * [relativeDir] as [fileName]. Fails if the destination already exists unless [overwrite] is
+     * true, and refuses to clobber a same-named directory outright either way.
+     */
+    fun importFile(repoPath: String, relativeDir: String, uri: android.net.Uri, fileName: String, overwrite: Boolean): String {
+        val cleanedDir = relativeDir.trim().trimStart('/').replace("\\", "/")
+        val cleanedName = fileName.trim().replace("\\", "/").substringAfterLast('/')
+        if (cleanedName.isBlank()) throw IllegalArgumentException("File name is required")
+        val relative = if (cleanedDir.isBlank()) cleanedName else "$cleanedDir/$cleanedName"
+        if (relative.contains("..")) throw IllegalArgumentException("Invalid path")
+
+        val dest = File(repoPath, relative)
+        if (dest.isDirectory) throw IllegalArgumentException("A folder named '$cleanedName' already exists")
+        if (dest.exists() && !overwrite) throw IllegalArgumentException("Already exists: $cleanedName")
+
+        dest.parentFile?.mkdirs()
+        val input = context.contentResolver.openInputStream(uri)
+            ?: throw IllegalStateException("Could not read '$cleanedName'")
+        input.use { inStream ->
+            dest.outputStream().use { outStream -> inStream.copyTo(outStream) }
+        }
+        return relative
+    }
+
     // ---------------- Transport / auth helpers ----------------
 
     private fun applyTransportConfig(cmd: org.eclipse.jgit.api.TransportCommand<*, *>, url: String) {

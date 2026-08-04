@@ -1,5 +1,7 @@
 package com.quickgit.app.ui.screens
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -19,6 +21,7 @@ import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -68,6 +71,10 @@ fun FilesScreen(
     var showCreateDialog by remember { mutableStateOf(false) }
     var createFolderMode by remember { mutableStateOf(false) }
     var newName by remember { mutableStateOf("") }
+
+    val importFilesLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris -> if (!uris.isNullOrEmpty()) vm.importFiles(uris) }
 
     LaunchedEffect(state.error, state.statusMessage, state.openAfterCreate) {
         state.error?.let {
@@ -132,6 +139,14 @@ fun FilesScreen(
                                     createFolderMode = true
                                     newName = ""
                                     showCreateDialog = true
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Add from device") },
+                                leadingIcon = { Icon(Icons.Default.UploadFile, contentDescription = null) },
+                                onClick = {
+                                    createMenuExpanded = false
+                                    importFilesLauncher.launch(arrayOf("*/*"))
                                 }
                             )
                         }
@@ -234,6 +249,22 @@ fun FilesScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showCreateDialog = false }) { Text("Cancel") }
+            }
+        )
+    }
+
+    state.importConflict?.let { conflict ->
+        AlertDialog(
+            onDismissRequest = { vm.cancelImportConflict() },
+            title = { Text("Replace existing file?") },
+            text = {
+                Text("\"${conflict.fileName}\" already exists in this folder. Overwrite it with the file you're adding?")
+            },
+            confirmButton = {
+                Button(onClick = { vm.confirmOverwrite() }) { Text("Overwrite") }
+            },
+            dismissButton = {
+                TextButton(onClick = { vm.cancelImportConflict() }) { Text("Skip") }
             }
         )
     }

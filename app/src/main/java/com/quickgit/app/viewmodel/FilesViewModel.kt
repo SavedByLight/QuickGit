@@ -1,5 +1,6 @@
 package com.quickgit.app.viewmodel
 
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.quickgit.app.data.RepoManager
@@ -11,6 +12,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+/** A file picked from local storage that collides with an existing name in the current folder. */
+data class PendingImportConflict(val uri: Uri, val fileName: String)
+
 data class FilesUiState(
     val currentDir: String = "",
     val entries: List<RepoEntry> = emptyList(),
@@ -18,13 +22,19 @@ data class FilesUiState(
     val error: String? = null,
     val statusMessage: String? = null,
     /** Relative path of a file just created — UI can navigate to editor. */
-    val openAfterCreate: String? = null
+    val openAfterCreate: String? = null,
+    /** Non-null while waiting for the user to confirm overwriting a same-named file. */
+    val importConflict: PendingImportConflict? = null
 )
 
 class FilesViewModel(private val repoManager: RepoManager) : ViewModel() {
     private val _state = MutableStateFlow(FilesUiState())
     val state: StateFlow<FilesUiState> = _state.asStateFlow()
     private lateinit var repoPath: String
+
+    private val importQueue = ArrayDeque<Uri>()
+    private var importedCount = 0
+    private val importFailures = mutableListOf<String>()
 
     fun init(repoPath: String) {
         this.repoPath = repoPath
@@ -90,6 +100,86 @@ class FilesViewModel(private val repoManager: RepoManager) : ViewModel() {
                     statusMessage = null
                 )
             }
+        }
+    }
+
+    /**
+     * Begins importing one or more files picked from local/device storage into the current
+     * folder. Files that collide with an existing name are queued for a one-at-a-time overwrite
+     * confirmation via [state]'s `importConflict`; the rest are copied in directly.
+     */
+    fun importFiles(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        importQueue.clear()
+        importQueue.addAll(uris)
+        importedCount = 0
+        importFailures.clear()
+        processNextImport()
+    }
+
+    /** User chose to overwrite the file named in the current `importConflict`. */
+    fun confirmOverwrite() {
+        val conflict = _state.value.importConflict ?: return
+        _state.value = _state.value.copy(importConflict = null)
+        importOne(conflict.uri, conflict.fileName, overwrite = true)
+    }
+
+    /** User chose not to overwrite — skip this file and continue with the rest of the batch. */
+    fun cancelImportConflict() {
+        if (_state.value.importConflict == null) return
+        _state.value = _state.value.copy(importConflict = null)
+        processNextImport()
+    }
+
+    private fun processNextImport() {
+        val uri = importQueue.removeFirstOrNull()
+        if (uri == null) {
+            finishImportBatch()
+            return
+        }
+        val dir = _state.value.currentDir
+        viewModelScope.launch {
+            try {
+                val name = withContext(Dispatchers.IO) { repoManager.displayNameFor(uri) }
+                val exists = withContext(Dispatchers.IO) { repoManager.fileExists(repoPath, dir, name) }
+                if (exists) {
+                    _state.value = _state.value.copy(importConflict = PendingImportConflict(uri, name))
+                } else {
+                    importOne(uri, name, overwrite = false)
+                }
+            } catch (e: Exception) {
+                importFailures += e.message ?: "a selected file"
+                processNextImport()
+            }
+        }
+    }
+
+    private fun importOne(uri: Uri, name: String, overwrite: Boolean) {
+        val dir = _state.value.currentDir
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    repoManager.importFile(repoPath, dir, uri, name, overwrite)
+                }
+                importedCount++
+            } catch (e: Exception) {
+                importFailures += name
+            }
+            processNextImport()
+        }
+    }
+
+    private fun finishImportBatch() {
+        val summary = buildString {
+            if (importedCount > 0) append(if (importedCount == 1) "Added 1 file" else "Added $importedCount files")
+            if (importFailures.isNotEmpty()) {
+                if (isNotEmpty()) append(" — ")
+                append("couldn't add: ${importFailures.joinToString(", ")}")
+            }
+        }
+        openDir(_state.value.currentDir)
+        if (summary.isNotBlank()) {
+            _state.value = _state.value.copy(statusMessage = summary)
         }
     }
 
