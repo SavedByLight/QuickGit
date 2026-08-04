@@ -12,6 +12,7 @@ import org.eclipse.jgit.diff.RawTextComparator
 import org.eclipse.jgit.lib.ObjectId
 import org.eclipse.jgit.lib.PersonIdent
 import org.eclipse.jgit.lib.Repository
+import org.eclipse.jgit.lib.RepositoryState
 import org.eclipse.jgit.revwalk.RevCommit
 import org.eclipse.jgit.revwalk.RevWalk
 import org.eclipse.jgit.storage.file.FileRepositoryBuilder
@@ -308,27 +309,40 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         AppLog.i(TAG, "pull: $path")
         return try {
             openGit(path).use { git ->
-                val remoteUrl = git.repository.config.getString("remote", "origin", "url") ?: ""
-                val cmd = git.pull()
-                applyTransportConfig(cmd, remoteUrl)
-                val result = cmd.call()
-                when {
-                    !result.isSuccessful && result.mergeResult?.mergeStatus == MergeResult.MergeStatus.CONFLICTING -> {
-                        val paths = result.mergeResult.conflicts?.keys?.toList() ?: emptyList()
-                        AppLog.w(TAG, "pull conflict: ${paths.size} path(s)")
-                        GitOpResult.Conflict(paths)
-                    }
-                    result.mergeResult?.mergeStatus == MergeResult.MergeStatus.ALREADY_UP_TO_DATE -> {
-                        AppLog.i(TAG, "pull: already up to date")
-                        GitOpResult.UpToDate()
-                    }
-                    result.isSuccessful -> {
-                        AppLog.i(TAG, "pull succeeded")
-                        GitOpResult.Success
-                    }
-                    else -> {
-                        AppLog.w(TAG, "pull incomplete: ${result.mergeResult?.mergeStatus}")
-                        GitOpResult.Error("Pull did not complete: ${result.mergeResult?.mergeStatus}")
+                val repoState = git.repository.repositoryState
+                if (repoState != RepositoryState.SAFE) {
+                    // JGit's PullCommand throws WrongRepositoryStateException for any state
+                    // other than SAFE (mid-merge, mid-revert, mid-cherry-pick...) — most often
+                    // MERGING_RESOLVED, where conflicts were resolved but the merge commit was
+                    // never made. Route to the merge screen instead of surfacing the raw
+                    // exception; "Complete merge" there is already enabled once conflicts are
+                    // resolved, so this is a one-tap fix for the user.
+                    AppLog.w(TAG, "pull blocked: repository state is $repoState")
+                    val unresolved = git.status().call().conflicting.toList().sorted()
+                    GitOpResult.Conflict(unresolved)
+                } else {
+                    val remoteUrl = git.repository.config.getString("remote", "origin", "url") ?: ""
+                    val cmd = git.pull()
+                    applyTransportConfig(cmd, remoteUrl)
+                    val result = cmd.call()
+                    when {
+                        !result.isSuccessful && result.mergeResult?.mergeStatus == MergeResult.MergeStatus.CONFLICTING -> {
+                            val paths = result.mergeResult.conflicts?.keys?.toList() ?: emptyList()
+                            AppLog.w(TAG, "pull conflict: ${paths.size} path(s)")
+                            GitOpResult.Conflict(paths)
+                        }
+                        result.mergeResult?.mergeStatus == MergeResult.MergeStatus.ALREADY_UP_TO_DATE -> {
+                            AppLog.i(TAG, "pull: already up to date")
+                            GitOpResult.UpToDate()
+                        }
+                        result.isSuccessful -> {
+                            AppLog.i(TAG, "pull succeeded")
+                            GitOpResult.Success
+                        }
+                        else -> {
+                            AppLog.w(TAG, "pull incomplete: ${result.mergeResult?.mergeStatus}")
+                            GitOpResult.Error("Pull did not complete: ${result.mergeResult?.mergeStatus}")
+                        }
                     }
                 }
             }
@@ -538,17 +552,22 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     /** Marks a conflicted file as resolved by staging the version currently on disk. */
     fun markResolved(path: String, filePath: String) = stage(path, listOf(filePath))
 
-    fun continueMergeAsCommit(path: String, message: String, authorName: String, authorEmail: String): GitOpResult =
-        commit(path, message, authorName, authorEmail)
+    fun continueMergeAsCommit(path: String, message: String, authorName: String, authorEmail: String): GitOpResult {
+        AppLog.i(TAG, "finishMerge: \"${message.take(50)}\"")
+        return commit(path, message, authorName, authorEmail)
+    }
 
     fun abortMerge(path: String): GitOpResult = try {
+        AppLog.i(TAG, "abortMerge: $path")
         openGit(path).use { git ->
             git.repository.writeMergeCommitMsg(null)
             git.repository.writeMergeHeads(null)
             git.checkout().setAllPaths(true).call()
         }
+        AppLog.i(TAG, "abortMerge succeeded")
         GitOpResult.Success
     } catch (e: Exception) {
+        AppLog.e(TAG, "abortMerge failed", e)
         GitOpResult.Error(e.message ?: "Abort failed", e)
     }
 
