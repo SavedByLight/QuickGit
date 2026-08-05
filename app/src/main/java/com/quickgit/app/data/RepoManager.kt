@@ -7,6 +7,7 @@ import android.os.Environment
 import android.provider.DocumentsContract
 import com.quickgit.app.data.models.*
 import org.eclipse.jgit.api.CreateBranchCommand
+import org.eclipse.jgit.storage.file.WindowCacheConfig
 import org.eclipse.jgit.api.Git
 import org.eclipse.jgit.api.MergeResult
 import org.eclipse.jgit.api.errors.GitAPIException
@@ -45,6 +46,29 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
 
     private val prefs: SharedPreferences =
         context.getSharedPreferences("quickgit_prefs", Context.MODE_PRIVATE)
+
+    init {
+        installJGitMemoryLimits()
+    }
+
+    /**
+     * Cap JGit's pack window cache so large clones/fetches are less likely to blow the
+     * Android heap (default packed-git limits are desktop-sized).
+     */
+    private fun installJGitMemoryLimits() {
+        try {
+            val cfg = WindowCacheConfig()
+            cfg.packedGitLimit = 16L * 1024 * 1024
+            cfg.packedGitWindowSize = 8 * 1024
+            cfg.deltaBaseCacheLimit = 4 * 1024 * 1024
+            cfg.streamFileThreshold = 1 * 1024 * 1024
+            cfg.packedGitMMAP = false
+            cfg.install()
+            AppLog.i(TAG, "JGit WindowCache limits installed for mobile heap")
+        } catch (e: Exception) {
+            AppLog.w(TAG, "Could not install JGit WindowCache config: ${e.message}")
+        }
+    }
 
     /** Name used for commit author/committer (Settings → Commit identity). */
     fun getCommitAuthorName(): String =
@@ -374,12 +398,21 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
             applyTransportConfig(cmd, url)
             cmd.call().close()
             rememberExternalRepoPath(destination)
-            AppLog.i(TAG, "clone succeeded: ${destination.absolutePath}")
+            val lfsMsg = maybeFetchLfs(destination.absolutePath, url, onProgress)
+            AppLog.i(TAG, "clone succeeded: ${destination.absolutePath}" + (lfsMsg?.let { " ($it)" } ?: ""))
             GitOpResult.Success
         } catch (e: org.eclipse.jgit.api.errors.TransportException) {
             cleanUpFailedCloneDestination(destination, alreadyExisted)
             AppLog.e(TAG, "clone failed (transport): $label", e)
             if (isAuthFailure(e)) GitOpResult.AuthRequired(url) else GitOpResult.Error(e.message ?: "Transport error", e)
+        } catch (e: OutOfMemoryError) {
+            cleanUpFailedCloneDestination(destination, alreadyExisted)
+            System.gc()
+            AppLog.e(TAG, "clone OOM: $label", e)
+            GitOpResult.Error(
+                "Not enough memory to clone this repository. Try a smaller repo, free RAM, or clone on a desktop and copy the folder in.",
+                e
+            )
         } catch (e: Exception) {
             cleanUpFailedCloneDestination(destination, alreadyExisted)
             AppLog.e(TAG, "clone failed: $label", e)
@@ -423,7 +456,7 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         }
     }
 
-    fun stage(path: String, files: List<String>) {
+    fun stage(path: String, files: List<String>): GitOpResult = withRepoLock(path) {
         AppLog.i(TAG, "stage: $files")
         openGit(path).use { git ->
             // JGit's AddCommand mirrors old git semantics: it happily stages new/modified
@@ -444,18 +477,20 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                 cmd.call()
             }
         }
+        GitOpResult.Success
     }
 
-    fun unstage(path: String, files: List<String>) {
+    fun unstage(path: String, files: List<String>): GitOpResult = withRepoLock(path) {
         AppLog.i(TAG, "unstage: $files")
         openGit(path).use { git ->
             val cmd = git.reset()
             files.forEach { cmd.addPath(it) }
             cmd.call()
         }
+        GitOpResult.Success
     }
 
-    fun stageAll(path: String) {
+    fun stageAll(path: String): GitOpResult = withRepoLock(path) {
         AppLog.i(TAG, "stageAll: $path")
         openGit(path).use { git ->
             git.add().addFilepattern(".").call()
@@ -467,6 +502,7 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                 cmd.call()
             }
         }
+        GitOpResult.Success
     }
 
     /**
@@ -534,22 +570,23 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         return discardChanges(path, paths)
     }
 
-    fun unstageAll(path: String) {
+    fun unstageAll(path: String): GitOpResult = withRepoLock(path) {
         openGit(path).use { git ->
             val status = git.status().call()
             val staged = (status.added + status.changed + status.removed).distinct()
             AppLog.i(TAG, "unstageAll: ${staged.size} path(s)")
-            if (staged.isEmpty()) return
+            if (staged.isEmpty()) return@withRepoLock GitOpResult.Success
             val cmd = git.reset()
             staged.forEach { cmd.addPath(it) }
             cmd.call()
         }
+        GitOpResult.Success
     }
 
     // ---------------- Commit ----------------
 
-    fun commit(path: String, message: String, authorName: String, authorEmail: String): GitOpResult {
-        return try {
+    fun commit(path: String, message: String, authorName: String, authorEmail: String): GitOpResult =
+        withRepoLock(path) {
             val shouldSign = isGpgSigningEnabled() && credentialStore.hasGpgKey()
             val gpgKey = if (shouldSign) credentialStore.getGpgPrivateKey() else null
             val gpgPass = if (shouldSign) credentialStore.getGpgPassphrase() else null
@@ -575,14 +612,7 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
             }
             AppLog.i(TAG, "commit succeeded: ${message.take(50)}" + if (shouldSign) " (signed)" else "")
             GitOpResult.Success
-        } catch (e: GitAPIException) {
-            AppLog.e(TAG, "commit failed", e)
-            GitOpResult.Error(e.message ?: "Commit failed", e)
-        } catch (e: Exception) {
-            AppLog.e(TAG, "commit failed", e)
-            GitOpResult.Error(e.message ?: "Commit failed", e)
         }
-    }
 
     // ---------------- Push / Pull / Fetch ----------------
 
@@ -591,6 +621,7 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         return try {
             openGit(path).use { git ->
                 val remoteUrl = git.repository.config.getString("remote", "origin", "url") ?: ""
+                maybeUploadLfs(path, remoteUrl)?.let { AppLog.i(TAG, it) }
                 val cmd = git.push()
                 applyTransportConfig(cmd, remoteUrl)
                 val results = cmd.call()
@@ -644,9 +675,11 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                         }
                         result.mergeResult?.mergeStatus == MergeResult.MergeStatus.ALREADY_UP_TO_DATE -> {
                             AppLog.i(TAG, "pull: already up to date")
+                            maybeFetchLfs(path, remoteUrl) {}
                             GitOpResult.UpToDate()
                         }
                         result.isSuccessful -> {
+                            maybeFetchLfs(path, remoteUrl) {}?.let { AppLog.i(TAG, it) }
                             AppLog.i(TAG, "pull succeeded")
                             GitOpResult.Success
                         }
@@ -735,19 +768,38 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     private fun withRepoLock(path: String, op: () -> GitOpResult): GitOpResult {
         val operationLock = repoOperationLocks.getOrPut(path) { Any() }
         return synchronized(operationLock) {
-            val indexLock = File(path, ".git/index.lock")
-            if (indexLock.exists() && !indexLock.delete()) {
-                AppLog.w(TAG, "operation blocked: index.lock present and couldn't be removed")
-                return@synchronized GitOpResult.Error(
-                    "Git index is locked. Close other Git operations and delete .git/index.lock, then retry."
-                )
-            }
+            clearStaleIndexLock(path)
             try {
                 op()
             } catch (e: Exception) {
+                // Second chance: a leftover lock from a prior crash often causes LockFailedException.
+                val msg = e.message.orEmpty()
+                if ("index.lock" in msg || e.javaClass.simpleName.contains("LockFailed", ignoreCase = true)) {
+                    AppLog.w(TAG, "retrying after index.lock failure: $path")
+                    clearStaleIndexLock(path)
+                    try {
+                        return@synchronized op()
+                    } catch (e2: Exception) {
+                        AppLog.e(TAG, "git operation failed after lock retry: $path", e2)
+                        return@synchronized GitOpResult.Error(
+                            e2.message ?: e2.javaClass.simpleName, e2
+                        )
+                    }
+                }
                 AppLog.e(TAG, "git operation failed: $path", e)
                 GitOpResult.Error(e.message ?: e.javaClass.simpleName, e)
             }
+        }
+    }
+
+    /** Removes a leftover `.git/index.lock` from a crashed/interrupted write, if present. */
+    private fun clearStaleIndexLock(path: String) {
+        val indexLock = File(path, ".git/index.lock")
+        if (!indexLock.exists()) return
+        val ageMs = System.currentTimeMillis() - indexLock.lastModified()
+        AppLog.w(TAG, "removing stale index.lock (age=${ageMs}ms) at ${indexLock.absolutePath}")
+        if (!indexLock.delete()) {
+            AppLog.w(TAG, "could not delete index.lock — operation may still fail")
         }
     }
 
@@ -1098,6 +1150,77 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     }
 
     // ---------------- Transport / auth helpers ----------------
+
+
+    /**
+     * Download Git LFS objects for pointer files in the working tree and replace pointers
+     * with real content. Uses the HTTPS token for the remote host.
+     */
+    fun fetchLfs(path: String, onProgress: (String) -> Unit = {}): GitOpResult {
+        return try {
+            val remoteUrl = openGit(path).use {
+                it.repository.config.getString("remote", "origin", "url")
+            } ?: return GitOpResult.Error("No origin remote configured")
+            val host = CredentialStore.hostOf(remoteUrl)
+            val user = credentialStore.getHttpsUsername(host)
+            val token = credentialStore.getHttpsToken(host)
+            if (token.isNullOrBlank() && (remoteUrl.startsWith("https://") || remoteUrl.startsWith("http://"))) {
+                return GitOpResult.AuthRequired(remoteUrl)
+            }
+            onProgress("Scanning for LFS pointers…")
+            val result = LfsSupport.fetchAndSmudge(
+                repoRoot = File(path),
+                remoteUrl = remoteUrl,
+                username = user,
+                token = token,
+                onProgress = onProgress
+            )
+            AppLog.i(TAG, "fetchLfs: ${result.message}")
+            if (result.failed > 0 && result.downloaded == 0 && result.alreadyPresent == 0) {
+                GitOpResult.Error(result.message)
+            } else {
+                GitOpResult.Success
+            }
+        } catch (e: Exception) {
+            AppLog.e(TAG, "fetchLfs failed", e)
+            GitOpResult.Error(e.message ?: "LFS fetch failed", e)
+        }
+    }
+
+    private fun maybeFetchLfs(path: String, remoteUrl: String, onProgress: (String) -> Unit = {}): String? {
+        return try {
+            val host = CredentialStore.hostOf(remoteUrl)
+            val result = LfsSupport.fetchAndSmudge(
+                repoRoot = File(path),
+                remoteUrl = remoteUrl,
+                username = credentialStore.getHttpsUsername(host),
+                token = credentialStore.getHttpsToken(host),
+                onProgress = onProgress
+            )
+            if (result.downloaded == 0 && result.alreadyPresent == 0 && result.failed == 0) null
+            else result.message
+        } catch (e: Exception) {
+            AppLog.w(TAG, "LFS post-op skipped: ${e.message}")
+            null
+        }
+    }
+
+    private fun maybeUploadLfs(path: String, remoteUrl: String): String? {
+        return try {
+            val host = CredentialStore.hostOf(remoteUrl)
+            val result = LfsSupport.uploadLocalObjects(
+                repoRoot = File(path),
+                remoteUrl = remoteUrl,
+                username = credentialStore.getHttpsUsername(host),
+                token = credentialStore.getHttpsToken(host)
+            )
+            if (result.downloaded == 0 && result.alreadyPresent == 0 && result.failed == 0) null
+            else result.message
+        } catch (e: Exception) {
+            AppLog.w(TAG, "LFS upload skipped: ${e.message}")
+            null
+        }
+    }
 
     private fun applyTransportConfig(cmd: org.eclipse.jgit.api.TransportCommand<*, *>, url: String) {
         if (url.startsWith("https://")) {

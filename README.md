@@ -8,6 +8,8 @@ to any third-party server other than the git remote you configure.
 
 ## What's implemented
 
+- **Issues** — list, create, comment, close/reopen GitHub issues for github.com remotes
+
 - **Repo list** — shows locally cloned repos, current branch, and a dirty-state dot
 - **GitHub account** — connect with a personal access token; browse and search your repositories and clone with one tap
 - **Clone** — clone over HTTPS (with PAT) or SSH (with an imported private key), with live progress; or pick from your connected GitHub account
@@ -21,7 +23,9 @@ to any third-party server other than the git remote you configure.
 - **Merge conflicts** — lists conflicting files after a failed pull; per-file "keep ours /
   keep theirs / hand-edit" resolution, then commit the merge or abort it
 - **Credentials** — encrypted-at-rest (Android Keystore via `EncryptedSharedPreferences`)
-  storage for per-host HTTPS personal access tokens and a single SSH private key + passphrase
+  storage for per-host HTTPS personal access tokens, a single SSH private key + passphrase,
+  and an optional OpenPGP secret key for commit signing
+- **GPG signing** — sign commits with an imported armored secret key (Bouncy Castle / JGit); toggle in Settings
 
 ## Architecture
 

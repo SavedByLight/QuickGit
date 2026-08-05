@@ -59,24 +59,32 @@ class RepoDetailViewModel(private val repoManager: RepoManager) : ViewModel() {
     }
 
     fun toggleStage(filePath: String, currentlyStaged: Boolean) {
-        viewModelScope.launch(Dispatchers.IO) {
-            if (currentlyStaged) repoManager.unstage(repoPath, listOf(filePath))
-            else repoManager.stage(repoPath, listOf(filePath))
-            withContext(Dispatchers.Main) { loadStatus(showRefreshing = false) }
+        viewModelScope.launch {
+            _state.value = _state.value.copy(busy = true)
+            val result = withContext(Dispatchers.IO) {
+                if (currentlyStaged) repoManager.unstage(repoPath, listOf(filePath))
+                else repoManager.stage(repoPath, listOf(filePath))
+            }
+            _state.value = _state.value.copy(busy = false, lastResult = result)
+            if (result is GitOpResult.Success) loadStatus(showRefreshing = false)
         }
     }
 
     fun stageAll() {
-        viewModelScope.launch(Dispatchers.IO) {
-            repoManager.stageAll(repoPath)
-            withContext(Dispatchers.Main) { loadStatus(showRefreshing = false) }
+        viewModelScope.launch {
+            _state.value = _state.value.copy(busy = true)
+            val result = withContext(Dispatchers.IO) { repoManager.stageAll(repoPath) }
+            _state.value = _state.value.copy(busy = false, lastResult = result)
+            if (result is GitOpResult.Success) loadStatus(showRefreshing = false)
         }
     }
 
     fun unstageAll() {
-        viewModelScope.launch(Dispatchers.IO) {
-            repoManager.unstageAll(repoPath)
-            withContext(Dispatchers.Main) { loadStatus(showRefreshing = false) }
+        viewModelScope.launch {
+            _state.value = _state.value.copy(busy = true)
+            val result = withContext(Dispatchers.IO) { repoManager.unstageAll(repoPath) }
+            _state.value = _state.value.copy(busy = false, lastResult = result)
+            if (result is GitOpResult.Success) loadStatus(showRefreshing = false)
         }
     }
 
@@ -130,6 +138,15 @@ class RepoDetailViewModel(private val repoManager: RepoManager) : ViewModel() {
             val result = withContext(Dispatchers.IO) { repoManager.pull(repoPath) }
             _state.value = _state.value.copy(busy = false, lastResult = result)
             loadStatus(showRefreshing = false)
+        }
+    }
+
+    fun fetchLfs() {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(busy = true)
+            val result = withContext(Dispatchers.IO) { repoManager.fetchLfs(repoPath) }
+            _state.value = _state.value.copy(busy = false, lastResult = result)
+            if (result is GitOpResult.Success) loadStatus(showRefreshing = false)
         }
     }
 

@@ -79,6 +79,11 @@ fun RepoDetailScreen(
                     Icon(Icons.Default.ArrowUpward, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Push")
                 }
             }
+            Row(Modifier.fillMaxWidth().padding(16.dp, 0.dp, 16.dp, 8.dp)) {
+                OutlinedButton(onClick = { vm.fetchLfs() }, enabled = !state.busy, modifier = Modifier.fillMaxWidth()) {
+                    Text("Fetch LFS files")
+                }
+            }
 
             if (status != null && status.conflicting.isNotEmpty()) {
                 Surface(color = GitAmber.copy(alpha = 0.15f), modifier = Modifier.fillMaxWidth().padding(16.dp, 4.dp)) {
