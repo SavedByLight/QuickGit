@@ -291,6 +291,75 @@ fun SettingsScreen(
                 OutlinedButton(onClick = { vm.clearSshKey() }) { Text("Clear") }
             }
 
+            Spacer(Modifier.height(28.dp))
+            HorizontalDivider()
+            Spacer(Modifier.height(28.dp))
+
+            Text("GPG commit signing", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "Import an armored OpenPGP secret key to sign commits. Add the matching public key " +
+                    "to your GitHub account (Settings → SSH and GPG keys) so GitHub shows "Verified".",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (state.hasStoredGpgKey) {
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.CheckCircle, null, tint = GitGreen, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        "A GPG secret key is stored",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = GitGreen
+                    )
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+            OutlinedTextField(
+                value = state.gpgKey,
+                onValueChange = vm::setGpgKey,
+                label = {
+                    Text(
+                        if (state.hasStoredGpgKey) "Replace secret key (ASCII-armored) — optional"
+                        else "Secret key (ASCII-armored)"
+                    )
+                },
+                placeholder = { Text("-----BEGIN PGP PRIVATE KEY BLOCK-----") },
+                modifier = Modifier.fillMaxWidth().height(160.dp)
+            )
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = state.gpgPassphrase,
+                onValueChange = vm::setGpgPassphrase,
+                label = { Text("Passphrase (if the key is encrypted)") },
+                visualTransformation = PasswordVisualTransformation(),
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
+            Spacer(Modifier.height(12.dp))
+            Row {
+                Button(
+                    onClick = { vm.saveGpgKey() },
+                    enabled = state.gpgKey.isNotBlank() || state.hasStoredGpgKey
+                ) { Text("Save") }
+                Spacer(Modifier.width(8.dp))
+                OutlinedButton(onClick = { vm.clearGpgKey() }) { Text("Clear") }
+            }
+            Spacer(Modifier.height(12.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Sign commits with GPG",
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.weight(1f)
+                )
+                Switch(
+                    checked = state.gpgSignEnabled,
+                    onCheckedChange = vm::setGpgSignEnabled,
+                    enabled = state.hasStoredGpgKey
+                )
+            }
+
             state.statusMessage?.let { msg ->
                 Spacer(Modifier.height(16.dp))
                 Text(

@@ -39,6 +39,7 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     private val PREF_EXTRA_REPO_PATHS = "extra_repo_paths"
     private val PREF_AUTHOR_NAME = "commit_author_name"
     private val PREF_AUTHOR_EMAIL = "commit_author_email"
+    private val PREF_GPG_SIGN = "gpg_sign_commits"
 
     private val repoOperationLocks = ConcurrentHashMap<String, Any>()
 
@@ -57,6 +58,12 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
             .putString(PREF_AUTHOR_NAME, name.trim())
             .putString(PREF_AUTHOR_EMAIL, email.trim())
             .commit()
+    }
+
+    fun isGpgSigningEnabled(): Boolean = prefs.getBoolean(PREF_GPG_SIGN, false)
+
+    fun setGpgSigningEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(PREF_GPG_SIGN, enabled).commit()
     }
 
     /**
@@ -543,16 +550,35 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
 
     fun commit(path: String, message: String, authorName: String, authorEmail: String): GitOpResult {
         return try {
+            val shouldSign = isGpgSigningEnabled() && credentialStore.hasGpgKey()
+            val gpgKey = if (shouldSign) credentialStore.getGpgPrivateKey() else null
+            val gpgPass = if (shouldSign) credentialStore.getGpgPassphrase() else null
             openGit(path).use { git ->
-                git.commit()
-                    .setMessage(message)
-                    .setAuthor(PersonIdent(authorName, authorEmail))
-                    .setCommitter(PersonIdent(authorName, authorEmail))
-                    .call()
+                val doCommit = {
+                    val cmd = git.commit()
+                        .setMessage(message)
+                        .setAuthor(PersonIdent(authorName, authorEmail))
+                        .setCommitter(PersonIdent(authorName, authorEmail))
+                    if (shouldSign && gpgKey != null) {
+                        cmd.setSign(true)
+                        AppLog.i(TAG, "commit: OpenPGP signing enabled")
+                    } else {
+                        cmd.setSign(false)
+                    }
+                    cmd.call()
+                }
+                if (shouldSign && gpgKey != null) {
+                    GpgSupport.withStoredKeySigner(gpgKey, gpgPass) { doCommit() }
+                } else {
+                    doCommit()
+                }
             }
-            AppLog.i(TAG, "commit succeeded: \"${message.take(50)}\"")
+            AppLog.i(TAG, "commit succeeded: "${message.take(50)}"" + if (shouldSign) " (signed)" else "")
             GitOpResult.Success
         } catch (e: GitAPIException) {
+            AppLog.e(TAG, "commit failed", e)
+            GitOpResult.Error(e.message ?: "Commit failed", e)
+        } catch (e: Exception) {
             AppLog.e(TAG, "commit failed", e)
             GitOpResult.Error(e.message ?: "Commit failed", e)
         }

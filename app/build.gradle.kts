@@ -67,7 +67,8 @@ android {
                 "META-INF/NOTICE",
                 "META-INF/NOTICE.txt",
                 // Both org.eclipse.jgit and org.eclipse.jgit.ssh.apache ship this
-                "OSGI-INF/l10n/plugin.properties"
+                "OSGI-INF/l10n/plugin.properties",
+                "META-INF/versions/9/OSGI-INF/MANIFEST.MF"
             )
         }
     }
@@ -94,6 +95,8 @@ dependencies {
     // JGit core + pure-Java (Apache MINA) SSH transport — works on Android, no native libs
     implementation("org.eclipse.jgit:org.eclipse.jgit:6.10.0.202406032230-r")
     implementation("org.eclipse.jgit:org.eclipse.jgit.ssh.apache:6.10.0.202406032230-r")
+    // OpenPGP commit signing (Bouncy Castle backend)
+    implementation("org.eclipse.jgit:org.eclipse.jgit.gpg.bc:6.10.0.202406032230-r")
 
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
