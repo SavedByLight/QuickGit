@@ -63,18 +63,18 @@ class GitHubApi(private val token: String?) {
 
     /**
      * Lists repositories the authenticated user can access.
+     * GitHub forbids combining `type` with `affiliation`/`visibility` (HTTP 422), so we only
+     * use affiliation here.
      * @param affiliation comma-separated: owner, collaborator, organization_member (default all three)
-     * @param type all|owner|public|private|member
      * @param sort created|updated|pushed|full_name
      */
     fun listUserRepos(
         affiliation: String = "owner,collaborator,organization_member",
-        type: String = "all",
         sort: String = "updated",
         perPage: Int = 50,
         page: Int = 1
     ): Result<List<GitHubRemoteRepo>> = runCatching {
-        val path = "/user/repos?affiliation=$affiliation&type=$type&sort=$sort&direction=desc&per_page=$perPage&page=$page"
+        val path = "/user/repos?affiliation=$affiliation&sort=$sort&direction=desc&per_page=$perPage&page=$page"
         val arr = request("GET", path) as JSONArray
         (0 until arr.length()).map { i -> arr.getJSONObject(i).toRemoteRepo() }
     }
