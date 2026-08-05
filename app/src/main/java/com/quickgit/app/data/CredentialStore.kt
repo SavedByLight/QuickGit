@@ -75,6 +75,32 @@ class CredentialStore(context: Context) {
         prefs.edit().remove("ssh_private_key").remove("ssh_passphrase").commit()
     }
 
+    // ---- GPG / OpenPGP signing key (armored secret key + optional passphrase) ----
+
+    fun saveGpgKey(armoredPrivateKey: String, passphrase: String?) {
+        val ok = prefs.edit()
+            .putString("gpg_private_key", armoredPrivateKey)
+            .putString("gpg_passphrase", passphrase ?: "")
+            .commit()
+        if (!ok) throw IllegalStateException("Failed to persist GPG key")
+    }
+
+    fun saveGpgPassphrase(passphrase: String?) {
+        if (!hasGpgKey()) throw IllegalStateException("No GPG key stored — paste an armored secret key first")
+        val ok = prefs.edit()
+            .putString("gpg_passphrase", passphrase ?: "")
+            .commit()
+        if (!ok) throw IllegalStateException("Failed to persist GPG passphrase")
+    }
+
+    fun getGpgPrivateKey(): String? = prefs.getString("gpg_private_key", null)
+    fun getGpgPassphrase(): String? = prefs.getString("gpg_passphrase", null)?.takeIf { it.isNotEmpty() }
+    fun hasGpgKey(): Boolean = getGpgPrivateKey() != null
+
+    fun clearGpgKey() {
+        prefs.edit().remove("gpg_private_key").remove("gpg_passphrase").commit()
+    }
+
     fun preferredAuthType(remoteUrl: String): AuthType {
         return when {
             remoteUrl.startsWith("git@") || remoteUrl.startsWith("ssh://") ->

@@ -7,6 +7,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Terminal
@@ -14,8 +15,11 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.quickgit.app.data.models.RepoInfo
 import com.quickgit.app.ui.components.PullToRefreshBox
 import com.quickgit.app.viewmodel.RepoListViewModel
@@ -26,6 +30,7 @@ fun RepoListScreen(
     vm: RepoListViewModel,
     onOpenRepo: (RepoInfo) -> Unit,
     onClone: () -> Unit,
+    onBrowseGitHub: () -> Unit = {},
     onSettings: () -> Unit,
     onLogs: () -> Unit
 ) {
@@ -33,11 +38,25 @@ fun RepoListScreen(
     val loading by vm.loading.collectAsState()
     var repoToDelete by remember { mutableStateOf<RepoInfo?>(null) }
 
+    // Re-scan after clone/settings: ViewModel stays alive on the back stack, so init{}
+    // only runs once. Refresh whenever this screen is shown again.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) vm.refresh()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text("QuickGit") },
                 actions = {
+                    IconButton(onClick = onBrowseGitHub) {
+                        Icon(Icons.Default.CloudDownload, "GitHub repos")
+                    }
                     IconButton(onClick = onSettings) { Icon(Icons.Default.Settings, "Settings") }
                 }
             )
@@ -62,10 +81,14 @@ fun RepoListScreen(
                         Text("No repositories yet", style = MaterialTheme.typography.titleMedium)
                         Spacer(Modifier.height(8.dp))
                         Text(
-                            "Tap Clone to pull down a repo from GitHub, GitLab, or any git remote.",
+                            "Tap Clone for a URL, or the download icon to browse your GitHub account.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                        Spacer(Modifier.height(16.dp))
+                        OutlinedButton(onClick = onBrowseGitHub) {
+                            Text("Browse GitHub repos")
+                        }
                     }
                 } else {
                     LazyColumn(Modifier.fillMaxSize()) {

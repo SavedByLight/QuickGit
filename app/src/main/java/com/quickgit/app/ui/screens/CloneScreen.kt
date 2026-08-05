@@ -19,7 +19,8 @@ fun CloneScreen(
     vm: CloneViewModel,
     onBack: () -> Unit,
     onCloned: () -> Unit,
-    onNeedsAuth: (String) -> Unit
+    onNeedsAuth: (String) -> Unit,
+    onBrowseGitHub: () -> Unit = {}
 ) {
     var url by remember { mutableStateOf("") }
     val state by vm.state.collectAsState()
@@ -27,6 +28,11 @@ fun CloneScreen(
     val destinationPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocumentTree()
     ) { uri -> uri?.let { vm.onDestinationPicked(it) } }
+
+    // Keep the default destination path in sync with the URL (unless user picked a folder).
+    LaunchedEffect(url) {
+        vm.previewDefaultDestination(url)
+    }
 
     LaunchedEffect(state.result) {
         when (val r = state.result) {
@@ -51,11 +57,21 @@ fun CloneScreen(
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true
             )
+            Spacer(Modifier.height(12.dp))
+            OutlinedButton(
+                onClick = onBrowseGitHub,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Browse my GitHub repositories")
+            }
             Spacer(Modifier.height(20.dp))
             Text("Clone into", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(4.dp))
             Text(
-                "Browse to an empty folder, or use \"New folder\" in the picker to create one.",
+                if (state.usingDefaultDestination)
+                    "Defaults to a folder under your QuickGit storage location. Optionally pick a different empty folder."
+                else
+                    "Using the folder you picked. Clear it to fall back to the default location.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -69,8 +85,16 @@ fun CloneScreen(
                 )
                 Spacer(Modifier.height(8.dp))
             }
-            OutlinedButton(onClick = { destinationPicker.launch(null) }) {
-                Text(if (state.destinationPath == null) "Choose folder…" else "Choose a different folder…")
+            Row {
+                OutlinedButton(onClick = { destinationPicker.launch(null) }) {
+                    Text(if (state.usingDefaultDestination) "Choose folder…" else "Choose a different folder…")
+                }
+                if (!state.usingDefaultDestination) {
+                    Spacer(Modifier.width(8.dp))
+                    TextButton(onClick = { vm.clearPickedDestination(url) }) {
+                        Text("Use default")
+                    }
+                }
             }
             state.destinationError?.let {
                 Spacer(Modifier.height(8.dp))
@@ -79,7 +103,7 @@ fun CloneScreen(
             Spacer(Modifier.height(20.dp))
             Button(
                 onClick = { vm.clone(url.trim()) },
-                enabled = url.isNotBlank() && state.destinationPath != null && !state.inProgress,
+                enabled = url.isNotBlank() && !state.inProgress,
                 modifier = Modifier.fillMaxWidth()
             ) { Text("Clone") }
 
@@ -98,4 +122,3 @@ fun CloneScreen(
         }
     }
 }
-

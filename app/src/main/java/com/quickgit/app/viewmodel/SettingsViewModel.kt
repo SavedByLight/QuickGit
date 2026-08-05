@@ -2,20 +2,36 @@ package com.quickgit.app.viewmodel
 
 import android.net.Uri
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
 import com.quickgit.app.data.CredentialStore
+import com.quickgit.app.data.GitHubAccountManager
 import com.quickgit.app.data.RepoManager
+import com.quickgit.app.data.models.PrOpResult
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 data class SettingsUiState(
     val host: String = "github.com",
     val username: String = "",
     val token: String = "",
     val hasStoredToken: Boolean = false,
+    /** GitHub login verified via API when host is github.com. */
+    val githubLogin: String? = null,
+    val githubName: String? = null,
+    val connecting: Boolean = false,
+    val authorName: String = "",
+    val authorEmail: String = "",
     val sshKey: String = "",
     val sshPassphrase: String = "",
     val hasStoredSshKey: Boolean = false,
+    val gpgKey: String = "",
+    val gpgPassphrase: String = "",
+    val hasStoredGpgKey: Boolean = false,
+    val gpgSignEnabled: Boolean = false,
     val reposRootPath: String = "",
     val reposRootIsUserChosen: Boolean = false,
     val statusMessage: String? = null,
@@ -24,7 +40,8 @@ data class SettingsUiState(
 
 class SettingsViewModel(
     private val credentialStore: CredentialStore,
-    private val repoManager: RepoManager
+    private val repoManager: RepoManager,
+    private val gitHubAccountManager: GitHubAccountManager
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(SettingsUiState())
@@ -33,7 +50,73 @@ class SettingsViewModel(
     init {
         loadForHost("github.com")
         refreshSsh()
+        refreshGpg()
         refreshReposRoot()
+        refreshAuthor()
+        verifyGitHubIfConnected()
+    }
+
+    private fun refreshAuthor() {
+        _state.value = _state.value.copy(
+            authorName = repoManager.getCommitAuthorName(),
+            authorEmail = repoManager.getCommitAuthorEmail()
+        )
+    }
+
+    fun setAuthorName(v: String) { _state.value = _state.value.copy(authorName = v) }
+    fun setAuthorEmail(v: String) { _state.value = _state.value.copy(authorEmail = v) }
+
+    fun saveAuthor() {
+        val name = _state.value.authorName.trim()
+        val email = _state.value.authorEmail.trim()
+        if (name.isBlank() || email.isBlank()) {
+            _state.value = _state.value.copy(
+                statusMessage = "Name and email are required for commits",
+                isError = true
+            )
+            return
+        }
+        if (!email.contains("@")) {
+            _state.value = _state.value.copy(
+                statusMessage = "Email looks invalid",
+                isError = true
+            )
+            return
+        }
+        repoManager.setCommitAuthor(name, email)
+        refreshAuthor()
+        _state.value = _state.value.copy(
+            statusMessage = "Commit identity saved — new commits will use $name <$email>",
+            isError = false
+        )
+    }
+
+    private fun verifyGitHubIfConnected() {
+        if (!gitHubAccountManager.isConnected()) return
+        viewModelScope.launch {
+            val (account, result) = withContext(Dispatchers.IO) { gitHubAccountManager.refreshAccount() }
+            if (account != null) {
+                repoManager.seedCommitAuthorFromGitHub(
+                    login = account.login,
+                    displayName = account.name,
+                    emailFromApi = account.email,
+                    force = false
+                )
+                refreshAuthor()
+                _state.value = _state.value.copy(
+                    githubLogin = account.login,
+                    githubName = account.name,
+                    username = account.login,
+                    hasStoredToken = true
+                )
+            } else if (result is PrOpResult.AuthRequired) {
+                _state.value = _state.value.copy(
+                    githubLogin = null,
+                    githubName = null,
+                    hasStoredToken = false
+                )
+            }
+        }
     }
 
     private fun refreshReposRoot() {
@@ -98,7 +181,6 @@ class SettingsViewModel(
             _state.value = s.copy(statusMessage = "Host is required", isError = true)
             return
         }
-        // If field is empty but we already have a stored token, keep it unless they're clearing
         val token = s.token.trim()
         if (token.isBlank()) {
             _state.value = s.copy(
@@ -106,6 +188,60 @@ class SettingsViewModel(
                 else "Token is required",
                 isError = true
             )
+            return
+        }
+        // For github.com, verify the token against the API and store the real login
+        if (host.equals("github.com", ignoreCase = true)) {
+            _state.value = s.copy(connecting = true, statusMessage = null)
+            viewModelScope.launch {
+                val (account, result) = withContext(Dispatchers.IO) {
+                    gitHubAccountManager.connect(token, s.username.ifBlank { null })
+                }
+                when {
+                    account != null -> {
+                        repoManager.seedCommitAuthorFromGitHub(
+                            login = account.login,
+                            displayName = account.name,
+                            emailFromApi = account.email,
+                            force = false
+                        )
+                        refreshAuthor()
+                        _state.value = _state.value.copy(
+                            connecting = false,
+                            token = "",
+                            hasStoredToken = true,
+                            username = account.login,
+                            githubLogin = account.login,
+                            githubName = account.name,
+                            statusMessage = "Connected as @${account.login}",
+                            isError = false
+                        )
+                    }
+                    result is PrOpResult.AuthRequired -> {
+                        _state.value = _state.value.copy(
+                            connecting = false,
+                            hasStoredToken = false,
+                            githubLogin = null,
+                            statusMessage = "Invalid token — check scopes include repo access",
+                            isError = true
+                        )
+                    }
+                    result is PrOpResult.Error -> {
+                        _state.value = _state.value.copy(
+                            connecting = false,
+                            statusMessage = result.message,
+                            isError = true
+                        )
+                    }
+                    else -> {
+                        _state.value = _state.value.copy(
+                            connecting = false,
+                            statusMessage = "Could not verify token",
+                            isError = true
+                        )
+                    }
+                }
+            }
             return
         }
         try {
@@ -128,12 +264,18 @@ class SettingsViewModel(
     fun clearHttpsToken() {
         val host = _state.value.host.trim()
         try {
-            credentialStore.clearHttpsToken(host)
+            if (host.equals("github.com", ignoreCase = true)) {
+                gitHubAccountManager.disconnect()
+            } else {
+                credentialStore.clearHttpsToken(host)
+            }
             _state.value = _state.value.copy(
                 username = "",
                 token = "",
                 hasStoredToken = false,
-                statusMessage = "Cleared token for $host",
+                githubLogin = null,
+                githubName = null,
+                statusMessage = "Disconnected from $host",
                 isError = false
             )
         } catch (e: Exception) {
@@ -196,6 +338,93 @@ class SettingsViewModel(
 
     private fun refreshSsh() {
         _state.value = _state.value.copy(hasStoredSshKey = credentialStore.hasSshKey())
+    }
+
+    private fun refreshGpg() {
+        _state.value = _state.value.copy(
+            hasStoredGpgKey = credentialStore.hasGpgKey(),
+            gpgSignEnabled = repoManager.isGpgSigningEnabled()
+        )
+    }
+
+    fun setGpgKey(v: String) { _state.value = _state.value.copy(gpgKey = v) }
+    fun setGpgPassphrase(v: String) { _state.value = _state.value.copy(gpgPassphrase = v) }
+
+    fun setGpgSignEnabled(enabled: Boolean) {
+        if (enabled && !credentialStore.hasGpgKey()) {
+            _state.value = _state.value.copy(
+                statusMessage = "Import a GPG secret key before enabling signing",
+                isError = true
+            )
+            return
+        }
+        repoManager.setGpgSigningEnabled(enabled)
+        _state.value = _state.value.copy(
+            gpgSignEnabled = enabled,
+            statusMessage = if (enabled) "Commit signing enabled" else "Commit signing disabled",
+            isError = false
+        )
+    }
+
+    fun saveGpgKey() {
+        val s = _state.value
+        val key = s.gpgKey.trim()
+        val pass = s.gpgPassphrase.trim().ifBlank { null }
+        try {
+            if (key.isNotBlank()) {
+                // Validate before persisting
+                val keyId = com.quickgit.app.data.GpgSupport.validateArmoredSecretKey(key, pass)
+                credentialStore.saveGpgKey(key, pass)
+                _state.value = s.copy(
+                    gpgKey = "",
+                    gpgPassphrase = "",
+                    hasStoredGpgKey = true,
+                    statusMessage = "GPG key saved (id …${keyId.takeLast(8)}). Enable signing below.",
+                    isError = false
+                )
+                refreshGpg()
+            } else if (s.hasStoredGpgKey) {
+                credentialStore.saveGpgPassphrase(pass)
+                // Re-validate existing key with new passphrase
+                val stored = credentialStore.getGpgPrivateKey()!!
+                com.quickgit.app.data.GpgSupport.validateArmoredSecretKey(stored, pass)
+                _state.value = s.copy(
+                    gpgPassphrase = "",
+                    statusMessage = "GPG passphrase updated",
+                    isError = false
+                )
+            } else {
+                _state.value = s.copy(
+                    statusMessage = "Paste an armored GPG secret key first",
+                    isError = true
+                )
+            }
+        } catch (e: Exception) {
+            _state.value = s.copy(
+                statusMessage = "GPG key error: ${e.message ?: e.javaClass.simpleName}",
+                isError = true
+            )
+        }
+    }
+
+    fun clearGpgKey() {
+        try {
+            credentialStore.clearGpgKey()
+            repoManager.setGpgSigningEnabled(false)
+            _state.value = _state.value.copy(
+                gpgKey = "",
+                gpgPassphrase = "",
+                hasStoredGpgKey = false,
+                gpgSignEnabled = false,
+                statusMessage = "GPG key cleared",
+                isError = false
+            )
+        } catch (e: Exception) {
+            _state.value = _state.value.copy(
+                statusMessage = "Clear failed: ${e.message}",
+                isError = true
+            )
+        }
     }
 
     fun consumeStatus() {

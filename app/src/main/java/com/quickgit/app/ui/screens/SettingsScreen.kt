@@ -89,14 +89,70 @@ fun SettingsScreen(
             HorizontalDivider()
             Spacer(Modifier.height(28.dp))
 
-            Text("HTTPS personal access token", style = MaterialTheme.typography.titleMedium)
+            Text("Commit identity", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(4.dp))
             Text(
-                "Used for https:// remotes. Generate a token with repo scope from your host (GitHub, GitLab, etc.).",
+                "Name and email written on every commit (and shown on GitHub after you push). " +
+                    "Connecting a GitHub account fills these in if they are still the defaults.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            if (state.hasStoredToken) {
+            Spacer(Modifier.height(12.dp))
+            OutlinedTextField(
+                value = state.authorName,
+                onValueChange = vm::setAuthorName,
+                label = { Text("Name") },
+                placeholder = { Text("Your name") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = state.authorEmail,
+                onValueChange = vm::setAuthorEmail,
+                label = { Text("Email") },
+                placeholder = { Text("you@users.noreply.github.com") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
+            Spacer(Modifier.height(12.dp))
+            Button(
+                onClick = { vm.saveAuthor() },
+                enabled = state.authorName.isNotBlank() && state.authorEmail.isNotBlank()
+            ) { Text("Save identity") }
+
+            Spacer(Modifier.height(28.dp))
+            HorizontalDivider()
+            Spacer(Modifier.height(28.dp))
+
+            Text(
+                if (state.host.equals("github.com", ignoreCase = true)) "GitHub account"
+                else "HTTPS personal access token",
+                style = MaterialTheme.typography.titleMedium
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                if (state.host.equals("github.com", ignoreCase = true))
+                    "Paste a personal access token (classic or fine-grained) with repo access. " +
+                        "QuickGit verifies it with GitHub and uses it for clone, push, pull, and pull requests."
+                else
+                    "Used for https:// remotes. Generate a token with repo scope from your host (GitHub, GitLab, etc.).",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (state.githubLogin != null) {
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.CheckCircle, null, tint = GitGreen, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        "Connected as @${state.githubLogin}" +
+                            (state.githubName?.let { " ($it)" } ?: ""),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = GitGreen
+                    )
+                }
+            } else if (state.hasStoredToken) {
                 Spacer(Modifier.height(8.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.CheckCircle, null, tint = GitGreen, modifier = Modifier.size(18.dp))
@@ -150,10 +206,34 @@ fun SettingsScreen(
             Row {
                 Button(
                     onClick = { vm.saveHttpsToken() },
-                    enabled = state.host.isNotBlank() && state.token.isNotBlank()
-                ) { Text("Save") }
+                    enabled = state.host.isNotBlank() && state.token.isNotBlank() && !state.connecting
+                ) {
+                    if (state.connecting) {
+                        CircularProgressIndicator(
+                            Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.onPrimary
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text("Connecting…")
+                    } else {
+                        Text(
+                            if (state.host.equals("github.com", ignoreCase = true)) "Connect"
+                            else "Save"
+                        )
+                    }
+                }
                 Spacer(Modifier.width(8.dp))
-                OutlinedButton(onClick = { vm.clearHttpsToken() }) { Text("Clear") }
+                OutlinedButton(
+                    onClick = { vm.clearHttpsToken() },
+                    enabled = !state.connecting
+                ) {
+                    Text(
+                        if (state.host.equals("github.com", ignoreCase = true) && state.hasStoredToken)
+                            "Disconnect"
+                        else "Clear"
+                    )
+                }
             }
 
             Spacer(Modifier.height(28.dp))
@@ -209,6 +289,75 @@ fun SettingsScreen(
                 ) { Text("Save") }
                 Spacer(Modifier.width(8.dp))
                 OutlinedButton(onClick = { vm.clearSshKey() }) { Text("Clear") }
+            }
+
+            Spacer(Modifier.height(28.dp))
+            HorizontalDivider()
+            Spacer(Modifier.height(28.dp))
+
+            Text("GPG commit signing", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "Import an armored OpenPGP secret key to sign commits. Add the matching public key " +
+                    "to your GitHub account (Settings → SSH and GPG keys) so GitHub shows Verified.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (state.hasStoredGpgKey) {
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.CheckCircle, null, tint = GitGreen, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        "A GPG secret key is stored",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = GitGreen
+                    )
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+            OutlinedTextField(
+                value = state.gpgKey,
+                onValueChange = vm::setGpgKey,
+                label = {
+                    Text(
+                        if (state.hasStoredGpgKey) "Replace secret key (ASCII-armored) — optional"
+                        else "Secret key (ASCII-armored)"
+                    )
+                },
+                placeholder = { Text("-----BEGIN PGP PRIVATE KEY BLOCK-----") },
+                modifier = Modifier.fillMaxWidth().height(160.dp)
+            )
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = state.gpgPassphrase,
+                onValueChange = vm::setGpgPassphrase,
+                label = { Text("Passphrase (if the key is encrypted)") },
+                visualTransformation = PasswordVisualTransformation(),
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
+            Spacer(Modifier.height(12.dp))
+            Row {
+                Button(
+                    onClick = { vm.saveGpgKey() },
+                    enabled = state.gpgKey.isNotBlank() || state.hasStoredGpgKey
+                ) { Text("Save") }
+                Spacer(Modifier.width(8.dp))
+                OutlinedButton(onClick = { vm.clearGpgKey() }) { Text("Clear") }
+            }
+            Spacer(Modifier.height(12.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Sign commits with GPG",
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.weight(1f)
+                )
+                Switch(
+                    checked = state.gpgSignEnabled,
+                    onCheckedChange = vm::setGpgSignEnabled,
+                    enabled = state.hasStoredGpgKey
+                )
             }
 
             state.statusMessage?.let { msg ->

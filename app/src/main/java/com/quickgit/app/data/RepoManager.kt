@@ -37,11 +37,57 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     private val PREF_ROOT_PATH = "repos_root_path"
     private val PREF_ROOT_URI = "repos_root_uri"
     private val PREF_EXTRA_REPO_PATHS = "extra_repo_paths"
+    private val PREF_AUTHOR_NAME = "commit_author_name"
+    private val PREF_AUTHOR_EMAIL = "commit_author_email"
+    private val PREF_GPG_SIGN = "gpg_sign_commits"
 
     private val repoOperationLocks = ConcurrentHashMap<String, Any>()
 
     private val prefs: SharedPreferences =
         context.getSharedPreferences("quickgit_prefs", Context.MODE_PRIVATE)
+
+    /** Name used for commit author/committer (Settings → Commit identity). */
+    fun getCommitAuthorName(): String =
+        prefs.getString(PREF_AUTHOR_NAME, null)?.takeIf { it.isNotBlank() } ?: "Mobile User"
+
+    fun getCommitAuthorEmail(): String =
+        prefs.getString(PREF_AUTHOR_EMAIL, null)?.takeIf { it.isNotBlank() } ?: "mobile@example.com"
+
+    fun setCommitAuthor(name: String, email: String) {
+        prefs.edit()
+            .putString(PREF_AUTHOR_NAME, name.trim())
+            .putString(PREF_AUTHOR_EMAIL, email.trim())
+            .commit()
+    }
+
+    fun isGpgSigningEnabled(): Boolean = prefs.getBoolean(PREF_GPG_SIGN, false)
+
+    fun setGpgSigningEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(PREF_GPG_SIGN, enabled).commit()
+    }
+
+    /**
+     * Fills author identity from a connected GitHub profile when the user has not set one yet
+     * (still on the placeholder Mobile User defaults), or when [force] is true.
+     */
+    fun seedCommitAuthorFromGitHub(login: String, displayName: String?, emailFromApi: String?, force: Boolean = false) {
+        val currentName = prefs.getString(PREF_AUTHOR_NAME, null)
+        val currentEmail = prefs.getString(PREF_AUTHOR_EMAIL, null)
+        val stillDefault = currentName.isNullOrBlank() || currentName == "Mobile User"
+        val emailStillDefault = currentEmail.isNullOrBlank() || currentEmail == "mobile@example.com"
+        if (!force && !stillDefault && !emailStillDefault) return
+        val name = when {
+            force || stillDefault -> displayName?.takeIf { it.isNotBlank() } ?: login
+            else -> currentName!!
+        }
+        val email = when {
+            force || emailStillDefault ->
+                emailFromApi?.takeIf { it.isNotBlank() } ?: "$login@users.noreply.github.com"
+            else -> currentEmail!!
+        }
+        setCommitAuthor(name, email)
+        AppLog.i(TAG, "commit author seeded from GitHub: $name <$email>")
+    }
 
     /**
      * Local clones live under Documents/QuickGit so they are visible in the
@@ -212,10 +258,16 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         val root = runCatching { reposRoot.canonicalFile }.getOrElse { reposRoot.absoluteFile }
         val d = runCatching { dir.canonicalFile }.getOrElse { dir.absoluteFile }
         if (d.absolutePath == root.absolutePath || d.absolutePath.startsWith(root.absolutePath + File.separator)) {
+            AppLog.i(TAG, "rememberExternalRepoPath: under reposRoot, no extra tracking needed: ${d.absolutePath}")
             return // already discoverable via the normal reposRoot scan
         }
-        val current = prefs.getStringSet(PREF_EXTRA_REPO_PATHS, emptySet()) ?: emptySet()
-        prefs.edit().putStringSet(PREF_EXTRA_REPO_PATHS, current + d.absolutePath).apply()
+        // Copy the set — SharedPreferences may return its live internal instance.
+        val current = (prefs.getStringSet(PREF_EXTRA_REPO_PATHS, emptySet()) ?: emptySet()).toMutableSet()
+        if (current.add(d.absolutePath)) {
+            // commit() so listLocalRepos sees the path immediately after a successful clone
+            prefs.edit().putStringSet(PREF_EXTRA_REPO_PATHS, current).commit()
+            AppLog.i(TAG, "rememberExternalRepoPath: tracking ${d.absolutePath}")
+        }
     }
 
     private fun resolveReposRoot(): File {
@@ -263,19 +315,26 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
 
     fun listLocalRepos(): List<RepoInfo> {
         val root = reposRoot
+        // Ensure the root directory exists so listFiles doesn't return null after a fresh install.
+        if (!root.exists()) root.mkdirs()
         val rootDirs = root.listFiles { f -> f.isDirectory && File(f, ".git").exists() }?.toList() ?: emptyList()
 
-        val extraPaths = prefs.getStringSet(PREF_EXTRA_REPO_PATHS, emptySet()) ?: emptySet()
+        val extraPaths = (prefs.getStringSet(PREF_EXTRA_REPO_PATHS, emptySet()) ?: emptySet()).toSet()
         val extraDirs = extraPaths.map { File(it) }.filter { it.isDirectory && File(it, ".git").exists() }
         if (extraDirs.size != extraPaths.size) {
             // Self-heal: a picked folder was deleted/moved elsewhere — stop tracking it.
-            prefs.edit().putStringSet(PREF_EXTRA_REPO_PATHS, extraDirs.map { it.absolutePath }.toSet()).apply()
+            prefs.edit().putStringSet(PREF_EXTRA_REPO_PATHS, extraDirs.map { it.absolutePath }.toSet()).commit()
         }
 
         val allDirs = (rootDirs + extraDirs).distinctBy {
             runCatching { it.canonicalPath }.getOrDefault(it.absolutePath)
         }
-        return allDirs.mapNotNull { runCatching { infoFor(it) }.getOrNull() }
+        AppLog.i(TAG, "listLocalRepos: root=${root.absolutePath} found=${allDirs.size} (root=${rootDirs.size}, extra=${extraDirs.size})")
+        return allDirs.mapNotNull { dir ->
+            runCatching { infoFor(dir) }.onFailure { e ->
+                AppLog.w(TAG, "listLocalRepos: skip ${dir.absolutePath}: ${e.message}")
+            }.getOrNull()
+        }
     }
 
     private fun infoFor(dir: File): RepoInfo {
@@ -364,7 +423,7 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         }
     }
 
-    fun stage(path: String, files: List<String>) {
+    fun stage(path: String, files: List<String>): GitOpResult = withRepoLock(path) {
         AppLog.i(TAG, "stage: $files")
         openGit(path).use { git ->
             // JGit's AddCommand mirrors old git semantics: it happily stages new/modified
@@ -385,18 +444,20 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                 cmd.call()
             }
         }
+        GitOpResult.Success
     }
 
-    fun unstage(path: String, files: List<String>) {
+    fun unstage(path: String, files: List<String>): GitOpResult = withRepoLock(path) {
         AppLog.i(TAG, "unstage: $files")
         openGit(path).use { git ->
             val cmd = git.reset()
             files.forEach { cmd.addPath(it) }
             cmd.call()
         }
+        GitOpResult.Success
     }
 
-    fun stageAll(path: String) {
+    fun stageAll(path: String): GitOpResult = withRepoLock(path) {
         AppLog.i(TAG, "stageAll: $path")
         openGit(path).use { git ->
             git.add().addFilepattern(".").call()
@@ -408,6 +469,7 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                 cmd.call()
             }
         }
+        GitOpResult.Success
     }
 
     /**
@@ -475,36 +537,49 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         return discardChanges(path, paths)
     }
 
-    fun unstageAll(path: String) {
+    fun unstageAll(path: String): GitOpResult = withRepoLock(path) {
         openGit(path).use { git ->
             val status = git.status().call()
             val staged = (status.added + status.changed + status.removed).distinct()
             AppLog.i(TAG, "unstageAll: ${staged.size} path(s)")
-            if (staged.isEmpty()) return
+            if (staged.isEmpty()) return@withRepoLock GitOpResult.Success
             val cmd = git.reset()
             staged.forEach { cmd.addPath(it) }
             cmd.call()
         }
+        GitOpResult.Success
     }
 
     // ---------------- Commit ----------------
 
-    fun commit(path: String, message: String, authorName: String, authorEmail: String): GitOpResult {
-        return try {
+    fun commit(path: String, message: String, authorName: String, authorEmail: String): GitOpResult =
+        withRepoLock(path) {
+            val shouldSign = isGpgSigningEnabled() && credentialStore.hasGpgKey()
+            val gpgKey = if (shouldSign) credentialStore.getGpgPrivateKey() else null
+            val gpgPass = if (shouldSign) credentialStore.getGpgPassphrase() else null
             openGit(path).use { git ->
-                git.commit()
-                    .setMessage(message)
-                    .setAuthor(PersonIdent(authorName, authorEmail))
-                    .setCommitter(PersonIdent(authorName, authorEmail))
-                    .call()
+                val doCommit = {
+                    val cmd = git.commit()
+                        .setMessage(message)
+                        .setAuthor(PersonIdent(authorName, authorEmail))
+                        .setCommitter(PersonIdent(authorName, authorEmail))
+                    if (shouldSign && gpgKey != null) {
+                        cmd.setSign(true)
+                        AppLog.i(TAG, "commit: OpenPGP signing enabled")
+                    } else {
+                        cmd.setSign(false)
+                    }
+                    cmd.call()
+                }
+                if (shouldSign && gpgKey != null) {
+                    GpgSupport.withStoredKeySigner(gpgKey, gpgPass) { doCommit() }
+                } else {
+                    doCommit()
+                }
             }
-            AppLog.i(TAG, "commit succeeded: \"${message.take(50)}\"")
+            AppLog.i(TAG, "commit succeeded: ${message.take(50)}" + if (shouldSign) " (signed)" else "")
             GitOpResult.Success
-        } catch (e: GitAPIException) {
-            AppLog.e(TAG, "commit failed", e)
-            GitOpResult.Error(e.message ?: "Commit failed", e)
         }
-    }
 
     // ---------------- Push / Pull / Fetch ----------------
 
@@ -657,19 +732,38 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     private fun withRepoLock(path: String, op: () -> GitOpResult): GitOpResult {
         val operationLock = repoOperationLocks.getOrPut(path) { Any() }
         return synchronized(operationLock) {
-            val indexLock = File(path, ".git/index.lock")
-            if (indexLock.exists() && !indexLock.delete()) {
-                AppLog.w(TAG, "operation blocked: index.lock present and couldn't be removed")
-                return@synchronized GitOpResult.Error(
-                    "Git index is locked. Close other Git operations and delete .git/index.lock, then retry."
-                )
-            }
+            clearStaleIndexLock(path)
             try {
                 op()
             } catch (e: Exception) {
+                // Second chance: a leftover lock from a prior crash often causes LockFailedException.
+                val msg = e.message.orEmpty()
+                if ("index.lock" in msg || e.javaClass.simpleName.contains("LockFailed", ignoreCase = true)) {
+                    AppLog.w(TAG, "retrying after index.lock failure: $path")
+                    clearStaleIndexLock(path)
+                    try {
+                        return@synchronized op()
+                    } catch (e2: Exception) {
+                        AppLog.e(TAG, "git operation failed after lock retry: $path", e2)
+                        return@synchronized GitOpResult.Error(
+                            e2.message ?: e2.javaClass.simpleName, e2
+                        )
+                    }
+                }
                 AppLog.e(TAG, "git operation failed: $path", e)
                 GitOpResult.Error(e.message ?: e.javaClass.simpleName, e)
             }
+        }
+    }
+
+    /** Removes a leftover `.git/index.lock` from a crashed/interrupted write, if present. */
+    private fun clearStaleIndexLock(path: String) {
+        val indexLock = File(path, ".git/index.lock")
+        if (!indexLock.exists()) return
+        val ageMs = System.currentTimeMillis() - indexLock.lastModified()
+        AppLog.w(TAG, "removing stale index.lock (age=${ageMs}ms) at ${indexLock.absolutePath}")
+        if (!indexLock.delete()) {
+            AppLog.w(TAG, "could not delete index.lock — operation may still fail")
         }
     }
 
