@@ -1,7 +1,9 @@
 package com.quickgit.app.viewmodel
 
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import com.quickgit.app.data.CredentialStore
+import com.quickgit.app.data.RepoManager
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -14,11 +16,16 @@ data class SettingsUiState(
     val sshKey: String = "",
     val sshPassphrase: String = "",
     val hasStoredSshKey: Boolean = false,
+    val reposRootPath: String = "",
+    val reposRootIsUserChosen: Boolean = false,
     val statusMessage: String? = null,
     val isError: Boolean = false
 )
 
-class SettingsViewModel(private val credentialStore: CredentialStore) : ViewModel() {
+class SettingsViewModel(
+    private val credentialStore: CredentialStore,
+    private val repoManager: RepoManager
+) : ViewModel() {
 
     private val _state = MutableStateFlow(SettingsUiState())
     val state: StateFlow<SettingsUiState> = _state.asStateFlow()
@@ -26,6 +33,39 @@ class SettingsViewModel(private val credentialStore: CredentialStore) : ViewMode
     init {
         loadForHost("github.com")
         refreshSsh()
+        refreshReposRoot()
+    }
+
+    private fun refreshReposRoot() {
+        _state.value = _state.value.copy(
+            reposRootPath = repoManager.reposRoot.absolutePath,
+            reposRootIsUserChosen = repoManager.reposRootIsUserChosen
+        )
+    }
+
+    /** Called with the tree the user picked from `ActivityResultContracts.OpenDocumentTree()`. */
+    fun setReposRoot(treeUri: Uri) {
+        when (val result = repoManager.setReposRootFromTree(treeUri)) {
+            is RepoManager.SetReposRootResult.Success -> {
+                refreshReposRoot()
+                _state.value = _state.value.copy(
+                    statusMessage = "Repos will now be stored in ${result.path.absolutePath}",
+                    isError = false
+                )
+            }
+            is RepoManager.SetReposRootResult.Error -> {
+                _state.value = _state.value.copy(statusMessage = result.message, isError = true)
+            }
+        }
+    }
+
+    fun resetReposRoot() {
+        repoManager.resetReposRootToDefault()
+        refreshReposRoot()
+        _state.value = _state.value.copy(
+            statusMessage = "Reverted to the default storage location",
+            isError = false
+        )
     }
 
     fun setHost(host: String) {

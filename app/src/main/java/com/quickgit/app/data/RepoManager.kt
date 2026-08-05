@@ -1,7 +1,10 @@
 package com.quickgit.app.data
 
 import android.content.Context
+import android.content.SharedPreferences
+import android.net.Uri
 import android.os.Environment
+import android.provider.DocumentsContract
 import com.quickgit.app.data.models.*
 import org.eclipse.jgit.api.CreateBranchCommand
 import org.eclipse.jgit.api.Git
@@ -31,22 +34,144 @@ import java.util.concurrent.ConcurrentHashMap
 class RepoManager(private val context: Context, private val credentialStore: CredentialStore) {
 
     private val TAG = "RepoManager"
+    private val PREF_ROOT_PATH = "repos_root_path"
+    private val PREF_ROOT_URI = "repos_root_uri"
 
     private val repoOperationLocks = ConcurrentHashMap<String, Any>()
+
+    private val prefs: SharedPreferences =
+        context.getSharedPreferences("quickgit_prefs", Context.MODE_PRIVATE)
 
     /**
      * Local clones live under Documents/QuickGit so they are visible in the
      * system file manager. Falls back to app-specific external storage if the
      * public Documents tree isn't actually writable (scoped storage on API 30+,
-     * or missing permission below that).
+     * or missing permission below that) — see [resolveReposRoot].
      *
-     * Resolved once and cached — re-checking on every access let the two
-     * roots flip mid-session (canWrite() is racy under scoped storage), which
-     * made JGit's index see files as missing right after a resolve, showing
-     * up in the UI as every file being "deleted". A real probe write, done
-     * once, avoids both problems.
+     * The user can override this from Settings by picking a folder via SAF
+     * (see [setReposRootFromTree]); that choice is what actually fixes the
+     * "external file manager can't reach the repo" problem, since it lets the
+     * user point QuickGit at a folder they can *also* browse to directly.
+     *
+     * Both the override and the auto-detected default are resolved once and
+     * cached — re-checking on every access let the two auto-detected roots
+     * flip mid-session (canWrite() is racy under scoped storage), which made
+     * JGit's index see files as missing right after a resolve, showing up in
+     * the UI as every file being "deleted". A real probe write, done once,
+     * avoids both problems.
      */
-    val reposRoot: File by lazy { resolveReposRoot() }
+    var reposRoot: File = readStoredOverride() ?: resolveReposRoot()
+        private set
+
+    /**
+     * Whether [reposRoot] is currently a user-picked folder (Settings) rather
+     * than the auto-detected default. Shown in the UI so users understand
+     * which folder to point their file manager at.
+     */
+    val reposRootIsUserChosen: Boolean
+        get() = prefs.contains(PREF_ROOT_PATH)
+
+    private fun readStoredOverride(): File? {
+        val storedPath = prefs.getString(PREF_ROOT_PATH, null) ?: return null
+        val dir = File(storedPath)
+        // The user could have moved the SD card, revoked access, etc. since
+        // this was picked — fall back to the default rather than silently
+        // failing every git operation if it's no longer usable.
+        val stillUsable = dir.isDirectory && canActuallyWrite(dir)
+        if (!stillUsable) {
+            AppLog.w(TAG, "stored reposRoot override no longer usable: $storedPath — reverting to default")
+            prefs.edit().remove(PREF_ROOT_PATH).remove(PREF_ROOT_URI).apply()
+            return null
+        }
+        return dir
+    }
+
+    /**
+     * Result of attempting to point [reposRoot] at a SAF-picked tree.
+     */
+    sealed class SetReposRootResult {
+        data class Success(val path: File) : SetReposRootResult()
+        data class Error(val message: String) : SetReposRootResult()
+    }
+
+    /**
+     * Points [reposRoot] at a folder the user picked via
+     * `ActivityResultContracts.OpenDocumentTree()`.
+     *
+     * JGit needs a real filesystem path — it can't open a repo directly
+     * against a `content://` tree, and SAF trees aren't guaranteed to have
+     * one at all (a folder in Google Drive, for instance, has no local path).
+     * So this only succeeds when the picked tree resolves to somewhere on
+     * local device storage (internal or an SD card); anything else is
+     * rejected with an explanation rather than silently misbehaving later.
+     */
+    fun setReposRootFromTree(treeUri: Uri): SetReposRootResult {
+        val resolved = filePathForTreeUri(treeUri)
+            ?: return SetReposRootResult.Error(
+                "That folder isn't on local device storage, so QuickGit can't use it directly " +
+                    "(this happens with cloud-backed providers like Drive). Pick a folder on your " +
+                    "phone's internal storage or an SD card instead."
+            )
+        try {
+            resolved.mkdirs()
+        } catch (_: Exception) {
+            // fall through to the write probe below, which will report the real failure
+        }
+        if (!resolved.isDirectory || !canActuallyWrite(resolved)) {
+            return SetReposRootResult.Error(
+                "QuickGit can't write to that folder. Try a different one, or a subfolder of it."
+            )
+        }
+        try {
+            context.contentResolver.takePersistableUriPermission(
+                treeUri,
+                android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                    android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            )
+        } catch (e: Exception) {
+            AppLog.w(TAG, "could not persist URI permission for $treeUri", e)
+        }
+        prefs.edit()
+            .putString(PREF_ROOT_PATH, resolved.absolutePath)
+            .putString(PREF_ROOT_URI, treeUri.toString())
+            .apply()
+        reposRoot = resolved
+        AppLog.i(TAG, "reposRoot set from user-picked folder: ${resolved.absolutePath}")
+        return SetReposRootResult.Success(resolved)
+    }
+
+    /** Reverts to the auto-detected default location, clearing any user-picked folder. */
+    fun resetReposRootToDefault() {
+        prefs.edit().remove(PREF_ROOT_PATH).remove(PREF_ROOT_URI).apply()
+        reposRoot = resolveReposRoot()
+    }
+
+    /**
+     * Best-effort conversion of a SAF tree URI to a real filesystem path.
+     * Only works for the local "primary" volume (internal storage) and
+     * physical SD cards exposed by Android's ExternalStorageProvider — other
+     * providers (Drive, OneDrive, other apps' document providers) have no
+     * such path and return null.
+     */
+    private fun filePathForTreeUri(treeUri: Uri): File? {
+        return try {
+            val docId = DocumentsContract.getTreeDocumentId(treeUri)
+            val parts = docId.split(":", limit = 2)
+            if (parts.size != 2) return null
+            val (volume, relativePath) = parts
+            when {
+                volume.equals("primary", ignoreCase = true) ->
+                    File(Environment.getExternalStorageDirectory(), relativePath)
+                volume.isNotBlank() ->
+                    // Physical SD card: Android exposes these under /storage/<volume-id>/
+                    File("/storage/$volume", relativePath)
+                else -> null
+            }
+        } catch (e: Exception) {
+            AppLog.w(TAG, "could not resolve tree uri to path: $treeUri", e)
+            null
+        }
+    }
 
     private fun resolveReposRoot(): File {
         val publicRoot = File(
