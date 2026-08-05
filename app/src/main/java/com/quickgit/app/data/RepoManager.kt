@@ -683,20 +683,36 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
 
     fun checkoutBranch(path: String, name: String): GitOpResult = withRepoLock(path) {
         openGit(path).use { git ->
-            val local = git.repository.findRef(name)
-            if (local == null) {
-                // Track a remote branch under the same short name.
-                git.checkout()
-                    .setCreateBranch(true)
-                    .setName(name)
-                    .setUpstreamMode(CreateBranchCommand.SetupUpstreamMode.TRACK)
-                    .setStartPoint("origin/$name")
-                    .call()
-            } else {
-                git.checkout().setName(name).call()
+            val repo = git.repository
+            // `name` is a bare local branch name (e.g. "feature-x") for an existing local
+            // branch, or a remote-tracking name like "origin/feature-x" — as shown for
+            // remote entries in the branch list — for one that hasn't been checked out
+            // locally yet. `findRef(name)` alone can't tell these apart: its search path
+            // also matches under refs/remotes/, so it treated a remote-only branch as
+            // already "local" and ran a plain checkout of the remote-tracking ref, which
+            // JGit does as a detached HEAD rather than creating a tracking branch. Check
+            // the exact ref paths instead.
+            val remoteRef = repo.findRef("refs/remotes/$name")
+            val shortName = if (remoteRef != null) name.substringAfter('/') else name
+            val localRef = repo.findRef("refs/heads/$shortName")
+
+            when {
+                localRef != null -> {
+                    git.checkout().setName(shortName).call()
+                    GitOpResult.Success
+                }
+                remoteRef != null -> {
+                    git.checkout()
+                        .setCreateBranch(true)
+                        .setName(shortName)
+                        .setUpstreamMode(CreateBranchCommand.SetupUpstreamMode.TRACK)
+                        .setStartPoint(remoteRef.name)
+                        .call()
+                    GitOpResult.Success
+                }
+                else -> GitOpResult.Error("Branch not found: $name")
             }
         }
-        GitOpResult.Success
     }
 
     fun deleteBranch(path: String, name: String, force: Boolean): GitOpResult = withRepoLock(path) {
