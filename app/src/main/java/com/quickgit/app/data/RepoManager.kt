@@ -62,7 +62,6 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
             cfg.packedGitWindowSize = 8 * 1024
             cfg.deltaBaseCacheLimit = 4 * 1024 * 1024
             cfg.streamFileThreshold = 1 * 1024 * 1024
-            cfg.packedGitMMAP = false
             cfg.install()
             AppLog.i(TAG, "JGit WindowCache limits installed for mobile heap")
         } catch (e: Exception) {

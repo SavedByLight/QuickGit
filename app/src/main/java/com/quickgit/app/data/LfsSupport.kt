@@ -58,7 +58,9 @@ object LfsSupport {
             POINTER_OID.matchEntire(line)?.let { oid = it.groupValues[1].lowercase() }
             POINTER_SIZE.matchEntire(line)?.let { size = it.groupValues[1].toLongOrNull() }
         }
-        if (oid != null && size != null) return oid to size
+        val resolvedOid = oid
+        val resolvedSize = size
+        if (resolvedOid != null && resolvedSize != null) return resolvedOid to resolvedSize
         return null
     }
 
@@ -149,21 +151,29 @@ object LfsSupport {
         var failed = 0
         for (obj in objects) {
             val oid = obj.optString("oid").lowercase()
-            val pointer = byOid[oid] ?: continue
+            val pointer = byOid[oid]
+            if (pointer == null) continue
             val err = obj.optJSONObject("error")
             if (err != null) {
                 AppLog.w(TAG, "LFS object $oid error: ${err.optString("message")}")
                 failed++
                 continue
             }
-            val actions = obj.optJSONObject("actions") ?: run {
-                // Object may already exist on server with no action needed — try local only
+            val actions = obj.optJSONObject("actions")
+            if (actions == null) {
                 failed++
                 continue
             }
-            val download = actions.optJSONObject("download") ?: run { failed++; continue }
+            val download = actions.optJSONObject("download")
+            if (download == null) {
+                failed++
+                continue
+            }
             val href = download.optString("href")
-            if (href.isBlank()) { failed++; continue }
+            if (href.isBlank()) {
+                failed++
+                continue
+            }
             val headerJson = download.optJSONObject("header")
             try {
                 val dest = lfsObjectFile(repoRoot, oid)
