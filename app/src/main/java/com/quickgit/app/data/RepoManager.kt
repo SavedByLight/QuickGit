@@ -17,6 +17,7 @@ import org.eclipse.jgit.revwalk.RevCommit
 import org.eclipse.jgit.revwalk.RevWalk
 import org.eclipse.jgit.storage.file.FileRepositoryBuilder
 import org.eclipse.jgit.transport.CredentialsProvider
+import org.eclipse.jgit.transport.RefSpec
 import org.eclipse.jgit.transport.SshTransport
 import org.eclipse.jgit.transport.Transport
 import org.eclipse.jgit.transport.UsernamePasswordCredentialsProvider
@@ -381,6 +382,43 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         } catch (e: Exception) {
             AppLog.e(TAG, "pull failed", e)
             GitOpResult.Error(e.message ?: "Pull failed", e)
+        }
+    }
+
+    /**
+     * Fetches a single ref from origin into a local branch and checks it out — used to pull
+     * down a GitHub PR's actual commits (refs/pull/<n>/head) for local review/testing, since
+     * the REST API alone can only inspect metadata, not run the code.
+     */
+    fun fetchAndCheckoutRef(path: String, refSpec: String, localBranch: String): GitOpResult {
+        AppLog.i(TAG, "fetchAndCheckoutRef: $refSpec -> $localBranch")
+        return try {
+            openGit(path).use { git ->
+                val remoteUrl = git.repository.config.getString("remote", "origin", "url") ?: ""
+                val fetchCmd = git.fetch().setRemote("origin").setRefSpecs(RefSpec(refSpec))
+                applyTransportConfig(fetchCmd, remoteUrl)
+                fetchCmd.call()
+
+                val existing = git.repository.findRef(localBranch)
+                if (existing != null) {
+                    git.checkout().setName(localBranch).call()
+                    // Fast-forward the existing local branch to the freshly fetched tip.
+                    git.reset().setMode(org.eclipse.jgit.api.ResetCommand.ResetType.HARD).setRef("FETCH_HEAD").call()
+                } else {
+                    git.checkout().setCreateBranch(true).setName(localBranch).setStartPoint("FETCH_HEAD").call()
+                }
+            }
+            AppLog.i(TAG, "fetchAndCheckoutRef succeeded: $localBranch")
+            GitOpResult.Success
+        } catch (e: org.eclipse.jgit.api.errors.TransportException) {
+            AppLog.e(TAG, "fetchAndCheckoutRef failed (transport)", e)
+            if (isAuthFailure(e)) {
+                val url = openGit(path).use { it.repository.config.getString("remote", "origin", "url") } ?: ""
+                GitOpResult.AuthRequired(url)
+            } else GitOpResult.Error(e.message ?: "Fetch failed", e)
+        } catch (e: Exception) {
+            AppLog.e(TAG, "fetchAndCheckoutRef failed", e)
+            GitOpResult.Error(e.message ?: "Checkout failed", e)
         }
     }
 

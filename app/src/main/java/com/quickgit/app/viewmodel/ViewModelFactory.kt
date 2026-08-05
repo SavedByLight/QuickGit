@@ -23,6 +23,7 @@ class ViewModelFactory(private val app: Application) : ViewModelProvider.Factory
             FilesViewModel::class.java -> FilesViewModel(gitApp.repoManager) as T
             EditorViewModel::class.java -> EditorViewModel(gitApp.repoManager) as T
             LogsViewModel::class.java -> LogsViewModel() as T
+            PullRequestsViewModel::class.java -> PullRequestsViewModel(gitApp.repoManager, gitApp.pullRequestManager) as T
             else -> throw IllegalArgumentException("Unknown ViewModel: $modelClass")
         }
     }
