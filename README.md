@@ -9,7 +9,8 @@ to any third-party server other than the git remote you configure.
 ## What's implemented
 
 - **Repo list** — shows locally cloned repos, current branch, and a dirty-state dot
-- **Clone** — clone over HTTPS (with PAT) or SSH (with an imported private key), with live progress
+- **GitHub account** — connect with a personal access token; browse and search your repositories and clone with one tap
+- **Clone** — clone over HTTPS (with PAT) or SSH (with an imported private key), with live progress; or pick from your connected GitHub account
 - **Changes / staging** — see staged, unstaged, and untracked files; tap to stage/unstage
   individually or stage all; discard unstaged changes; write a commit message and commit
 - **Push / Pull** — with auth-required detection that routes you to the credentials screen

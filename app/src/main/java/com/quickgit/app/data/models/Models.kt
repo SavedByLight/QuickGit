@@ -74,3 +74,20 @@ data class RepoEntry(
     val isDirectory: Boolean,
     val sizeBytes: Long = 0L
 )
+
+/** A repository returned by the GitHub API for the authenticated user. */
+data class GitHubRemoteRepo(
+    val id: Long,
+    val name: String,
+    val fullName: String,
+    val description: String?,
+    val htmlUrl: String,
+    val cloneUrl: String,
+    val sshUrl: String,
+    val isPrivate: Boolean,
+    val isFork: Boolean,
+    val ownerLogin: String,
+    val defaultBranch: String,
+    val updatedAt: String,
+    val language: String?
+)

@@ -26,6 +26,7 @@ fun QuickGitNavGraph() {
                 vm = vm,
                 onOpenRepo = { repo: RepoInfo -> navController.navigate(Dest.repoDetail(repo.localPath)) },
                 onClone = { navController.navigate(Dest.CLONE) },
+                onBrowseGitHub = { navController.navigate(Dest.BROWSE_GITHUB) },
                 onSettings = { navController.navigate(Dest.SETTINGS) },
                 onLogs = { navController.navigate(Dest.LOGS) }
             )
@@ -42,7 +43,20 @@ fun QuickGitNavGraph() {
                 vm = vm,
                 onBack = { navController.popBackStack() },
                 onCloned = { navController.popBackStack() },
-                onNeedsAuth = { url -> navController.navigate(Dest.SETTINGS) }
+                onNeedsAuth = { url -> navController.navigate(Dest.SETTINGS) },
+                onBrowseGitHub = { navController.navigate(Dest.BROWSE_GITHUB) }
+            )
+        }
+
+        composable(Dest.BROWSE_GITHUB) {
+            val vm: BrowseGitHubViewModel = viewModel(factory = factory)
+            BrowseGitHubScreen(
+                vm = vm,
+                onBack = { navController.popBackStack() },
+                onCloned = {
+                    navController.popBackStack(Dest.REPO_LIST, inclusive = false)
+                },
+                onNeedsAuth = { navController.navigate(Dest.SETTINGS) }
             )
         }
 

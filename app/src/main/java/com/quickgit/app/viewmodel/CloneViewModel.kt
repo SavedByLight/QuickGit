@@ -16,7 +16,9 @@ data class CloneUiState(
     val progressText: String = "",
     val result: GitOpResult? = null,
     val destinationPath: String? = null,
-    val destinationError: String? = null
+    val destinationError: String? = null,
+    /** When true, destination is the default under reposRoot (no SAF pick required). */
+    val usingDefaultDestination: Boolean = true
 )
 
 class CloneViewModel(private val repoManager: RepoManager) : ViewModel() {
@@ -25,6 +27,29 @@ class CloneViewModel(private val repoManager: RepoManager) : ViewModel() {
 
     private var pickedDestination: File? = null
 
+    /** Suggest a default folder name from a git URL (last path segment without .git). */
+    fun defaultFolderNameFor(url: String): String {
+        val trimmed = url.trim().removeSuffix("/").removeSuffix(".git")
+        val last = trimmed.substringAfterLast('/').substringAfterLast(':')
+        return last.ifBlank { "repo" }
+    }
+
+    /** Update the preview path for the default (reposRoot / folderName) destination. */
+    fun previewDefaultDestination(url: String) {
+        if (pickedDestination != null) return
+        val name = defaultFolderNameFor(url)
+        if (name.isBlank()) {
+            _state.value = _state.value.copy(destinationPath = null, usingDefaultDestination = true)
+            return
+        }
+        val dest = File(repoManager.reposRoot, name)
+        _state.value = _state.value.copy(
+            destinationPath = dest.absolutePath,
+            destinationError = null,
+            usingDefaultDestination = true
+        )
+    }
+
     /** Called with the tree the user picked via `ActivityResultContracts.OpenDocumentTree()`. */
     fun onDestinationPicked(treeUri: android.net.Uri) {
         when (val result = repoManager.resolveCloneDestination(treeUri)) {
@@ -32,22 +57,36 @@ class CloneViewModel(private val repoManager: RepoManager) : ViewModel() {
                 pickedDestination = result.path
                 _state.value = _state.value.copy(
                     destinationPath = result.path.absolutePath,
-                    destinationError = null
+                    destinationError = null,
+                    usingDefaultDestination = false
                 )
             }
             is RepoManager.ResolveCloneDestinationResult.Error -> {
                 pickedDestination = null
                 _state.value = _state.value.copy(
                     destinationPath = null,
-                    destinationError = result.message
+                    destinationError = result.message,
+                    usingDefaultDestination = true
                 )
             }
         }
     }
 
+    fun clearPickedDestination(url: String) {
+        pickedDestination = null
+        previewDefaultDestination(url)
+    }
+
     fun clone(url: String) {
-        val destination = pickedDestination ?: return
-        _state.value = _state.value.copy(inProgress = true, progressText = "Starting…")
+        val destination = pickedDestination
+            ?: File(repoManager.reposRoot, defaultFolderNameFor(url)).also {
+                it.parentFile?.mkdirs()
+            }
+        _state.value = _state.value.copy(
+            inProgress = true,
+            progressText = "Starting…",
+            destinationPath = destination.absolutePath
+        )
         viewModelScope.launch(Dispatchers.IO) {
             val result = repoManager.cloneRepo(url, destination) { progress ->
                 _state.value = _state.value.copy(progressText = progress)
@@ -58,4 +97,3 @@ class CloneViewModel(private val repoManager: RepoManager) : ViewModel() {
 
     fun consumeResult() { _state.value = _state.value.copy(result = null) }
 }
-

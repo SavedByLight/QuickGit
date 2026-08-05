@@ -89,14 +89,34 @@ fun SettingsScreen(
             HorizontalDivider()
             Spacer(Modifier.height(28.dp))
 
-            Text("HTTPS personal access token", style = MaterialTheme.typography.titleMedium)
+            Text(
+                if (state.host.equals("github.com", ignoreCase = true)) "GitHub account"
+                else "HTTPS personal access token",
+                style = MaterialTheme.typography.titleMedium
+            )
             Spacer(Modifier.height(4.dp))
             Text(
-                "Used for https:// remotes. Generate a token with repo scope from your host (GitHub, GitLab, etc.).",
+                if (state.host.equals("github.com", ignoreCase = true))
+                    "Paste a personal access token (classic or fine-grained) with repo access. " +
+                        "QuickGit verifies it with GitHub and uses it for clone, push, pull, and pull requests."
+                else
+                    "Used for https:// remotes. Generate a token with repo scope from your host (GitHub, GitLab, etc.).",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            if (state.hasStoredToken) {
+            if (state.githubLogin != null) {
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.CheckCircle, null, tint = GitGreen, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        "Connected as @${state.githubLogin}" +
+                            (state.githubName?.let { " ($it)" } ?: ""),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = GitGreen
+                    )
+                }
+            } else if (state.hasStoredToken) {
                 Spacer(Modifier.height(8.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.CheckCircle, null, tint = GitGreen, modifier = Modifier.size(18.dp))
@@ -150,10 +170,34 @@ fun SettingsScreen(
             Row {
                 Button(
                     onClick = { vm.saveHttpsToken() },
-                    enabled = state.host.isNotBlank() && state.token.isNotBlank()
-                ) { Text("Save") }
+                    enabled = state.host.isNotBlank() && state.token.isNotBlank() && !state.connecting
+                ) {
+                    if (state.connecting) {
+                        CircularProgressIndicator(
+                            Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.onPrimary
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text("Connecting…")
+                    } else {
+                        Text(
+                            if (state.host.equals("github.com", ignoreCase = true)) "Connect"
+                            else "Save"
+                        )
+                    }
+                }
                 Spacer(Modifier.width(8.dp))
-                OutlinedButton(onClick = { vm.clearHttpsToken() }) { Text("Clear") }
+                OutlinedButton(
+                    onClick = { vm.clearHttpsToken() },
+                    enabled = !state.connecting
+                ) {
+                    Text(
+                        if (state.host.equals("github.com", ignoreCase = true) && state.hasStoredToken)
+                            "Disconnect"
+                        else "Clear"
+                    )
+                }
             }
 
             Spacer(Modifier.height(28.dp))

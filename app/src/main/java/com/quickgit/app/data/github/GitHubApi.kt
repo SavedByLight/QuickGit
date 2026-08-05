@@ -1,6 +1,7 @@
 package com.quickgit.app.data.github
 
 import com.quickgit.app.data.AppLog
+import com.quickgit.app.data.models.GitHubRemoteRepo
 import com.quickgit.app.data.models.MergeMethod
 import com.quickgit.app.data.models.PrComment
 import com.quickgit.app.data.models.PrOpResult
@@ -16,7 +17,7 @@ import java.net.URL
 import java.nio.charset.StandardCharsets
 
 /**
- * Minimal GitHub REST v3 client for pull-request management. Deliberately dependency-free
+ * Minimal GitHub REST v3 client for account identity, repository listing, and pull-request management. Deliberately dependency-free
  * (HttpURLConnection + org.json, both already on the platform) rather than pulling in
  * Retrofit/OkHttp for a handful of endpoints.
  */
@@ -40,6 +41,70 @@ class GitHubApi(private val token: String?) {
             return OwnerRepo(m.groupValues[1], m.groupValues[2])
         }
         return null
+    }
+
+    data class GitHubUser(
+        val login: String,
+        val name: String?,
+        val avatarUrl: String?,
+        val htmlUrl: String
+    )
+
+    /** Verifies the token and returns the authenticated user. */
+    fun getAuthenticatedUser(): Result<GitHubUser> = runCatching {
+        val o = request("GET", "/user") as JSONObject
+        GitHubUser(
+            login = o.getString("login"),
+            name = if (o.isNull("name")) null else o.optString("name").takeIf { it.isNotBlank() },
+            avatarUrl = o.optString("avatar_url").takeIf { it.isNotBlank() },
+            htmlUrl = o.optString("html_url", "")
+        )
+    }
+
+    /**
+     * Lists repositories the authenticated user can access.
+     * @param affiliation comma-separated: owner, collaborator, organization_member (default all three)
+     * @param type all|owner|public|private|member
+     * @param sort created|updated|pushed|full_name
+     */
+    fun listUserRepos(
+        affiliation: String = "owner,collaborator,organization_member",
+        type: String = "all",
+        sort: String = "updated",
+        perPage: Int = 50,
+        page: Int = 1
+    ): Result<List<GitHubRemoteRepo>> = runCatching {
+        val path = "/user/repos?affiliation=$affiliation&type=$type&sort=$sort&direction=desc&per_page=$perPage&page=$page"
+        val arr = request("GET", path) as JSONArray
+        (0 until arr.length()).map { i -> arr.getJSONObject(i).toRemoteRepo() }
+    }
+
+    /** Search the authenticated user's accessible repos by name (GitHub search API, limited to user:login). */
+    fun searchUserRepos(login: String, query: String, perPage: Int = 30): Result<List<GitHubRemoteRepo>> = runCatching {
+        val q = if (query.isBlank()) "user:$login" else "${query.trim()} user:$login"
+        val encoded = java.net.URLEncoder.encode(q, "UTF-8")
+        val arr = (request("GET", "/search/repositories?q=$encoded&per_page=$perPage&sort=updated") as JSONObject)
+            .getJSONArray("items")
+        (0 until arr.length()).map { i -> arr.getJSONObject(i).toRemoteRepo() }
+    }
+
+    private fun JSONObject.toRemoteRepo(): GitHubRemoteRepo {
+        val owner = optJSONObject("owner")
+        return GitHubRemoteRepo(
+            id = getLong("id"),
+            name = getString("name"),
+            fullName = getString("full_name"),
+            description = if (isNull("description")) null else optString("description").takeIf { it.isNotBlank() },
+            htmlUrl = optString("html_url", ""),
+            cloneUrl = optString("clone_url", ""),
+            sshUrl = optString("ssh_url", ""),
+            isPrivate = optBoolean("private", false),
+            isFork = optBoolean("fork", false),
+            ownerLogin = owner?.optString("login") ?: fullName.substringBefore('/'),
+            defaultBranch = optString("default_branch", "main"),
+            updatedAt = optString("updated_at", ""),
+            language = if (isNull("language")) null else optString("language").takeIf { it.isNotBlank() }
+        )
     }
 
     fun listPullRequests(owner: String, repo: String, state: String): Result<List<PullRequest>> = runCatching {

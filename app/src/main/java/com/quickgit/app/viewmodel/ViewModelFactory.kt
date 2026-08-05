@@ -19,11 +19,12 @@ class ViewModelFactory(private val app: Application) : ViewModelProvider.Factory
             BranchesViewModel::class.java -> BranchesViewModel(gitApp.repoManager) as T
             DiffViewModel::class.java -> DiffViewModel(gitApp.repoManager) as T
             MergeViewModel::class.java -> MergeViewModel(gitApp.repoManager) as T
-            SettingsViewModel::class.java -> SettingsViewModel(gitApp.credentialStore, gitApp.repoManager) as T
+            SettingsViewModel::class.java -> SettingsViewModel(gitApp.credentialStore, gitApp.repoManager, gitApp.gitHubAccountManager) as T
             FilesViewModel::class.java -> FilesViewModel(gitApp.repoManager) as T
             EditorViewModel::class.java -> EditorViewModel(gitApp.repoManager) as T
             LogsViewModel::class.java -> LogsViewModel() as T
             PullRequestsViewModel::class.java -> PullRequestsViewModel(gitApp.repoManager, gitApp.pullRequestManager) as T
+            BrowseGitHubViewModel::class.java -> BrowseGitHubViewModel(gitApp.gitHubAccountManager, gitApp.repoManager) as T
             else -> throw IllegalArgumentException("Unknown ViewModel: $modelClass")
         }
     }

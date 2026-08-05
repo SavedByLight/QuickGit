@@ -2,17 +2,27 @@ package com.quickgit.app.viewmodel
 
 import android.net.Uri
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
 import com.quickgit.app.data.CredentialStore
+import com.quickgit.app.data.GitHubAccountManager
 import com.quickgit.app.data.RepoManager
+import com.quickgit.app.data.models.PrOpResult
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 data class SettingsUiState(
     val host: String = "github.com",
     val username: String = "",
     val token: String = "",
     val hasStoredToken: Boolean = false,
+    /** GitHub login verified via API when host is github.com. */
+    val githubLogin: String? = null,
+    val githubName: String? = null,
+    val connecting: Boolean = false,
     val sshKey: String = "",
     val sshPassphrase: String = "",
     val hasStoredSshKey: Boolean = false,
@@ -24,7 +34,8 @@ data class SettingsUiState(
 
 class SettingsViewModel(
     private val credentialStore: CredentialStore,
-    private val repoManager: RepoManager
+    private val repoManager: RepoManager,
+    private val gitHubAccountManager: GitHubAccountManager
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(SettingsUiState())
@@ -34,6 +45,28 @@ class SettingsViewModel(
         loadForHost("github.com")
         refreshSsh()
         refreshReposRoot()
+        verifyGitHubIfConnected()
+    }
+
+    private fun verifyGitHubIfConnected() {
+        if (!gitHubAccountManager.isConnected()) return
+        viewModelScope.launch {
+            val (account, result) = withContext(Dispatchers.IO) { gitHubAccountManager.refreshAccount() }
+            if (account != null) {
+                _state.value = _state.value.copy(
+                    githubLogin = account.login,
+                    githubName = account.name,
+                    username = account.login,
+                    hasStoredToken = true
+                )
+            } else if (result is PrOpResult.AuthRequired) {
+                _state.value = _state.value.copy(
+                    githubLogin = null,
+                    githubName = null,
+                    hasStoredToken = false
+                )
+            }
+        }
     }
 
     private fun refreshReposRoot() {
@@ -98,7 +131,6 @@ class SettingsViewModel(
             _state.value = s.copy(statusMessage = "Host is required", isError = true)
             return
         }
-        // If field is empty but we already have a stored token, keep it unless they're clearing
         val token = s.token.trim()
         if (token.isBlank()) {
             _state.value = s.copy(
@@ -106,6 +138,53 @@ class SettingsViewModel(
                 else "Token is required",
                 isError = true
             )
+            return
+        }
+        // For github.com, verify the token against the API and store the real login
+        if (host.equals("github.com", ignoreCase = true)) {
+            _state.value = s.copy(connecting = true, statusMessage = null)
+            viewModelScope.launch {
+                val (account, result) = withContext(Dispatchers.IO) {
+                    gitHubAccountManager.connect(token, s.username.ifBlank { null })
+                }
+                when {
+                    account != null -> {
+                        _state.value = _state.value.copy(
+                            connecting = false,
+                            token = "",
+                            hasStoredToken = true,
+                            username = account.login,
+                            githubLogin = account.login,
+                            githubName = account.name,
+                            statusMessage = "Connected as @${account.login}",
+                            isError = false
+                        )
+                    }
+                    result is PrOpResult.AuthRequired -> {
+                        _state.value = _state.value.copy(
+                            connecting = false,
+                            hasStoredToken = false,
+                            githubLogin = null,
+                            statusMessage = "Invalid token — check scopes include repo access",
+                            isError = true
+                        )
+                    }
+                    result is PrOpResult.Error -> {
+                        _state.value = _state.value.copy(
+                            connecting = false,
+                            statusMessage = result.message,
+                            isError = true
+                        )
+                    }
+                    else -> {
+                        _state.value = _state.value.copy(
+                            connecting = false,
+                            statusMessage = "Could not verify token",
+                            isError = true
+                        )
+                    }
+                }
+            }
             return
         }
         try {
@@ -128,12 +207,18 @@ class SettingsViewModel(
     fun clearHttpsToken() {
         val host = _state.value.host.trim()
         try {
-            credentialStore.clearHttpsToken(host)
+            if (host.equals("github.com", ignoreCase = true)) {
+                gitHubAccountManager.disconnect()
+            } else {
+                credentialStore.clearHttpsToken(host)
+            }
             _state.value = _state.value.copy(
                 username = "",
                 token = "",
                 hasStoredToken = false,
-                statusMessage = "Cleared token for $host",
+                githubLogin = null,
+                githubName = null,
+                statusMessage = "Disconnected from $host",
                 isError = false
             )
         } catch (e: Exception) {

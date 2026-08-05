@@ -212,10 +212,16 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         val root = runCatching { reposRoot.canonicalFile }.getOrElse { reposRoot.absoluteFile }
         val d = runCatching { dir.canonicalFile }.getOrElse { dir.absoluteFile }
         if (d.absolutePath == root.absolutePath || d.absolutePath.startsWith(root.absolutePath + File.separator)) {
+            AppLog.i(TAG, "rememberExternalRepoPath: under reposRoot, no extra tracking needed: ${d.absolutePath}")
             return // already discoverable via the normal reposRoot scan
         }
-        val current = prefs.getStringSet(PREF_EXTRA_REPO_PATHS, emptySet()) ?: emptySet()
-        prefs.edit().putStringSet(PREF_EXTRA_REPO_PATHS, current + d.absolutePath).apply()
+        // Copy the set — SharedPreferences may return its live internal instance.
+        val current = (prefs.getStringSet(PREF_EXTRA_REPO_PATHS, emptySet()) ?: emptySet()).toMutableSet()
+        if (current.add(d.absolutePath)) {
+            // commit() so listLocalRepos sees the path immediately after a successful clone
+            prefs.edit().putStringSet(PREF_EXTRA_REPO_PATHS, current).commit()
+            AppLog.i(TAG, "rememberExternalRepoPath: tracking ${d.absolutePath}")
+        }
     }
 
     private fun resolveReposRoot(): File {
@@ -263,19 +269,26 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
 
     fun listLocalRepos(): List<RepoInfo> {
         val root = reposRoot
+        // Ensure the root directory exists so listFiles doesn't return null after a fresh install.
+        if (!root.exists()) root.mkdirs()
         val rootDirs = root.listFiles { f -> f.isDirectory && File(f, ".git").exists() }?.toList() ?: emptyList()
 
-        val extraPaths = prefs.getStringSet(PREF_EXTRA_REPO_PATHS, emptySet()) ?: emptySet()
+        val extraPaths = (prefs.getStringSet(PREF_EXTRA_REPO_PATHS, emptySet()) ?: emptySet()).toSet()
         val extraDirs = extraPaths.map { File(it) }.filter { it.isDirectory && File(it, ".git").exists() }
         if (extraDirs.size != extraPaths.size) {
             // Self-heal: a picked folder was deleted/moved elsewhere — stop tracking it.
-            prefs.edit().putStringSet(PREF_EXTRA_REPO_PATHS, extraDirs.map { it.absolutePath }.toSet()).apply()
+            prefs.edit().putStringSet(PREF_EXTRA_REPO_PATHS, extraDirs.map { it.absolutePath }.toSet()).commit()
         }
 
         val allDirs = (rootDirs + extraDirs).distinctBy {
             runCatching { it.canonicalPath }.getOrDefault(it.absolutePath)
         }
-        return allDirs.mapNotNull { runCatching { infoFor(it) }.getOrNull() }
+        AppLog.i(TAG, "listLocalRepos: root=${root.absolutePath} found=${allDirs.size} (root=${rootDirs.size}, extra=${extraDirs.size})")
+        return allDirs.mapNotNull { dir ->
+            runCatching { infoFor(dir) }.onFailure { e ->
+                AppLog.w(TAG, "listLocalRepos: skip ${dir.absolutePath}: ${e.message}")
+            }.getOrNull()
+        }
     }
 
     private fun infoFor(dir: File): RepoInfo {

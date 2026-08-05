@@ -13,6 +13,7 @@ object Dest {
     const val EDITOR = "editor/{repoPath}/{filePath}"
     const val LOGS = "logs"
     const val PULL_REQUESTS = "pull_requests/{repoPath}"
+    const val BROWSE_GITHUB = "browse_github"
 
     fun repoDetail(path: String) = "repo_detail/${encode(path)}"
     fun history(path: String) = "history/${encode(path)}"
