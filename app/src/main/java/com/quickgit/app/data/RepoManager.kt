@@ -423,7 +423,7 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         }
     }
 
-    fun stage(path: String, files: List<String>) {
+    fun stage(path: String, files: List<String>): GitOpResult = withRepoLock(path) {
         AppLog.i(TAG, "stage: $files")
         openGit(path).use { git ->
             // JGit's AddCommand mirrors old git semantics: it happily stages new/modified
@@ -444,18 +444,20 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                 cmd.call()
             }
         }
+        GitOpResult.Success
     }
 
-    fun unstage(path: String, files: List<String>) {
+    fun unstage(path: String, files: List<String>): GitOpResult = withRepoLock(path) {
         AppLog.i(TAG, "unstage: $files")
         openGit(path).use { git ->
             val cmd = git.reset()
             files.forEach { cmd.addPath(it) }
             cmd.call()
         }
+        GitOpResult.Success
     }
 
-    fun stageAll(path: String) {
+    fun stageAll(path: String): GitOpResult = withRepoLock(path) {
         AppLog.i(TAG, "stageAll: $path")
         openGit(path).use { git ->
             git.add().addFilepattern(".").call()
@@ -467,6 +469,7 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                 cmd.call()
             }
         }
+        GitOpResult.Success
     }
 
     /**
@@ -534,22 +537,23 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         return discardChanges(path, paths)
     }
 
-    fun unstageAll(path: String) {
+    fun unstageAll(path: String): GitOpResult = withRepoLock(path) {
         openGit(path).use { git ->
             val status = git.status().call()
             val staged = (status.added + status.changed + status.removed).distinct()
             AppLog.i(TAG, "unstageAll: ${staged.size} path(s)")
-            if (staged.isEmpty()) return
+            if (staged.isEmpty()) return@withRepoLock GitOpResult.Success
             val cmd = git.reset()
             staged.forEach { cmd.addPath(it) }
             cmd.call()
         }
+        GitOpResult.Success
     }
 
     // ---------------- Commit ----------------
 
-    fun commit(path: String, message: String, authorName: String, authorEmail: String): GitOpResult {
-        return try {
+    fun commit(path: String, message: String, authorName: String, authorEmail: String): GitOpResult =
+        withRepoLock(path) {
             val shouldSign = isGpgSigningEnabled() && credentialStore.hasGpgKey()
             val gpgKey = if (shouldSign) credentialStore.getGpgPrivateKey() else null
             val gpgPass = if (shouldSign) credentialStore.getGpgPassphrase() else null
@@ -575,14 +579,7 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
             }
             AppLog.i(TAG, "commit succeeded: ${message.take(50)}" + if (shouldSign) " (signed)" else "")
             GitOpResult.Success
-        } catch (e: GitAPIException) {
-            AppLog.e(TAG, "commit failed", e)
-            GitOpResult.Error(e.message ?: "Commit failed", e)
-        } catch (e: Exception) {
-            AppLog.e(TAG, "commit failed", e)
-            GitOpResult.Error(e.message ?: "Commit failed", e)
         }
-    }
 
     // ---------------- Push / Pull / Fetch ----------------
 
@@ -735,19 +732,38 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     private fun withRepoLock(path: String, op: () -> GitOpResult): GitOpResult {
         val operationLock = repoOperationLocks.getOrPut(path) { Any() }
         return synchronized(operationLock) {
-            val indexLock = File(path, ".git/index.lock")
-            if (indexLock.exists() && !indexLock.delete()) {
-                AppLog.w(TAG, "operation blocked: index.lock present and couldn't be removed")
-                return@synchronized GitOpResult.Error(
-                    "Git index is locked. Close other Git operations and delete .git/index.lock, then retry."
-                )
-            }
+            clearStaleIndexLock(path)
             try {
                 op()
             } catch (e: Exception) {
+                // Second chance: a leftover lock from a prior crash often causes LockFailedException.
+                val msg = e.message.orEmpty()
+                if ("index.lock" in msg || e.javaClass.simpleName.contains("LockFailed", ignoreCase = true)) {
+                    AppLog.w(TAG, "retrying after index.lock failure: $path")
+                    clearStaleIndexLock(path)
+                    try {
+                        return@synchronized op()
+                    } catch (e2: Exception) {
+                        AppLog.e(TAG, "git operation failed after lock retry: $path", e2)
+                        return@synchronized GitOpResult.Error(
+                            e2.message ?: e2.javaClass.simpleName, e2
+                        )
+                    }
+                }
                 AppLog.e(TAG, "git operation failed: $path", e)
                 GitOpResult.Error(e.message ?: e.javaClass.simpleName, e)
             }
+        }
+    }
+
+    /** Removes a leftover `.git/index.lock` from a crashed/interrupted write, if present. */
+    private fun clearStaleIndexLock(path: String) {
+        val indexLock = File(path, ".git/index.lock")
+        if (!indexLock.exists()) return
+        val ageMs = System.currentTimeMillis() - indexLock.lastModified()
+        AppLog.w(TAG, "removing stale index.lock (age=${ageMs}ms) at ${indexLock.absolutePath}")
+        if (!indexLock.delete()) {
+            AppLog.w(TAG, "could not delete index.lock — operation may still fail")
         }
     }
 
