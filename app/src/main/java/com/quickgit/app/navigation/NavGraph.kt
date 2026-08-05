@@ -87,7 +87,7 @@ fun QuickGitNavGraph() {
             )
         }
 
-                composable(
+        composable(
             Dest.ISSUES,
             arguments = listOf(navArgument("repoPath") { type = NavType.StringType })
         ) { backStackEntry ->
