@@ -23,6 +23,8 @@ data class SettingsUiState(
     val githubLogin: String? = null,
     val githubName: String? = null,
     val connecting: Boolean = false,
+    val authorName: String = "",
+    val authorEmail: String = "",
     val sshKey: String = "",
     val sshPassphrase: String = "",
     val hasStoredSshKey: Boolean = false,
@@ -45,7 +47,43 @@ class SettingsViewModel(
         loadForHost("github.com")
         refreshSsh()
         refreshReposRoot()
+        refreshAuthor()
         verifyGitHubIfConnected()
+    }
+
+    private fun refreshAuthor() {
+        _state.value = _state.value.copy(
+            authorName = repoManager.getCommitAuthorName(),
+            authorEmail = repoManager.getCommitAuthorEmail()
+        )
+    }
+
+    fun setAuthorName(v: String) { _state.value = _state.value.copy(authorName = v) }
+    fun setAuthorEmail(v: String) { _state.value = _state.value.copy(authorEmail = v) }
+
+    fun saveAuthor() {
+        val name = _state.value.authorName.trim()
+        val email = _state.value.authorEmail.trim()
+        if (name.isBlank() || email.isBlank()) {
+            _state.value = _state.value.copy(
+                statusMessage = "Name and email are required for commits",
+                isError = true
+            )
+            return
+        }
+        if (!email.contains("@")) {
+            _state.value = _state.value.copy(
+                statusMessage = "Email looks invalid",
+                isError = true
+            )
+            return
+        }
+        repoManager.setCommitAuthor(name, email)
+        refreshAuthor()
+        _state.value = _state.value.copy(
+            statusMessage = "Commit identity saved — new commits will use $name <$email>",
+            isError = false
+        )
     }
 
     private fun verifyGitHubIfConnected() {
@@ -53,6 +91,13 @@ class SettingsViewModel(
         viewModelScope.launch {
             val (account, result) = withContext(Dispatchers.IO) { gitHubAccountManager.refreshAccount() }
             if (account != null) {
+                repoManager.seedCommitAuthorFromGitHub(
+                    login = account.login,
+                    displayName = account.name,
+                    emailFromApi = account.email,
+                    force = false
+                )
+                refreshAuthor()
                 _state.value = _state.value.copy(
                     githubLogin = account.login,
                     githubName = account.name,
@@ -149,6 +194,13 @@ class SettingsViewModel(
                 }
                 when {
                     account != null -> {
+                        repoManager.seedCommitAuthorFromGitHub(
+                            login = account.login,
+                            displayName = account.name,
+                            emailFromApi = account.email,
+                            force = false
+                        )
+                        refreshAuthor()
                         _state.value = _state.value.copy(
                             connecting = false,
                             token = "",

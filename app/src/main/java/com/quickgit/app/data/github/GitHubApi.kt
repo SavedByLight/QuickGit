@@ -46,6 +46,7 @@ class GitHubApi(private val token: String?) {
     data class GitHubUser(
         val login: String,
         val name: String?,
+        val email: String?,
         val avatarUrl: String?,
         val htmlUrl: String
     )
@@ -56,6 +57,7 @@ class GitHubApi(private val token: String?) {
         GitHubUser(
             login = o.getString("login"),
             name = if (o.isNull("name")) null else o.optString("name").takeIf { it.isNotBlank() },
+            email = if (o.isNull("email")) null else o.optString("email").takeIf { it.isNotBlank() },
             avatarUrl = o.optString("avatar_url").takeIf { it.isNotBlank() },
             htmlUrl = o.optString("html_url", "")
         )

@@ -89,6 +89,42 @@ fun SettingsScreen(
             HorizontalDivider()
             Spacer(Modifier.height(28.dp))
 
+            Text("Commit identity", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "Name and email written on every commit (and shown on GitHub after you push). " +
+                    "Connecting a GitHub account fills these in if they are still the defaults.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(12.dp))
+            OutlinedTextField(
+                value = state.authorName,
+                onValueChange = vm::setAuthorName,
+                label = { Text("Name") },
+                placeholder = { Text("Your name") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = state.authorEmail,
+                onValueChange = vm::setAuthorEmail,
+                label = { Text("Email") },
+                placeholder = { Text("you@users.noreply.github.com") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
+            Spacer(Modifier.height(12.dp))
+            Button(
+                onClick = { vm.saveAuthor() },
+                enabled = state.authorName.isNotBlank() && state.authorEmail.isNotBlank()
+            ) { Text("Save identity") }
+
+            Spacer(Modifier.height(28.dp))
+            HorizontalDivider()
+            Spacer(Modifier.height(28.dp))
+
             Text(
                 if (state.host.equals("github.com", ignoreCase = true)) "GitHub account"
                 else "HTTPS personal access token",

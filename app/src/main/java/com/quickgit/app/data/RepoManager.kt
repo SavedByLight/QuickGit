@@ -37,11 +37,50 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     private val PREF_ROOT_PATH = "repos_root_path"
     private val PREF_ROOT_URI = "repos_root_uri"
     private val PREF_EXTRA_REPO_PATHS = "extra_repo_paths"
+    private val PREF_AUTHOR_NAME = "commit_author_name"
+    private val PREF_AUTHOR_EMAIL = "commit_author_email"
 
     private val repoOperationLocks = ConcurrentHashMap<String, Any>()
 
     private val prefs: SharedPreferences =
         context.getSharedPreferences("quickgit_prefs", Context.MODE_PRIVATE)
+
+    /** Name used for commit author/committer (Settings → Commit identity). */
+    fun getCommitAuthorName(): String =
+        prefs.getString(PREF_AUTHOR_NAME, null)?.takeIf { it.isNotBlank() } ?: "Mobile User"
+
+    fun getCommitAuthorEmail(): String =
+        prefs.getString(PREF_AUTHOR_EMAIL, null)?.takeIf { it.isNotBlank() } ?: "mobile@example.com"
+
+    fun setCommitAuthor(name: String, email: String) {
+        prefs.edit()
+            .putString(PREF_AUTHOR_NAME, name.trim())
+            .putString(PREF_AUTHOR_EMAIL, email.trim())
+            .commit()
+    }
+
+    /**
+     * Fills author identity from a connected GitHub profile when the user has not set one yet
+     * (still on the placeholder Mobile User defaults), or when [force] is true.
+     */
+    fun seedCommitAuthorFromGitHub(login: String, displayName: String?, emailFromApi: String?, force: Boolean = false) {
+        val currentName = prefs.getString(PREF_AUTHOR_NAME, null)
+        val currentEmail = prefs.getString(PREF_AUTHOR_EMAIL, null)
+        val stillDefault = currentName.isNullOrBlank() || currentName == "Mobile User"
+        val emailStillDefault = currentEmail.isNullOrBlank() || currentEmail == "mobile@example.com"
+        if (!force && !stillDefault && !emailStillDefault) return
+        val name = when {
+            force || stillDefault -> displayName?.takeIf { it.isNotBlank() } ?: login
+            else -> currentName!!
+        }
+        val email = when {
+            force || emailStillDefault ->
+                emailFromApi?.takeIf { it.isNotBlank() } ?: "$login@users.noreply.github.com"
+            else -> currentEmail!!
+        }
+        setCommitAuthor(name, email)
+        AppLog.i(TAG, "commit author seeded from GitHub: $name <$email>")
+    }
 
     /**
      * Local clones live under Documents/QuickGit so they are visible in the

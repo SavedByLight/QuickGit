@@ -22,6 +22,7 @@ class GitHubAccountManager(private val credentialStore: CredentialStore) {
     data class ConnectedAccount(
         val login: String,
         val name: String?,
+        val email: String?,
         val avatarUrl: String?,
         val htmlUrl: String
     )
@@ -51,7 +52,7 @@ class GitHubAccountManager(private val credentialStore: CredentialStore) {
                 credentialStore.saveHttpsToken(host, user.login, trimmed)
             } catch (_: Exception) { /* already saved */ }
             AppLog.i(TAG, "connect succeeded: ${user.login}")
-            ConnectedAccount(user.login, user.name, user.avatarUrl, user.htmlUrl) to PrOpResult.Success
+            ConnectedAccount(user.login, user.name, user.email, user.avatarUrl, user.htmlUrl) to PrOpResult.Success
         } else {
             val op = result.toPrOpResult(host)
             if (op is PrOpResult.AuthRequired) {
@@ -72,7 +73,7 @@ class GitHubAccountManager(private val credentialStore: CredentialStore) {
         val result = api.getAuthenticatedUser()
         val user = result.getOrNull()
         return if (user != null) {
-            ConnectedAccount(user.login, user.name, user.avatarUrl, user.htmlUrl) to PrOpResult.Success
+            ConnectedAccount(user.login, user.name, user.email, user.avatarUrl, user.htmlUrl) to PrOpResult.Success
         } else {
             null to result.toPrOpResult(host)
         }

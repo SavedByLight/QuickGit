@@ -21,8 +21,8 @@ data class RepoDetailUiState(
     val refreshing: Boolean = false,
     val commitMessage: String = "",
     val lastResult: GitOpResult? = null,
-    val authorName: String = "Mobile User",
-    val authorEmail: String = "mobile@example.com"
+    val authorName: String = "",
+    val authorEmail: String = ""
 )
 
 class RepoDetailViewModel(private val repoManager: RepoManager) : ViewModel() {
@@ -33,6 +33,10 @@ class RepoDetailViewModel(private val repoManager: RepoManager) : ViewModel() {
 
     fun init(repoPath: String) {
         this.repoPath = repoPath
+        _state.value = _state.value.copy(
+            authorName = repoManager.getCommitAuthorName(),
+            authorEmail = repoManager.getCommitAuthorEmail()
+        )
         loadStatus(showRefreshing = true)
     }
 

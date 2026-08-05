@@ -89,7 +89,7 @@ fun MergeScreen(repoPath: String, vm: MergeViewModel, onBack: () -> Unit, onFini
                         OutlinedButton(onClick = { vm.abort() }, modifier = Modifier.weight(1f)) { Text("Abort merge") }
                         Spacer(Modifier.width(8.dp))
                         Button(
-                            onClick = { vm.finishMerge(commitMessage, "Mobile User", "mobile@example.com") },
+                            onClick = { vm.finishMerge(commitMessage) },
                             enabled = state.conflicts.isEmpty() && commitMessage.isNotBlank(),
                             modifier = Modifier.weight(1f)
                         ) { Text("Complete merge") }
