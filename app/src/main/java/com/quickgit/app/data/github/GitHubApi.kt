@@ -90,10 +90,11 @@ class GitHubApi(private val token: String?) {
 
     private fun JSONObject.toRemoteRepo(): GitHubRemoteRepo {
         val owner = optJSONObject("owner")
+        val fullName = getString("full_name")
         return GitHubRemoteRepo(
             id = getLong("id"),
             name = getString("name"),
-            fullName = getString("full_name"),
+            fullName = fullName,
             description = if (isNull("description")) null else optString("description").takeIf { it.isNotBlank() },
             htmlUrl = optString("html_url", ""),
             cloneUrl = optString("clone_url", ""),
