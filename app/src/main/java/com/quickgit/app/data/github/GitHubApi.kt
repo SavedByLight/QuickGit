@@ -2,6 +2,7 @@ package com.quickgit.app.data.github
 
 import com.quickgit.app.data.AppLog
 import com.quickgit.app.data.models.GitHubRemoteRepo
+import com.quickgit.app.data.models.Issue
 import com.quickgit.app.data.models.MergeMethod
 import com.quickgit.app.data.models.PrComment
 import com.quickgit.app.data.models.PrOpResult
@@ -168,8 +169,62 @@ class GitHubApi(private val token: String?) {
         (0 until arr.length()).map { i -> arr.getJSONObject(i).getString("name") }
     }
 
+    fun listIssues(owner: String, repo: String, state: String): Result<List<Issue>> = runCatching {
+        // GitHub's issues endpoint also returns PRs; exclude those via pull_request field.
+        val arr = request("GET", "/repos/$owner/$repo/issues?state=$state&per_page=50") as JSONArray
+        (0 until arr.length()).mapNotNull { i ->
+            val o = arr.getJSONObject(i)
+            if (o.has("pull_request")) null else o.toIssue()
+        }
+    }
+
+    fun getIssue(owner: String, repo: String, number: Int): Result<Issue> = runCatching {
+        (request("GET", "/repos/$owner/$repo/issues/$number") as JSONObject).toIssue()
+    }
+
+    fun createIssue(owner: String, repo: String, title: String, body: String): Result<Issue> = runCatching {
+        val payload = JSONObject().put("title", title).put("body", body)
+        (request("POST", "/repos/$owner/$repo/issues", payload) as JSONObject).toIssue()
+    }
+
+    fun setIssueState(owner: String, repo: String, number: Int, open: Boolean): Result<Unit> = runCatching {
+        request(
+            "PATCH",
+            "/repos/$owner/$repo/issues/$number",
+            JSONObject().put("state", if (open) "open" else "closed")
+        )
+        Unit
+    }
+
+
     /** Maps a Result<T> failure onto PrOpResult, distinguishing auth failures for the caller. */
-    private fun JSONObject.toPullRequest(): PullRequest {
+    
+    private fun JSONObject.toIssue(): Issue {
+        val labelsArr = optJSONArray("labels")
+        val labels = if (labelsArr == null) emptyList() else (0 until labelsArr.length()).mapNotNull { i ->
+            val item = labelsArr.opt(i)
+            when (item) {
+                is String -> item
+                is JSONObject -> item.optString("name").takeIf { it.isNotBlank() }
+                else -> null
+            }
+        }
+        return Issue(
+            number = getInt("number"),
+            title = optString("title", ""),
+            body = if (!has("body") || isNull("body")) null else getString("body"),
+            state = optString("state", "open"),
+            authorLogin = optJSONObject("user")?.optString("login") ?: "unknown",
+            commentsCount = optInt("comments", 0),
+            labels = labels,
+            htmlUrl = optString("html_url", ""),
+            createdAt = optString("created_at", ""),
+            updatedAt = optString("updated_at", ""),
+            isPullRequest = has("pull_request")
+        )
+    }
+
+private fun JSONObject.toPullRequest(): PullRequest {
         val head = getJSONObject("head")
         val base = getJSONObject("base")
         return PullRequest(
