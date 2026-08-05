@@ -32,6 +32,7 @@ fun RepoDetailScreen(
     onOpenHistory: () -> Unit,
     onOpenBranches: () -> Unit,
     onOpenFiles: () -> Unit,
+    onOpenPullRequests: () -> Unit,
     onConflicts: () -> Unit,
     onNeedsAuth: (String) -> Unit
 ) {
@@ -59,6 +60,7 @@ fun RepoDetailScreen(
                     IconButton(onClick = onOpenFiles) { Icon(Icons.Default.FolderOpen, "Files") }
                     IconButton(onClick = onOpenHistory) { Icon(Icons.Default.History, "History") }
                     IconButton(onClick = onOpenBranches) { Icon(Icons.Default.AccountTree, "Branches") }
+                    IconButton(onClick = onOpenPullRequests) { Icon(Icons.Default.CallMerge, "Pull requests") }
                 }
             )
         }

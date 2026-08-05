@@ -66,7 +66,22 @@ fun QuickGitNavGraph() {
                 onOpenHistory = { navController.navigate(Dest.history(repoPath)) },
                 onOpenBranches = { navController.navigate(Dest.branches(repoPath)) },
                 onOpenFiles = { navController.navigate(Dest.files(repoPath)) },
+                onOpenPullRequests = { navController.navigate(Dest.pullRequests(repoPath)) },
                 onConflicts = { navController.navigate(Dest.merge(repoPath)) },
+                onNeedsAuth = { navController.navigate(Dest.SETTINGS) }
+            )
+        }
+
+        composable(
+            Dest.PULL_REQUESTS,
+            arguments = listOf(navArgument("repoPath") { type = NavType.StringType })
+        ) { backStackEntry ->
+            val repoPath = Dest.decode(backStackEntry.arguments!!.getString("repoPath")!!)
+            val vm: PullRequestsViewModel = viewModel(factory = factory)
+            androidx.compose.runtime.LaunchedEffect(repoPath) { vm.init(repoPath) }
+            PullRequestsScreen(
+                vm = vm,
+                onBack = { navController.popBackStack() },
                 onNeedsAuth = { navController.navigate(Dest.SETTINGS) }
             )
         }

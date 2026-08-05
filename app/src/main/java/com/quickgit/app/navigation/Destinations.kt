@@ -12,6 +12,7 @@ object Dest {
     const val FILES = "files/{repoPath}"
     const val EDITOR = "editor/{repoPath}/{filePath}"
     const val LOGS = "logs"
+    const val PULL_REQUESTS = "pull_requests/{repoPath}"
 
     fun repoDetail(path: String) = "repo_detail/${encode(path)}"
     fun history(path: String) = "history/${encode(path)}"
@@ -22,6 +23,7 @@ object Dest {
     fun files(path: String) = "files/${encode(path)}"
     fun editor(path: String, filePath: String) =
         "editor/${encode(path)}/${encode(filePath)}"
+    fun pullRequests(path: String) = "pull_requests/${encode(path)}"
 
     private fun encode(s: String) = java.net.URLEncoder.encode(s, "UTF-8")
     fun decode(s: String) = java.net.URLDecoder.decode(s, "UTF-8")

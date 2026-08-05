@@ -1,5 +1,7 @@
 package com.quickgit.app.ui.screens
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -10,6 +12,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.quickgit.app.ui.theme.GitGreen
@@ -23,6 +26,10 @@ fun SettingsScreen(
     onBack: () -> Unit
 ) {
     val state by vm.state.collectAsState()
+
+    val folderPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { uri -> uri?.let { vm.setReposRoot(it) } }
 
     LaunchedEffect(initialHost) {
         if (!initialHost.isNullOrBlank()) vm.loadForHost(initialHost)
@@ -41,6 +48,47 @@ fun SettingsScreen(
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
         ) {
+            Text("Repo storage location", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "Where local clones live on disk. Point this at a folder you can also reach with " +
+                    "your file manager if you need to copy files into a repo from outside the app — " +
+                    "on newer Android versions the default folder is private to QuickGit and isn't " +
+                    "reachable from other apps.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                state.reposRootPath,
+                style = MaterialTheme.typography.bodySmall,
+                fontFamily = FontFamily.Monospace,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Spacer(Modifier.height(8.dp))
+            Row {
+                OutlinedButton(onClick = { folderPicker.launch(null) }) {
+                    Text("Choose folder…")
+                }
+                if (state.reposRootIsUserChosen) {
+                    Spacer(Modifier.width(8.dp))
+                    OutlinedButton(onClick = { vm.resetReposRoot() }) {
+                        Text("Use default")
+                    }
+                }
+            }
+            Text(
+                "Note: existing local repos won't move automatically — clone or re-clone them again " +
+                    "after switching.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 4.dp)
+            )
+
+            Spacer(Modifier.height(28.dp))
+            HorizontalDivider()
+            Spacer(Modifier.height(28.dp))
+
             Text("HTTPS personal access token", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(4.dp))
             Text(
