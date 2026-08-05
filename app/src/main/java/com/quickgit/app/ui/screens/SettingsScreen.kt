@@ -299,7 +299,7 @@ fun SettingsScreen(
             Spacer(Modifier.height(4.dp))
             Text(
                 "Import an armored OpenPGP secret key to sign commits. Add the matching public key " +
-                    "to your GitHub account (Settings → SSH and GPG keys) so GitHub shows "Verified".",
+                    "to your GitHub account (Settings → SSH and GPG keys) so GitHub shows Verified.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

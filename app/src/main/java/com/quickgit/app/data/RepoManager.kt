@@ -573,7 +573,7 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                     doCommit()
                 }
             }
-            AppLog.i(TAG, "commit succeeded: "${message.take(50)}"" + if (shouldSign) " (signed)" else "")
+            AppLog.i(TAG, "commit succeeded: ${message.take(50)}" + if (shouldSign) " (signed)" else "")
             GitOpResult.Success
         } catch (e: GitAPIException) {
             AppLog.e(TAG, "commit failed", e)
