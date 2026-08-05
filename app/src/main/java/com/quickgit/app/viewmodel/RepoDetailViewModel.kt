@@ -141,5 +141,14 @@ class RepoDetailViewModel(private val repoManager: RepoManager) : ViewModel() {
         }
     }
 
+    fun fetchLfs() {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(busy = true)
+            val result = withContext(Dispatchers.IO) { repoManager.fetchLfs(repoPath) }
+            _state.value = _state.value.copy(busy = false, lastResult = result)
+            if (result is GitOpResult.Success) loadStatus(showRefreshing = false)
+        }
+    }
+
     fun consumeResult() { _state.value = _state.value.copy(lastResult = null) }
 }

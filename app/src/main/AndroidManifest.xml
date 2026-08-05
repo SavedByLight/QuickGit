@@ -23,7 +23,8 @@
         android:label="@string/app_name"
         android:theme="@style/Theme.QuickGit"
         android:supportsRtl="true"
-        android:requestLegacyExternalStorage="true">
+        android:requestLegacyExternalStorage="true"
+        android:largeHeap="true">
 
         <activity
             android:name=".MainActivity"
