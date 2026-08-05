@@ -129,7 +129,7 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                     android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION
             )
         } catch (e: Exception) {
-            AppLog.w(TAG, "could not persist URI permission for $treeUri", e)
+            AppLog.w(TAG, "could not persist URI permission for $treeUri: ${e.message}")
         }
         prefs.edit()
             .putString(PREF_ROOT_PATH, resolved.absolutePath)
@@ -168,7 +168,7 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                 else -> null
             }
         } catch (e: Exception) {
-            AppLog.w(TAG, "could not resolve tree uri to path: $treeUri", e)
+            AppLog.w(TAG, "could not resolve tree uri to path: $treeUri: ${e.message}")
             null
         }
     }
