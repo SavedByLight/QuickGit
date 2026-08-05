@@ -36,6 +36,7 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     private val TAG = "RepoManager"
     private val PREF_ROOT_PATH = "repos_root_path"
     private val PREF_ROOT_URI = "repos_root_uri"
+    private val PREF_EXTRA_REPO_PATHS = "extra_repo_paths"
 
     private val repoOperationLocks = ConcurrentHashMap<String, Any>()
 
@@ -173,6 +174,50 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         }
     }
 
+    /**
+     * Result of resolving a SAF-picked folder as a clone destination.
+     */
+    sealed class ResolveCloneDestinationResult {
+        data class Success(val path: File) : ResolveCloneDestinationResult()
+        data class Error(val message: String) : ResolveCloneDestinationResult()
+    }
+
+    /**
+     * Validates a folder the user picked (via `ActivityResultContracts.OpenDocumentTree()`,
+     * typically after using the picker's own "New folder" action) as a `git clone` destination.
+     * Same local-storage-only restriction as [setReposRootFromTree] — JGit needs a real path.
+     */
+    fun resolveCloneDestination(treeUri: Uri): ResolveCloneDestinationResult {
+        val resolved = filePathForTreeUri(treeUri)
+            ?: return ResolveCloneDestinationResult.Error(
+                "That folder isn't on local device storage, so QuickGit can't clone into it directly " +
+                    "(this happens with cloud-backed providers like Drive). Pick a folder on your " +
+                    "phone's internal storage or an SD card instead."
+            )
+        if (resolved.exists() && resolved.listFiles()?.isNotEmpty() == true) {
+            return ResolveCloneDestinationResult.Error("'${resolved.name}' isn't empty — pick an empty or new folder.")
+        }
+        resolved.mkdirs()
+        if (!resolved.isDirectory || !canActuallyWrite(resolved)) {
+            return ResolveCloneDestinationResult.Error("QuickGit can't write to that folder.")
+        }
+        return ResolveCloneDestinationResult.Success(resolved)
+    }
+
+    /**
+     * Tracks a clone destination that lives outside [reposRoot] so [listLocalRepos] still finds
+     * it — the repo list otherwise only scans directly under reposRoot.
+     */
+    private fun rememberExternalRepoPath(dir: File) {
+        val root = runCatching { reposRoot.canonicalFile }.getOrElse { reposRoot.absoluteFile }
+        val d = runCatching { dir.canonicalFile }.getOrElse { dir.absoluteFile }
+        if (d.absolutePath == root.absolutePath || d.absolutePath.startsWith(root.absolutePath + File.separator)) {
+            return // already discoverable via the normal reposRoot scan
+        }
+        val current = prefs.getStringSet(PREF_EXTRA_REPO_PATHS, emptySet()) ?: emptySet()
+        prefs.edit().putStringSet(PREF_EXTRA_REPO_PATHS, current + d.absolutePath).apply()
+    }
+
     private fun resolveReposRoot(): File {
         val publicRoot = File(
             Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS),
@@ -218,8 +263,19 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
 
     fun listLocalRepos(): List<RepoInfo> {
         val root = reposRoot
-        val dirs = root.listFiles { f -> f.isDirectory && File(f, ".git").exists() } ?: return emptyList()
-        return dirs.mapNotNull { runCatching { infoFor(it) }.getOrNull() }
+        val rootDirs = root.listFiles { f -> f.isDirectory && File(f, ".git").exists() }?.toList() ?: emptyList()
+
+        val extraPaths = prefs.getStringSet(PREF_EXTRA_REPO_PATHS, emptySet()) ?: emptySet()
+        val extraDirs = extraPaths.map { File(it) }.filter { it.isDirectory && File(it, ".git").exists() }
+        if (extraDirs.size != extraPaths.size) {
+            // Self-heal: a picked folder was deleted/moved elsewhere — stop tracking it.
+            prefs.edit().putStringSet(PREF_EXTRA_REPO_PATHS, extraDirs.map { it.absolutePath }.toSet()).apply()
+        }
+
+        val allDirs = (rootDirs + extraDirs).distinctBy {
+            runCatching { it.canonicalPath }.getOrDefault(it.absolutePath)
+        }
+        return allDirs.mapNotNull { runCatching { infoFor(it) }.getOrNull() }
     }
 
     private fun infoFor(dir: File): RepoInfo {
@@ -232,31 +288,56 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         }
     }
 
+    /** Clones into a new named subfolder of [reposRoot] — the common case (typed folder name). */
     fun cloneRepo(
         url: String,
         folderName: String,
         onProgress: (String) -> Unit = {}
+    ): GitOpResult = cloneRepo(url, File(reposRoot, folderName), onProgress)
+
+    /** Clones into an explicit [destination], e.g. one the user picked via the system file manager. */
+    fun cloneRepo(
+        url: String,
+        destination: File,
+        onProgress: (String) -> Unit
     ): GitOpResult {
-        val dest = File(reposRoot, folderName)
-        if (dest.exists()) return GitOpResult.Error("A repo named '$folderName' already exists locally")
-        AppLog.i(TAG, "clone: $url -> $folderName")
+        val label = destination.name
+        if (destination.exists() && destination.listFiles()?.isNotEmpty() == true) {
+            return GitOpResult.Error("'$label' already exists and isn't empty")
+        }
+        val alreadyExisted = destination.exists()
+        AppLog.i(TAG, "clone: $url -> ${destination.absolutePath}")
         return try {
             val cmd = Git.cloneRepository()
                 .setURI(url)
-                .setDirectory(dest)
+                .setDirectory(destination)
                 .setProgressMonitor(TextProgress(onProgress))
             applyTransportConfig(cmd, url)
             cmd.call().close()
-            AppLog.i(TAG, "clone succeeded: $folderName")
+            rememberExternalRepoPath(destination)
+            AppLog.i(TAG, "clone succeeded: ${destination.absolutePath}")
             GitOpResult.Success
         } catch (e: org.eclipse.jgit.api.errors.TransportException) {
-            dest.deleteRecursively()
-            AppLog.e(TAG, "clone failed (transport): $folderName", e)
+            cleanUpFailedCloneDestination(destination, alreadyExisted)
+            AppLog.e(TAG, "clone failed (transport): $label", e)
             if (isAuthFailure(e)) GitOpResult.AuthRequired(url) else GitOpResult.Error(e.message ?: "Transport error", e)
         } catch (e: Exception) {
-            dest.deleteRecursively()
-            AppLog.e(TAG, "clone failed: $folderName", e)
+            cleanUpFailedCloneDestination(destination, alreadyExisted)
+            AppLog.e(TAG, "clone failed: $label", e)
             GitOpResult.Error(e.message ?: "Clone failed", e)
+        }
+    }
+
+    /**
+     * On a failed clone: if we created the destination folder ourselves, remove it entirely.
+     * If the user picked a folder that already existed (SAF flow), leave it in place — just
+     * clear out whatever the partial clone wrote — since it's not ours to delete.
+     */
+    private fun cleanUpFailedCloneDestination(destination: File, alreadyExisted: Boolean) {
+        if (alreadyExisted) {
+            destination.listFiles()?.forEach { it.deleteRecursively() }
+        } else {
+            destination.deleteRecursively()
         }
     }
 
@@ -563,17 +644,44 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         }
     }
 
-    fun createBranch(path: String, name: String, checkout: Boolean): GitOpResult = try {
+    /**
+     * Runs a git write operation for [path], serialized per-repo (concurrent operations on the
+     * same repo race for JGit's DirCache lock) and clearing a stale `.git/index.lock` left by a
+     * previous crashed/interrupted operation, same as [discardChanges].
+     *
+     * Also the fix for a real crash: JGit throws `JGitInternalException` — a plain
+     * `RuntimeException`, not `GitAPIException` — for lock failures, so callers that only
+     * caught `GitAPIException` let it escape uncaught and crash the app. Catching `Exception`
+     * broadly here avoids that regardless of which JGit exception type is thrown.
+     */
+    private fun withRepoLock(path: String, op: () -> GitOpResult): GitOpResult {
+        val operationLock = repoOperationLocks.getOrPut(path) { Any() }
+        return synchronized(operationLock) {
+            val indexLock = File(path, ".git/index.lock")
+            if (indexLock.exists() && !indexLock.delete()) {
+                AppLog.w(TAG, "operation blocked: index.lock present and couldn't be removed")
+                return@synchronized GitOpResult.Error(
+                    "Git index is locked. Close other Git operations and delete .git/index.lock, then retry."
+                )
+            }
+            try {
+                op()
+            } catch (e: Exception) {
+                AppLog.e(TAG, "git operation failed: $path", e)
+                GitOpResult.Error(e.message ?: e.javaClass.simpleName, e)
+            }
+        }
+    }
+
+    fun createBranch(path: String, name: String, checkout: Boolean): GitOpResult = withRepoLock(path) {
         openGit(path).use { git ->
             git.branchCreate().setName(name).call()
             if (checkout) git.checkout().setName(name).call()
         }
         GitOpResult.Success
-    } catch (e: GitAPIException) {
-        GitOpResult.Error(e.message ?: "Failed to create branch", e)
     }
 
-    fun checkoutBranch(path: String, name: String): GitOpResult = try {
+    fun checkoutBranch(path: String, name: String): GitOpResult = withRepoLock(path) {
         openGit(path).use { git ->
             val local = git.repository.findRef(name)
             if (local == null) {
@@ -589,19 +697,15 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
             }
         }
         GitOpResult.Success
-    } catch (e: GitAPIException) {
-        GitOpResult.Error(e.message ?: "Checkout failed", e)
     }
 
-    fun deleteBranch(path: String, name: String, force: Boolean): GitOpResult = try {
+    fun deleteBranch(path: String, name: String, force: Boolean): GitOpResult = withRepoLock(path) {
         openGit(path).use { git ->
             val cmd = git.branchDelete().setBranchNames(name)
             if (force) cmd.setForce(true)
             cmd.call()
         }
         GitOpResult.Success
-    } catch (e: GitAPIException) {
-        GitOpResult.Error(e.message ?: "Delete branch failed", e)
     }
 
     // ---------------- History ----------------
