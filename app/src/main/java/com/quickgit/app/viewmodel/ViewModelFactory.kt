@@ -32,7 +32,12 @@ class ViewModelFactory(private val app: Application) : ViewModelProvider.Factory
             modelClass.isAssignableFrom(MergeViewModel::class.java) ->
                 MergeViewModel(gitApp.repoManager)
             modelClass.isAssignableFrom(SettingsViewModel::class.java) ->
-                SettingsViewModel(gitApp.credentialStore, gitApp.repoManager, gitApp.gitHubAccountManager)
+                SettingsViewModel(
+                    gitApp.credentialStore,
+                    gitApp.repoManager,
+                    gitApp.gitHubAccountManager,
+                    gitApp.appUpdateManager
+                )
             modelClass.isAssignableFrom(FilesViewModel::class.java) ->
                 FilesViewModel(gitApp.repoManager)
             modelClass.isAssignableFrom(EditorViewModel::class.java) ->

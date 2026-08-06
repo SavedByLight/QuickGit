@@ -59,7 +59,7 @@ fun RepoDetailScreen(
         val status = state.status
         Column(Modifier.padding(padding).fillMaxSize()) {
 
-            // Back + centered repo name / branch
+            // Back (left) + centered repo name / branch + History (right, icon only)
             Box(
                 Modifier
                     .fillMaxWidth()
@@ -89,9 +89,15 @@ fun RepoDetailScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
+                IconButton(
+                    onClick = onOpenHistory,
+                    modifier = Modifier.align(Alignment.CenterEnd)
+                ) {
+                    Icon(Icons.Default.History, "History")
+                }
             }
 
-            // Sub-page navigation under the name (scrollable — fits 7 entries)
+            // Sub-page navigation under the name
             androidx.compose.foundation.lazy.LazyRow(
                 Modifier
                     .fillMaxWidth()
@@ -100,7 +106,6 @@ fun RepoDetailScreen(
                 horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 item { SubPageButton(Icons.Default.FolderOpen, "Files", onOpenFiles) }
-                item { SubPageButton(Icons.Default.History, "History", onOpenHistory) }
                 item { SubPageButton(Icons.Default.AccountTree, "Branches", onOpenBranches) }
                 item { SubPageButton(Icons.Default.CallMerge, "PRs", onOpenPullRequests) }
                 item { SubPageButton(Icons.Default.BugReport, "Issues", onOpenIssues) }

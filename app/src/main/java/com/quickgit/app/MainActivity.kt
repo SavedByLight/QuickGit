@@ -12,6 +12,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
 import com.quickgit.app.navigation.QuickGitNavGraph
+import com.quickgit.app.ui.components.AutoUpdateHost
 import com.quickgit.app.ui.theme.QuickGitTheme
 
 class MainActivity : ComponentActivity() {
@@ -26,7 +27,10 @@ class MainActivity : ComponentActivity() {
         setContent {
             QuickGitTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    QuickGitNavGraph()
+                    // On launch: check GitHub Releases, auto-download newer APK, prompt install
+                    AutoUpdateHost {
+                        QuickGitNavGraph()
+                    }
                 }
             }
         }

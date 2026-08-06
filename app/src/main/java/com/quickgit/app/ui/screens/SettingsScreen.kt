@@ -8,13 +8,16 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import com.quickgit.app.data.AppUpdateConfig
 import com.quickgit.app.ui.theme.GitGreen
 import com.quickgit.app.viewmodel.SettingsViewModel
 
@@ -358,6 +361,78 @@ fun SettingsScreen(
                     onCheckedChange = vm::setGpgSignEnabled,
                     enabled = state.hasStoredGpgKey
                 )
+            }
+
+            HorizontalDivider(Modifier.padding(vertical = 20.dp))
+            Text("About & updates", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "Current version ${state.appVersionName} (${state.appVersionCode}). " +
+                    "Checks GitHub Releases on ${AppUpdateConfig.OWNER}/${AppUpdateConfig.REPO} " +
+                    "for a newer APK published by the release workflow.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(12.dp))
+            if (state.updateAvailable && state.updateLatestName != null) {
+                Text(
+                    "New version available: ${state.updateLatestName}",
+                    color = GitGreen,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                state.updateNotes?.takeIf { it.isNotBlank() }?.let { notes ->
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        notes.take(400) + if (notes.length > 400) "…" else "",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+            }
+            if (state.updateDownloading) {
+                LinearProgressIndicator(
+                    progress = { state.updateProgress / 100f },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Downloading… ${state.updateProgress}%",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Spacer(Modifier.height(8.dp))
+            }
+            val context = LocalContext.current
+            LaunchedEffect(state.updateNeedsInstallPermission) {
+                if (state.updateNeedsInstallPermission) {
+                    try {
+                        context.startActivity(vm.installPermissionIntent())
+                    } catch (_: Exception) { }
+                    vm.clearInstallPermissionFlag()
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = { vm.checkForUpdate() },
+                    enabled = !state.updateChecking && !state.updateDownloading
+                ) {
+                    if (state.updateChecking) {
+                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(8.dp))
+                    } else {
+                        Icon(Icons.Default.SystemUpdate, null, Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                    }
+                    Text(if (state.updateChecking) "Checking…" else "Check for updates")
+                }
+                if (state.updateAvailable) {
+                    Button(
+                        onClick = { vm.downloadAndInstallUpdate() },
+                        enabled = !state.updateDownloading
+                    ) {
+                        Text(if (state.updateDownloading) "Downloading…" else "Download & install")
+                    }
+                }
             }
 
             state.statusMessage?.let { msg ->
