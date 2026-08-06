@@ -45,6 +45,10 @@ class ViewModelFactory(private val app: Application) : ViewModelProvider.Factory
                 IssuesViewModel(gitApp.issueManager)
             modelClass.isAssignableFrom(BrowseGitHubViewModel::class.java) ->
                 BrowseGitHubViewModel(gitApp.gitHubAccountManager, gitApp.repoManager)
+            modelClass.isAssignableFrom(ProfileViewModel::class.java) ->
+                ProfileViewModel(gitApp.gitHubAccountManager)
+            modelClass.isAssignableFrom(UserSearchViewModel::class.java) ->
+                UserSearchViewModel(gitApp.gitHubAccountManager)
             else -> throw IllegalArgumentException("Unknown ViewModel: $modelClass")
         }
         return vm as T

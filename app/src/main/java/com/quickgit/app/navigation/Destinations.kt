@@ -15,6 +15,9 @@ object Dest {
     const val PULL_REQUESTS = "pull_requests/{repoPath}"
     const val ISSUES = "issues/{repoPath}"
     const val BROWSE_GITHUB = "browse_github"
+    const val PROFILE_SELF = "profile"
+    const val PROFILE_USER = "profile/{login}"
+    const val USER_SEARCH = "user_search"
 
     fun repoDetail(path: String) = "repo_detail/${encode(path)}"
     fun history(path: String) = "history/${encode(path)}"
@@ -26,6 +29,10 @@ object Dest {
     fun editor(path: String, filePath: String) =
         "editor/${encode(path)}/${encode(filePath)}"
     fun pullRequests(path: String) = "pull_requests/${encode(path)}"
+    fun profile(login: String? = null): String {
+        val q = login?.trim().orEmpty()
+        return if (q.isEmpty()) PROFILE_SELF else "profile/${encode(q)}"
+    }
     fun issues(path: String) = "issues/${encode(path)}"
 
     private fun encode(s: String) = java.net.URLEncoder.encode(s, "UTF-8")
