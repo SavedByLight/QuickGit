@@ -18,7 +18,7 @@ class ViewModelFactory(private val app: Application) : ViewModelProvider.Factory
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         val vm: ViewModel = when {
             modelClass.isAssignableFrom(RepoListViewModel::class.java) ->
-                RepoListViewModel(gitApp.repoManager)
+                RepoListViewModel(gitApp.repoManager, gitApp.gitHubAccountManager)
             modelClass.isAssignableFrom(CloneViewModel::class.java) ->
                 CloneViewModel(gitApp.repoManager)
             modelClass.isAssignableFrom(RepoDetailViewModel::class.java) ->
@@ -43,12 +43,20 @@ class ViewModelFactory(private val app: Application) : ViewModelProvider.Factory
                 PullRequestsViewModel(gitApp.repoManager, gitApp.pullRequestManager)
             modelClass.isAssignableFrom(IssuesViewModel::class.java) ->
                 IssuesViewModel(gitApp.issueManager)
+            modelClass.isAssignableFrom(WorkflowsViewModel::class.java) ->
+                WorkflowsViewModel(gitApp.workflowManager)
+            modelClass.isAssignableFrom(ReleasesViewModel::class.java) ->
+                ReleasesViewModel(gitApp.releaseManager)
             modelClass.isAssignableFrom(BrowseGitHubViewModel::class.java) ->
                 BrowseGitHubViewModel(gitApp.gitHubAccountManager, gitApp.repoManager)
             modelClass.isAssignableFrom(ProfileViewModel::class.java) ->
                 ProfileViewModel(gitApp.gitHubAccountManager)
             modelClass.isAssignableFrom(UserSearchViewModel::class.java) ->
                 UserSearchViewModel(gitApp.gitHubAccountManager)
+            modelClass.isAssignableFrom(RemoteBrowseViewModel::class.java) ->
+                RemoteBrowseViewModel(gitApp.gitHubAccountManager)
+            modelClass.isAssignableFrom(RemoteFileViewModel::class.java) ->
+                RemoteFileViewModel(gitApp.gitHubAccountManager)
             else -> throw IllegalArgumentException("Unknown ViewModel: $modelClass")
         }
         return vm as T

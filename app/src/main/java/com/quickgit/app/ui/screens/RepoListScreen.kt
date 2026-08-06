@@ -24,6 +24,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.quickgit.app.data.models.RepoInfo
 import com.quickgit.app.ui.components.PullToRefreshBox
+import com.quickgit.app.ui.components.UserAvatar
 import com.quickgit.app.viewmodel.RepoListViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -40,6 +41,7 @@ fun RepoListScreen(
 ) {
     val repos by vm.repos.collectAsState()
     val loading by vm.loading.collectAsState()
+    val account by vm.account.collectAsState()
     var repoToDelete by remember { mutableStateOf<RepoInfo?>(null) }
 
     // Re-scan after clone/settings: ViewModel stays alive on the back stack, so init{}
@@ -58,7 +60,18 @@ fun RepoListScreen(
             TopAppBar(
                 title = { Text("QuickGit") },
                 actions = {
-                    IconButton(onClick = onOpenProfile) { Icon(Icons.Default.Person, "Profile") }
+                    IconButton(onClick = onOpenProfile) {
+                        val avatarUrl = account?.avatarUrl
+                        if (avatarUrl.isNullOrBlank()) {
+                            Icon(Icons.Default.Person, "Profile")
+                        } else {
+                            UserAvatar(
+                                avatarUrl = avatarUrl,
+                                login = account?.login ?: "?",
+                                size = 28.dp
+                            )
+                        }
+                    }
                     IconButton(onClick = onSearchPeople) { Icon(Icons.Default.Search, "Search people") }
                     IconButton(onClick = onBrowseGitHub) {
                         Icon(Icons.Default.CloudDownload, "GitHub repos")

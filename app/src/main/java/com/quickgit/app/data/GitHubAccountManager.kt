@@ -157,6 +157,30 @@ class GitHubAccountManager(private val credentialStore: CredentialStore) {
         return all to PrOpResult.Success
     }
 
+    /** Lists files/folders at a path in someone else's (or your own) repo, without cloning it. */
+    fun getRepoContents(
+        owner: String,
+        repo: String,
+        path: String,
+        ref: String
+    ): Pair<List<GitHubApi.RemoteEntry>, PrOpResult> {
+        if (!isConnected()) return emptyList<GitHubApi.RemoteEntry>() to PrOpResult.AuthRequired(host)
+        val result = api.getRepoContents(owner, repo, path, ref)
+        return (result.getOrNull() ?: emptyList()) to result.toPrOpResult(host)
+    }
+
+    /** Fetches a single file's text content at a path/ref, without cloning the repo. */
+    fun getFileContent(
+        owner: String,
+        repo: String,
+        path: String,
+        ref: String
+    ): Pair<String?, PrOpResult> {
+        if (!isConnected()) return null to PrOpResult.AuthRequired(host)
+        val result = api.getFileContent(owner, repo, path, ref)
+        return result.getOrNull() to result.toPrOpResult(host)
+    }
+
     /** Forks someone else's repo into the authenticated user's own account. */
     fun forkRepo(owner: String, repo: String): Pair<GitHubRemoteRepo?, PrOpResult> {
         if (!isConnected()) return null to PrOpResult.AuthRequired(host)

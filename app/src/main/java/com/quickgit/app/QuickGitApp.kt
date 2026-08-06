@@ -5,7 +5,9 @@ import com.quickgit.app.data.CredentialStore
 import com.quickgit.app.data.GitHubAccountManager
 import com.quickgit.app.data.IssueManager
 import com.quickgit.app.data.PullRequestManager
+import com.quickgit.app.data.ReleaseManager
 import com.quickgit.app.data.RepoManager
+import com.quickgit.app.data.WorkflowManager
 
 class QuickGitApp : Application() {
     lateinit var credentialStore: CredentialStore
@@ -18,6 +20,10 @@ class QuickGitApp : Application() {
         private set
     lateinit var issueManager: IssueManager
         private set
+    lateinit var workflowManager: WorkflowManager
+        private set
+    lateinit var releaseManager: ReleaseManager
+        private set
 
     override fun onCreate() {
         super.onCreate()
@@ -26,5 +32,7 @@ class QuickGitApp : Application() {
         pullRequestManager = PullRequestManager(repoManager, credentialStore)
         gitHubAccountManager = GitHubAccountManager(credentialStore)
         issueManager = IssueManager(repoManager, credentialStore)
+        workflowManager = WorkflowManager(repoManager, credentialStore)
+        releaseManager = ReleaseManager(repoManager, credentialStore)
     }
 }

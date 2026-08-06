@@ -1,11 +1,9 @@
 package com.quickgit.app.ui.screens
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -16,12 +14,12 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.quickgit.app.data.github.GitHubApi
+import com.quickgit.app.ui.components.UserAvatar
 import com.quickgit.app.viewmodel.UserSearchViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -122,19 +120,7 @@ private fun UserResultRow(user: GitHubApi.GitHubUserSummary, onClick: () -> Unit
             .padding(16.dp, 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Box(
-            Modifier
-                .size(40.dp)
-                .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.secondaryContainer),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                user.login.take(1).uppercase(),
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSecondaryContainer
-            )
-        }
+        UserAvatar(avatarUrl = user.avatarUrl, login = user.login, size = 40.dp)
         Spacer(Modifier.width(12.dp))
         Column {
             Text(user.login, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)

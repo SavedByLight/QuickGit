@@ -1,26 +1,26 @@
 package com.quickgit.app.ui.screens
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Business
 import androidx.compose.material.icons.filled.CallSplit
+import androidx.compose.material.icons.filled.Code
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.quickgit.app.data.models.GitHubRemoteRepo
+import com.quickgit.app.ui.components.UserAvatar
 import com.quickgit.app.viewmodel.ProfileViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -31,6 +31,7 @@ fun ProfileScreen(
     onBack: () -> Unit,
     onOpenUser: (String) -> Unit = {},
     onCloneRepo: (GitHubRemoteRepo) -> Unit = {},
+    onOpenRepo: (GitHubRemoteRepo) -> Unit = {},
     onNeedsAuth: () -> Unit
 ) {
     val state by vm.state.collectAsState()
@@ -91,20 +92,12 @@ fun ProfileScreen(
                     item {
                         Column(Modifier.padding(20.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Box(
-                                    Modifier
-                                        .size(72.dp)
-                                        .clip(CircleShape)
-                                        .background(MaterialTheme.colorScheme.primaryContainer),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text(
-                                        user.login.take(1).uppercase(),
-                                        style = MaterialTheme.typography.headlineMedium,
-                                        color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                }
+                                UserAvatar(
+                                    avatarUrl = user.avatarUrl,
+                                    login = user.login,
+                                    size = 72.dp,
+                                    textStyle = MaterialTheme.typography.headlineMedium
+                                )
                                 Spacer(Modifier.width(16.dp))
                                 Column {
                                     if (!user.name.isNullOrBlank()) {
@@ -171,7 +164,8 @@ fun ProfileScreen(
                                 repo,
                                 showFork = !state.isSelf,
                                 forking = state.forkingRepoId == repo.id,
-                                onClick = { onCloneRepo(repo) },
+                                onClick = { onOpenRepo(repo) },
+                                onClone = { onCloneRepo(repo) },
                                 onFork = { vm.fork(repo) }
                             )
                             HorizontalDivider()
@@ -197,38 +191,52 @@ private fun ProfileRepoRow(
     showFork: Boolean,
     forking: Boolean,
     onClick: () -> Unit,
+    onClone: () -> Unit,
     onFork: () -> Unit
 ) {
     Row(
         Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Column(
+        Row(
             Modifier
                 .weight(1f)
                 .clickable(onClick = onClick)
-                .padding(16.dp, 12.dp)
+                .padding(16.dp, 12.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(repo.name, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
-            if (!repo.description.isNullOrBlank()) {
-                Spacer(Modifier.height(2.dp))
+            Icon(
+                Icons.Default.Code,
+                contentDescription = "View code",
+                modifier = Modifier.size(20.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.width(12.dp))
+            Column {
+                Text(repo.name, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
+                if (!repo.description.isNullOrBlank()) {
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        repo.description,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2
+                    )
+                }
+                Spacer(Modifier.height(4.dp))
                 Text(
-                    repo.description,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2
+                    listOfNotNull(
+                        repo.language,
+                        if (repo.isPrivate) "Private" else "Public",
+                        if (repo.isFork) "Fork" else null
+                    ).joinToString(" · "),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            Spacer(Modifier.height(4.dp))
-            Text(
-                listOfNotNull(
-                    repo.language,
-                    if (repo.isPrivate) "Private" else "Public",
-                    if (repo.isFork) "Fork" else null
-                ).joinToString(" · "),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+        }
+        IconButton(onClick = onClone, modifier = Modifier.padding(end = 4.dp)) {
+            Icon(Icons.Default.Download, "Clone this repo")
         }
         if (showFork) {
             if (forking) {
