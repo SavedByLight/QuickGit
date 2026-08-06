@@ -20,8 +20,10 @@ import org.eclipse.jgit.lib.RepositoryState
 import org.eclipse.jgit.revwalk.RevCommit
 import org.eclipse.jgit.revwalk.RevWalk
 import org.eclipse.jgit.storage.file.FileRepositoryBuilder
+import org.eclipse.jgit.lib.NullProgressMonitor
 import org.eclipse.jgit.transport.CredentialsProvider
 import org.eclipse.jgit.transport.RefSpec
+import org.eclipse.jgit.transport.RemoteRefUpdate
 import org.eclipse.jgit.transport.SshTransport
 import org.eclipse.jgit.transport.Transport
 import org.eclipse.jgit.transport.UsernamePasswordCredentialsProvider
@@ -41,6 +43,7 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     private val PREF_AUTHOR_NAME = "commit_author_name"
     private val PREF_AUTHOR_EMAIL = "commit_author_email"
     private val PREF_GPG_SIGN = "gpg_sign_commits"
+    private val PREF_SIGN_OFF = "commit_sign_off"
 
     private val repoOperationLocks = ConcurrentHashMap<String, Any>()
 
@@ -87,6 +90,13 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
 
     fun setGpgSigningEnabled(enabled: Boolean) {
         prefs.edit().putBoolean(PREF_GPG_SIGN, enabled).commit()
+    }
+
+    /** When true, commits get a `Signed-off-by: Name <email>` trailer (git commit -s). */
+    fun isSignOffEnabled(): Boolean = prefs.getBoolean(PREF_SIGN_OFF, false)
+
+    fun setSignOffEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(PREF_SIGN_OFF, enabled).commit()
     }
 
     /**
@@ -584,15 +594,22 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
 
     // ---------------- Commit ----------------
 
-    fun commit(path: String, message: String, authorName: String, authorEmail: String): GitOpResult =
+    fun commit(
+        path: String,
+        message: String,
+        authorName: String,
+        authorEmail: String,
+        signOff: Boolean = isSignOffEnabled()
+    ): GitOpResult =
         withRepoLock(path) {
             val shouldSign = isGpgSigningEnabled() && credentialStore.hasGpgKey()
             val gpgKey = if (shouldSign) credentialStore.getGpgPrivateKey() else null
             val gpgPass = if (shouldSign) credentialStore.getGpgPassphrase() else null
+            val fullMessage = if (signOff) appendSignOff(message, authorName, authorEmail) else message
             openGit(path).use { git ->
                 val doCommit = {
                     val cmd = git.commit()
-                        .setMessage(message)
+                        .setMessage(fullMessage)
                         .setAuthor(PersonIdent(authorName, authorEmail))
                         .setCommitter(PersonIdent(authorName, authorEmail))
                     if (shouldSign && gpgKey != null) {
@@ -609,29 +626,66 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                     doCommit()
                 }
             }
-            AppLog.i(TAG, "commit succeeded: ${message.take(50)}" + if (shouldSign) " (signed)" else "")
+            AppLog.i(
+                TAG,
+                "commit succeeded: ${message.take(50)}" +
+                    (if (shouldSign) " (gpg-signed)" else "") +
+                    (if (signOff) " (signed-off)" else "")
+            )
             GitOpResult.Success
         }
 
+    /** Appends a Signed-off-by trailer if one is not already present (DCO / git commit -s). */
+    private fun appendSignOff(message: String, name: String, email: String): String {
+        val trailer = "Signed-off-by: $name <$email>"
+        val trimmed = message.trimEnd()
+        if (trimmed.lines().any { it.trim().equals(trailer, ignoreCase = true) }) {
+            return trimmed
+        }
+        // Ensure a blank line before the trailer when the body is non-empty
+        return if (trimmed.isEmpty()) trailer else "$trimmed\n\n$trailer"
+    }
+
     // ---------------- Push / Pull / Fetch ----------------
 
-    fun push(path: String): GitOpResult {
-        AppLog.i(TAG, "push: $path")
+    /**
+     * Push to origin.
+     * - [forceWithLease]: only overwrite remote if it still matches our remote-tracking tip
+     *   (safe against clobbering others' commits; requires a prior fetch).
+     * - [force]: unconditional overwrite (`--force`). Prefer lease unless you know you need this.
+     * If both are true, lease wins.
+     */
+    fun push(
+        path: String,
+        force: Boolean = false,
+        forceWithLease: Boolean = false
+    ): GitOpResult {
+        val mode = when {
+            forceWithLease -> "force-with-lease"
+            force -> "force"
+            else -> "normal"
+        }
+        AppLog.i(TAG, "push: $path mode=$mode")
         return try {
             openGit(path).use { git ->
                 val remoteUrl = git.repository.config.getString("remote", "origin", "url") ?: ""
                 maybeUploadLfs(path, remoteUrl)?.let { AppLog.i(TAG, it) }
-                val cmd = git.push()
-                applyTransportConfig(cmd, remoteUrl)
-                val results = cmd.call()
-                val rejected = results.flatMap { it.remoteUpdates }
-                    .filter { it.status.name.contains("REJECTED") }
-                if (rejected.isNotEmpty()) {
-                    AppLog.w(TAG, "push rejected: ${rejected.size} ref(s)")
-                    GitOpResult.Error("Push rejected — pull first (${rejected.size} ref(s) rejected)")
+
+                if (forceWithLease || force) {
+                    pushForced(git, remoteUrl, withLease = forceWithLease)
                 } else {
-                    AppLog.i(TAG, "push succeeded")
-                    GitOpResult.Success
+                    val cmd = git.push()
+                    applyTransportConfig(cmd, remoteUrl)
+                    val results = cmd.call()
+                    val rejected = results.flatMap { it.remoteUpdates }
+                        .filter { it.status.name.contains("REJECTED") }
+                    if (rejected.isNotEmpty()) {
+                        AppLog.w(TAG, "push rejected: ${rejected.size} ref(s)")
+                        GitOpResult.Error("Push rejected — pull first (${rejected.size} ref(s) rejected)")
+                    } else {
+                        AppLog.i(TAG, "push succeeded")
+                        GitOpResult.Success
+                    }
                 }
             }
         } catch (e: org.eclipse.jgit.api.errors.TransportException) {
@@ -643,6 +697,84 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         } catch (e: Exception) {
             AppLog.e(TAG, "push failed", e)
             GitOpResult.Error(e.message ?: "Push failed", e)
+        }
+    }
+
+    /**
+     * Force / force-with-lease push of the current branch via [RemoteRefUpdate].
+     * Lease uses the remote-tracking ref (`refs/remotes/origin/<branch>`) as the expected
+     * remote tip — same as `git push --force-with-lease`.
+     */
+    private fun pushForced(git: Git, remoteUrl: String, withLease: Boolean): GitOpResult {
+        val repo = git.repository
+        val branch = repo.branch
+            ?: return GitOpResult.Error("Detached HEAD — check out a branch before force push")
+        val localRef = "refs/heads/$branch"
+        val remoteRef = "refs/heads/$branch"
+        val trackingRef = "refs/remotes/origin/$branch"
+        val localId = repo.resolve(localRef)
+            ?: return GitOpResult.Error("No local branch $branch")
+
+        val expectedRemoteId: ObjectId? = if (withLease) {
+            val id = repo.resolve(trackingRef)
+            if (id == null) {
+                return GitOpResult.Error(
+                    "No remote-tracking branch origin/$branch — fetch first before force-with-lease"
+                )
+            }
+            id
+        } else {
+            null
+        }
+
+        if (withLease) {
+            AppLog.w(TAG, "push: FORCE-WITH-LEASE expected remote tip ${expectedRemoteId!!.name}")
+        } else {
+            AppLog.w(TAG, "push: FORCE (no lease)")
+        }
+
+        val update = RemoteRefUpdate(
+            repo,
+            localRef,
+            remoteRef,
+            /* forceUpdate = */ true,
+            trackingRef,
+            expectedRemoteId
+        )
+
+        Transport.open(repo, remoteUrl).use { transport ->
+            configureTransport(transport, remoteUrl)
+            val results = transport.push(NullProgressMonitor.INSTANCE, listOf(update))
+            val rejected = results.flatMap { it.remoteUpdates }
+                .filter { it.status.name.contains("REJECTED") || it.status.name.contains("NON_EXISTING") }
+            if (rejected.isNotEmpty()) {
+                val statuses = rejected.joinToString { "${it.remoteName}: ${it.status}" }
+                AppLog.w(TAG, "force push rejected: $statuses")
+                val leaseHint = if (withLease) {
+                    "Remote moved since your last fetch — pull/rebase and try again"
+                } else {
+                    "Force push rejected"
+                }
+                return GitOpResult.Error("$leaseHint ($statuses)")
+            }
+        }
+        AppLog.i(TAG, "push succeeded (${if (withLease) "force-with-lease" else "force"})")
+        return GitOpResult.Success
+    }
+
+    private fun configureTransport(transport: Transport, url: String) {
+        if (url.startsWith("https://")) {
+            val host = CredentialStore.hostOf(url)
+            val user = credentialStore.getHttpsUsername(host)
+            val token = credentialStore.getHttpsToken(host)
+            if (token != null) {
+                transport.credentialsProvider =
+                    UsernamePasswordCredentialsProvider(user ?: "x-access-token", token)
+            }
+        } else if (url.startsWith("git@") || url.startsWith("ssh://")) {
+            if (transport is SshTransport) {
+                transport.sshSessionFactory = sshFactory
+            }
         }
     }
 

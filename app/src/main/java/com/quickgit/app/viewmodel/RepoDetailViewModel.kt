@@ -22,7 +22,9 @@ data class RepoDetailUiState(
     val commitMessage: String = "",
     val lastResult: GitOpResult? = null,
     val authorName: String = "",
-    val authorEmail: String = ""
+    val authorEmail: String = "",
+    /** Append Signed-off-by trailer on commit (git commit -s). */
+    val signOff: Boolean = false
 )
 
 class RepoDetailViewModel(private val repoManager: RepoManager) : ViewModel() {
@@ -35,7 +37,8 @@ class RepoDetailViewModel(private val repoManager: RepoManager) : ViewModel() {
         this.repoPath = repoPath
         _state.value = _state.value.copy(
             authorName = repoManager.getCommitAuthorName(),
-            authorEmail = repoManager.getCommitAuthorEmail()
+            authorEmail = repoManager.getCommitAuthorEmail(),
+            signOff = repoManager.isSignOffEnabled()
         )
         loadStatus(showRefreshing = true)
     }
@@ -111,23 +114,36 @@ class RepoDetailViewModel(private val repoManager: RepoManager) : ViewModel() {
 
     fun setCommitMessage(msg: String) { _state.value = _state.value.copy(commitMessage = msg) }
 
+    fun setSignOff(enabled: Boolean) {
+        repoManager.setSignOffEnabled(enabled)
+        _state.value = _state.value.copy(signOff = enabled)
+    }
+
     fun commit() {
         val msg = _state.value.commitMessage
         if (msg.isBlank()) return
         viewModelScope.launch {
             _state.value = _state.value.copy(busy = true)
             val result = withContext(Dispatchers.IO) {
-                repoManager.commit(repoPath, msg, _state.value.authorName, _state.value.authorEmail)
+                repoManager.commit(
+                    repoPath,
+                    msg,
+                    _state.value.authorName,
+                    _state.value.authorEmail,
+                    signOff = _state.value.signOff
+                )
             }
             _state.value = _state.value.copy(busy = false, lastResult = result, commitMessage = "")
             loadStatus(showRefreshing = false)
         }
     }
 
-    fun push() {
+    fun push(force: Boolean = false, forceWithLease: Boolean = false) {
         viewModelScope.launch {
             _state.value = _state.value.copy(busy = true)
-            val result = withContext(Dispatchers.IO) { repoManager.push(repoPath) }
+            val result = withContext(Dispatchers.IO) {
+                repoManager.push(repoPath, force = force, forceWithLease = forceWithLease)
+            }
             _state.value = _state.value.copy(busy = false, lastResult = result)
         }
     }
