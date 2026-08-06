@@ -18,6 +18,8 @@ object Dest {
     const val PROFILE_SELF = "profile"
     const val PROFILE_USER = "profile/{login}"
     const val USER_SEARCH = "user_search"
+    const val REMOTE_BROWSE = "remote_browse/{owner}/{repo}/{ref}/{path}"
+    const val REMOTE_FILE = "remote_file/{owner}/{repo}/{ref}/{path}"
 
     fun repoDetail(path: String) = "repo_detail/${encode(path)}"
     fun history(path: String) = "history/${encode(path)}"
@@ -34,6 +36,10 @@ object Dest {
         return if (q.isEmpty()) PROFILE_SELF else "profile/${encode(q)}"
     }
     fun issues(path: String) = "issues/${encode(path)}"
+    fun remoteBrowse(owner: String, repo: String, ref: String, path: String = "") =
+        "remote_browse/${encode(owner)}/${encode(repo)}/${encode(ref)}/${encode(path)}"
+    fun remoteFile(owner: String, repo: String, ref: String, path: String) =
+        "remote_file/${encode(owner)}/${encode(repo)}/${encode(ref)}/${encode(path)}"
 
     private fun encode(s: String) = java.net.URLEncoder.encode(s, "UTF-8")
     fun decode(s: String) = java.net.URLDecoder.decode(s, "UTF-8")

@@ -145,6 +145,55 @@ class GitHubApi(private val token: String?) {
         (0 until arr.length()).map { i -> arr.getJSONObject(i).toRemoteRepo() }
     }
 
+    /**
+     * Lists the contents of a directory (or the repo root) at a given ref, without cloning.
+     * GitHub's Contents API returns a JSON array for directories and a single object for files;
+     * calling this on a file path throws, so callers should route files to [getFileContent].
+     */
+    fun getRepoContents(owner: String, repo: String, path: String, ref: String): Result<List<RemoteEntry>> = runCatching {
+        val cleanPath = path.trim('/')
+        val encodedPath = cleanPath.split('/').filter { it.isNotEmpty() }
+            .joinToString("/") { java.net.URLEncoder.encode(it, "UTF-8") }
+        val encodedRef = java.net.URLEncoder.encode(ref, "UTF-8")
+        val result = request("GET", "/repos/$owner/$repo/contents/$encodedPath?ref=$encodedRef")
+        val arr = result as? JSONArray
+            ?: throw IOException("Path is a file, not a directory")
+        (0 until arr.length()).map { i -> arr.getJSONObject(i).toRemoteEntry() }
+            .sortedWith(compareBy({ it.type != "dir" }, { it.name.lowercase() }))
+    }
+
+    /** Fetches and decodes the text content of a single file at a given ref, without cloning. */
+    fun getFileContent(owner: String, repo: String, path: String, ref: String): Result<String> = runCatching {
+        val cleanPath = path.trim('/')
+        val encodedPath = cleanPath.split('/').filter { it.isNotEmpty() }
+            .joinToString("/") { java.net.URLEncoder.encode(it, "UTF-8") }
+        val encodedRef = java.net.URLEncoder.encode(ref, "UTF-8")
+        val result = request("GET", "/repos/$owner/$repo/contents/$encodedPath?ref=$encodedRef")
+        val obj = result as? JSONObject
+            ?: throw IOException("Path is a directory, not a file")
+        val encoding = obj.optString("encoding", "base64")
+        val rawContent = obj.optString("content", "")
+        if (rawContent.isBlank()) return@runCatching ""
+        if (encoding != "base64") throw IOException("Unsupported content encoding: $encoding")
+        val bytes = android.util.Base64.decode(rawContent, android.util.Base64.DEFAULT)
+        String(bytes, StandardCharsets.UTF_8)
+    }
+
+    /** A file or directory entry from the Contents API. */
+    data class RemoteEntry(
+        val name: String,
+        val path: String,
+        val type: String, // "file" | "dir" | "symlink" | "submodule"
+        val sizeBytes: Long
+    )
+
+    private fun JSONObject.toRemoteEntry() = RemoteEntry(
+        name = getString("name"),
+        path = getString("path"),
+        type = optString("type", "file"),
+        sizeBytes = optLong("size", 0L)
+    )
+
     /** Forks a repo into the authenticated user's own account. */
     fun forkRepo(owner: String, repo: String): Result<GitHubRemoteRepo> = runCatching {
         (request("POST", "/repos/$owner/$repo/forks", JSONObject()) as JSONObject).toRemoteRepo()
