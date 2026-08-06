@@ -84,7 +84,8 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
-    // Pull-to-refresh (androidx.compose.material.pullrefresh) still lives in the M2 "material"
+    // Avatar images (GitHub user/profile pictures)
+    implementation("io.coil-kt:coil-compose:2.6.0")    // Pull-to-refresh (androidx.compose.material.pullrefresh) still lives in the M2 "material"
     // artifact even for Material3 apps; version is resolved by the compose-bom platform above.
     implementation("androidx.compose.material:material")
     implementation("androidx.navigation:navigation-compose:2.7.7")
