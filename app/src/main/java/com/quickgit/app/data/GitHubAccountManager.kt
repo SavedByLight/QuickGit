@@ -108,4 +108,26 @@ class GitHubAccountManager(private val credentialStore: CredentialStore) {
         }
         return (result.getOrNull() ?: emptyList()) to result.toPrOpResult(host)
     }
+
+    fun getUserProfile(login: String? = null): Pair<GitHubApi.GitHubUser?, PrOpResult> {
+        if (!isConnected()) return null to PrOpResult.AuthRequired(host)
+        val result = if (login.isNullOrBlank()) {
+            api.getAuthenticatedUser()
+        } else {
+            api.getUser(login)
+        }
+        return result.getOrNull() to result.toPrOpResult(host)
+    }
+
+    fun searchUsers(query: String): Pair<List<GitHubApi.GitHubUserSummary>, PrOpResult> {
+        if (!isConnected()) return emptyList<GitHubApi.GitHubUserSummary>() to PrOpResult.AuthRequired(host)
+        val result = api.searchUsers(query)
+        return (result.getOrNull() ?: emptyList()) to result.toPrOpResult(host)
+    }
+
+    fun listPublicRepos(login: String): Pair<List<GitHubRemoteRepo>, PrOpResult> {
+        if (!isConnected()) return emptyList<GitHubRemoteRepo>() to PrOpResult.AuthRequired(host)
+        val result = api.listPublicRepos(login)
+        return (result.getOrNull() ?: emptyList()) to result.toPrOpResult(host)
+    }
 }
