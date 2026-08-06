@@ -41,6 +41,7 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     private val PREF_AUTHOR_NAME = "commit_author_name"
     private val PREF_AUTHOR_EMAIL = "commit_author_email"
     private val PREF_GPG_SIGN = "gpg_sign_commits"
+    private val PREF_SIGN_OFF = "commit_sign_off"
 
     private val repoOperationLocks = ConcurrentHashMap<String, Any>()
 
@@ -87,6 +88,13 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
 
     fun setGpgSigningEnabled(enabled: Boolean) {
         prefs.edit().putBoolean(PREF_GPG_SIGN, enabled).commit()
+    }
+
+    /** When true, commits get a `Signed-off-by: Name <email>` trailer (git commit -s). */
+    fun isSignOffEnabled(): Boolean = prefs.getBoolean(PREF_SIGN_OFF, false)
+
+    fun setSignOffEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(PREF_SIGN_OFF, enabled).commit()
     }
 
     /**
@@ -584,15 +592,22 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
 
     // ---------------- Commit ----------------
 
-    fun commit(path: String, message: String, authorName: String, authorEmail: String): GitOpResult =
+    fun commit(
+        path: String,
+        message: String,
+        authorName: String,
+        authorEmail: String,
+        signOff: Boolean = isSignOffEnabled()
+    ): GitOpResult =
         withRepoLock(path) {
             val shouldSign = isGpgSigningEnabled() && credentialStore.hasGpgKey()
             val gpgKey = if (shouldSign) credentialStore.getGpgPrivateKey() else null
             val gpgPass = if (shouldSign) credentialStore.getGpgPassphrase() else null
+            val fullMessage = if (signOff) appendSignOff(message, authorName, authorEmail) else message
             openGit(path).use { git ->
                 val doCommit = {
                     val cmd = git.commit()
-                        .setMessage(message)
+                        .setMessage(fullMessage)
                         .setAuthor(PersonIdent(authorName, authorEmail))
                         .setCommitter(PersonIdent(authorName, authorEmail))
                     if (shouldSign && gpgKey != null) {
@@ -609,28 +624,49 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                     doCommit()
                 }
             }
-            AppLog.i(TAG, "commit succeeded: ${message.take(50)}" + if (shouldSign) " (signed)" else "")
+            AppLog.i(
+                TAG,
+                "commit succeeded: ${message.take(50)}" +
+                    (if (shouldSign) " (gpg-signed)" else "") +
+                    (if (signOff) " (signed-off)" else "")
+            )
             GitOpResult.Success
         }
 
+    /** Appends a Signed-off-by trailer if one is not already present (DCO / git commit -s). */
+    private fun appendSignOff(message: String, name: String, email: String): String {
+        val trailer = "Signed-off-by: $name <$email>"
+        val trimmed = message.trimEnd()
+        if (trimmed.lines().any { it.trim().equals(trailer, ignoreCase = true) }) {
+            return trimmed
+        }
+        // Ensure a blank line before the trailer when the body is non-empty
+        return if (trimmed.isEmpty()) trailer else "$trimmed\n\n$trailer"
+    }
+
     // ---------------- Push / Pull / Fetch ----------------
 
-    fun push(path: String): GitOpResult {
-        AppLog.i(TAG, "push: $path")
+    fun push(path: String, force: Boolean = false): GitOpResult {
+        AppLog.i(TAG, "push: $path force=$force")
         return try {
             openGit(path).use { git ->
                 val remoteUrl = git.repository.config.getString("remote", "origin", "url") ?: ""
                 maybeUploadLfs(path, remoteUrl)?.let { AppLog.i(TAG, it) }
                 val cmd = git.push()
+                if (force) {
+                    cmd.setForce(true)
+                    AppLog.w(TAG, "push: FORCE enabled")
+                }
                 applyTransportConfig(cmd, remoteUrl)
                 val results = cmd.call()
                 val rejected = results.flatMap { it.remoteUpdates }
                     .filter { it.status.name.contains("REJECTED") }
                 if (rejected.isNotEmpty()) {
                     AppLog.w(TAG, "push rejected: ${rejected.size} ref(s)")
-                    GitOpResult.Error("Push rejected — pull first (${rejected.size} ref(s) rejected)")
+                    val hint = if (force) "Force push still rejected" else "Push rejected — pull first"
+                    GitOpResult.Error("$hint (${rejected.size} ref(s) rejected)")
                 } else {
-                    AppLog.i(TAG, "push succeeded")
+                    AppLog.i(TAG, "push succeeded" + if (force) " (force)" else "")
                     GitOpResult.Success
                 }
             }

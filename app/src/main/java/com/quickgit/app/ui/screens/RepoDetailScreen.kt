@@ -113,19 +113,55 @@ fun RepoDetailScreen(
                 item { SubPageButton(Icons.Default.NewReleases, "Releases", onOpenReleases) }
             }
 
+            var showForcePushConfirm by remember { mutableStateOf(false) }
+
             Row(Modifier.fillMaxWidth().padding(16.dp, 4.dp)) {
                 OutlinedButton(onClick = { vm.pull() }, enabled = !state.busy, modifier = Modifier.weight(1f)) {
                     Icon(Icons.Default.ArrowDownward, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Pull")
                 }
                 Spacer(Modifier.width(8.dp))
-                Button(onClick = { vm.push() }, enabled = !state.busy, modifier = Modifier.weight(1f)) {
+                Button(onClick = { vm.push(force = false) }, enabled = !state.busy, modifier = Modifier.weight(1f)) {
                     Icon(Icons.Default.ArrowUpward, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Push")
                 }
             }
-            Row(Modifier.fillMaxWidth().padding(16.dp, 0.dp, 16.dp, 8.dp)) {
-                OutlinedButton(onClick = { vm.fetchLfs() }, enabled = !state.busy, modifier = Modifier.fillMaxWidth()) {
-                    Text("Fetch LFS files")
+            Row(Modifier.fillMaxWidth().padding(16.dp, 0.dp, 16.dp, 4.dp)) {
+                OutlinedButton(
+                    onClick = { showForcePushConfirm = true },
+                    enabled = !state.busy,
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = GitRed)
+                ) {
+                    Text("Force push")
                 }
+                Spacer(Modifier.width(8.dp))
+                OutlinedButton(onClick = { vm.fetchLfs() }, enabled = !state.busy, modifier = Modifier.weight(1f)) {
+                    Text("Fetch LFS")
+                }
+            }
+
+            if (showForcePushConfirm) {
+                AlertDialog(
+                    onDismissRequest = { showForcePushConfirm = false },
+                    title = { Text("Force push?") },
+                    text = {
+                        Text(
+                            "This overwrites the remote branch with your local history and can discard " +
+                                "commits others have pushed. Only continue if you intend to rewrite the remote."
+                        )
+                    },
+                    confirmButton = {
+                        Button(
+                            onClick = {
+                                showForcePushConfirm = false
+                                vm.push(force = true)
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = GitRed)
+                        ) { Text("Force push") }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showForcePushConfirm = false }) { Text("Cancel") }
+                    }
+                )
             }
 
             if (status != null && status.conflicting.isNotEmpty()) {
@@ -191,6 +227,10 @@ fun RepoDetailScreen(
                         CommitBar(
                             message = state.commitMessage,
                             onMessageChange = vm::setCommitMessage,
+                            signOff = state.signOff,
+                            onSignOffChange = vm::setSignOff,
+                            authorName = state.authorName,
+                            authorEmail = state.authorEmail,
                             enabled = status.staged.isNotEmpty() && !state.busy,
                             onCommit = vm::commit
                         )
@@ -278,6 +318,10 @@ private fun ChangeType.color() = when (this) {
 private fun CommitBar(
     message: String,
     onMessageChange: (String) -> Unit,
+    signOff: Boolean,
+    onSignOffChange: (Boolean) -> Unit,
+    authorName: String,
+    authorEmail: String,
     enabled: Boolean,
     onCommit: () -> Unit
 ) {
@@ -291,9 +335,28 @@ private fun CommitBar(
                 minLines = 2,
                 maxLines = 4
             )
+            Spacer(Modifier.height(4.dp))
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Checkbox(
+                    checked = signOff,
+                    onCheckedChange = onSignOffChange
+                )
+                Column(Modifier.weight(1f).clickableSimple { onSignOffChange(!signOff) }) {
+                    Text("Sign-off", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "Signed-off-by: $authorName <$authorEmail>",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1
+                    )
+                }
+            }
             Spacer(Modifier.height(8.dp))
             Button(onClick = onCommit, enabled = enabled && message.isNotBlank(), modifier = Modifier.fillMaxWidth()) {
-                Text("Commit to current branch")
+                Text(if (signOff) "Commit (signed-off)" else "Commit to current branch")
             }
         }
     }
