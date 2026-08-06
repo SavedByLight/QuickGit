@@ -9,6 +9,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Business
+import androidx.compose.material.icons.filled.CallSplit
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material3.*
@@ -33,6 +34,7 @@ fun ProfileScreen(
     onNeedsAuth: () -> Unit
 ) {
     val state by vm.state.collectAsState()
+    val snackbarHost = remember { SnackbarHostState() }
 
     LaunchedEffect(login) { vm.load(login) }
 
@@ -40,7 +42,14 @@ fun ProfileScreen(
         if (state.authRequired) onNeedsAuth()
     }
 
+    LaunchedEffect(state.statusMessage, state.forkError) {
+        state.statusMessage?.let { snackbarHost.showSnackbar(it) }
+        state.forkError?.let { snackbarHost.showSnackbar(it) }
+        if (state.statusMessage != null || state.forkError != null) vm.consumeMessages()
+    }
+
     Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHost) },
         topBar = {
             TopAppBar(
                 title = {
@@ -158,7 +167,13 @@ fun ProfileScreen(
                         }
                     } else {
                         items(state.repos, key = { it.id }) { repo ->
-                            ProfileRepoRow(repo, onClick = { onCloneRepo(repo) })
+                            ProfileRepoRow(
+                                repo,
+                                showFork = !state.isSelf,
+                                forking = state.forkingRepoId == repo.id,
+                                onClick = { onCloneRepo(repo) },
+                                onFork = { vm.fork(repo) }
+                            )
                             HorizontalDivider()
                         }
                     }
@@ -177,32 +192,52 @@ private fun StatChip(value: String, label: String) {
 }
 
 @Composable
-private fun ProfileRepoRow(repo: GitHubRemoteRepo, onClick: () -> Unit) {
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(16.dp, 12.dp)
+private fun ProfileRepoRow(
+    repo: GitHubRemoteRepo,
+    showFork: Boolean,
+    forking: Boolean,
+    onClick: () -> Unit,
+    onFork: () -> Unit
+) {
+    Row(
+        Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(repo.name, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
-        if (!repo.description.isNullOrBlank()) {
-            Spacer(Modifier.height(2.dp))
+        Column(
+            Modifier
+                .weight(1f)
+                .clickable(onClick = onClick)
+                .padding(16.dp, 12.dp)
+        ) {
+            Text(repo.name, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
+            if (!repo.description.isNullOrBlank()) {
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    repo.description,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2
+                )
+            }
+            Spacer(Modifier.height(4.dp))
             Text(
-                repo.description,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 2
+                listOfNotNull(
+                    repo.language,
+                    if (repo.isPrivate) "Private" else "Public",
+                    if (repo.isFork) "Fork" else null
+                ).joinToString(" · "),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
-        Spacer(Modifier.height(4.dp))
-        Text(
-            listOfNotNull(
-                repo.language,
-                if (repo.isPrivate) "Private" else "Public",
-                if (repo.isFork) "Fork" else null
-            ).joinToString(" · "),
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+        if (showFork) {
+            if (forking) {
+                CircularProgressIndicator(Modifier.padding(end = 16.dp).size(20.dp), strokeWidth = 2.dp)
+            } else {
+                IconButton(onClick = onFork, modifier = Modifier.padding(end = 4.dp)) {
+                    Icon(Icons.Default.CallSplit, "Fork this repo")
+                }
+            }
+        }
     }
 }

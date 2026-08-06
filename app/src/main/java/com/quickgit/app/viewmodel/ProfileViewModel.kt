@@ -19,7 +19,11 @@ data class ProfileUiState(
     val repos: List<GitHubRemoteRepo> = emptyList(),
     val isSelf: Boolean = false,
     val errorMessage: String? = null,
-    val authRequired: Boolean = false
+    val authRequired: Boolean = false,
+    val forkingRepoId: Long? = null,
+    val statusMessage: String? = null,
+    val forkedRepo: GitHubRemoteRepo? = null,
+    val forkError: String? = null
 )
 
 class ProfileViewModel(
@@ -65,5 +69,27 @@ class ProfileViewModel(
 
     fun consumeError() {
         _state.value = _state.value.copy(errorMessage = null)
+    }
+
+    fun fork(repo: GitHubRemoteRepo) {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(forkingRepoId = repo.id, forkError = null, statusMessage = null)
+            val (forked, result) = withContext(Dispatchers.IO) {
+                accountManager.forkRepo(repo.ownerLogin, repo.name)
+            }
+            _state.value = when (result) {
+                is PrOpResult.Success -> _state.value.copy(
+                    forkingRepoId = null,
+                    statusMessage = "Forked ${repo.name} to your account",
+                    forkedRepo = forked
+                )
+                is PrOpResult.AuthRequired -> _state.value.copy(forkingRepoId = null, authRequired = true)
+                is PrOpResult.Error -> _state.value.copy(forkingRepoId = null, forkError = result.message)
+            }
+        }
+    }
+
+    fun consumeMessages() {
+        _state.value = _state.value.copy(statusMessage = null, forkedRepo = null, forkError = null)
     }
 }

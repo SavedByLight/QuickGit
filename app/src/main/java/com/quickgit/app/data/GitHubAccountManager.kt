@@ -79,31 +79,42 @@ class GitHubAccountManager(private val credentialStore: CredentialStore) {
         }
     }
 
+    /** Fetches every page of repos the authenticated user can access (GitHub paginates at 100/page). */
     fun listRepos(
-        affiliation: String = "owner,collaborator,organization_member",
-        page: Int = 1
+        affiliation: String = "owner,collaborator,organization_member"
     ): Pair<List<GitHubRemoteRepo>, PrOpResult> {
         if (!isConnected()) return emptyList<GitHubRemoteRepo>() to PrOpResult.AuthRequired(host)
-        val result = api.listUserRepos(affiliation = affiliation, page = page)
-        return (result.getOrNull() ?: emptyList()) to result.toPrOpResult(host)
+        val perPage = 100
+        val all = mutableListOf<GitHubRemoteRepo>()
+        var page = 1
+        while (true) {
+            val result = api.listUserRepos(affiliation = affiliation, perPage = perPage, page = page)
+            val batch = result.getOrNull()
+            if (batch == null) {
+                return if (page == 1) emptyList<GitHubRemoteRepo>() to result.toPrOpResult(host)
+                else all to PrOpResult.Success
+            }
+            all += batch
+            if (batch.size < perPage || page >= 10) break // 10-page safety cap (1000 repos)
+            page++
+        }
+        return all to PrOpResult.Success
     }
 
     fun searchRepos(query: String): Pair<List<GitHubRemoteRepo>, PrOpResult> {
         if (!isConnected()) return emptyList<GitHubRemoteRepo>() to PrOpResult.AuthRequired(host)
         val login = storedUsername()
         val result = if (!login.isNullOrBlank() && login != "x-access-token" && query.isNotBlank()) {
-            api.searchUserRepos(login, query)
+            api.searchUserRepos(login, query, perPage = 100)
         } else {
-            api.listUserRepos().map { list ->
-                if (query.isBlank()) list
-                else {
-                    val q = query.trim().lowercase()
-                    list.filter {
-                        it.name.lowercase().contains(q) ||
-                            it.fullName.lowercase().contains(q) ||
-                            (it.description?.lowercase()?.contains(q) == true)
-                    }
-                }
+            return if (query.isBlank()) listRepos() else {
+                val (all, opResult) = listRepos()
+                val q = query.trim().lowercase()
+                all.filter {
+                    it.name.lowercase().contains(q) ||
+                        it.fullName.lowercase().contains(q) ||
+                        (it.description?.lowercase()?.contains(q) == true)
+                } to opResult
             }
         }
         return (result.getOrNull() ?: emptyList()) to result.toPrOpResult(host)
@@ -144,5 +155,20 @@ class GitHubAccountManager(private val credentialStore: CredentialStore) {
             page++
         }
         return all to PrOpResult.Success
+    }
+
+    /** Forks someone else's repo into the authenticated user's own account. */
+    fun forkRepo(owner: String, repo: String): Pair<GitHubRemoteRepo?, PrOpResult> {
+        if (!isConnected()) return null to PrOpResult.AuthRequired(host)
+        val result = api.forkRepo(owner, repo)
+        return result.getOrNull() to result.toPrOpResult(host)
+    }
+
+    /** Creates a new repo owned by the authenticated user. */
+    fun createRepo(name: String, description: String?, isPrivate: Boolean): Pair<GitHubRemoteRepo?, PrOpResult> {
+        if (!isConnected()) return null to PrOpResult.AuthRequired(host)
+        if (name.isBlank()) return null to PrOpResult.Error("Repo name is required")
+        val result = api.createRepo(name.trim(), description, isPrivate)
+        return result.getOrNull() to result.toPrOpResult(host)
     }
 }

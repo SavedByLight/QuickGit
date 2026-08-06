@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.Lock
@@ -35,6 +36,7 @@ fun BrowseGitHubScreen(
     val state by vm.state.collectAsState()
     val snackbarHost = remember { SnackbarHostState() }
     var repoAwaitingFolder by remember { mutableStateOf<GitHubRemoteRepo?>(null) }
+    var showCreateDialog by remember { mutableStateOf(false) }
 
     val destinationPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocumentTree()
@@ -82,6 +84,17 @@ fun BrowseGitHubScreen(
         }
     }
 
+    if (showCreateDialog) {
+        CreateRepoDialog(
+            creating = state.creating,
+            onDismiss = { showCreateDialog = false },
+            onCreate = { name, description, isPrivate ->
+                vm.createRepo(name, description, isPrivate)
+                showCreateDialog = false
+            }
+        )
+    }
+
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHost) },
         topBar = {
@@ -102,6 +115,15 @@ fun BrowseGitHubScreen(
                     IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back") }
                 }
             )
+        },
+        floatingActionButton = {
+            if (state.connected) {
+                ExtendedFloatingActionButton(
+                    onClick = { showCreateDialog = true },
+                    icon = { Icon(Icons.Default.Add, null) },
+                    text = { Text("New repo") }
+                )
+            }
         }
     ) { padding ->
         when {
@@ -188,6 +210,65 @@ fun BrowseGitHubScreen(
             }
         }
     }
+}
+
+@Composable
+private fun CreateRepoDialog(
+    creating: Boolean,
+    onDismiss: () -> Unit,
+    onCreate: (name: String, description: String, isPrivate: Boolean) -> Unit
+) {
+    var name by remember { mutableStateOf("") }
+    var description by remember { mutableStateOf("") }
+    var isPrivate by remember { mutableStateOf(false) }
+
+    AlertDialog(
+        onDismissRequest = { if (!creating) onDismiss() },
+        title = { Text("New repository") },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Name") },
+                    singleLine = true,
+                    enabled = !creating,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = description,
+                    onValueChange = { description = it },
+                    label = { Text("Description (optional)") },
+                    enabled = !creating,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    Modifier.fillMaxWidth().clickable(enabled = !creating) { isPrivate = !isPrivate },
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Checkbox(checked = isPrivate, onCheckedChange = { isPrivate = it }, enabled = !creating)
+                    Text("Private repository")
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onCreate(name, description, isPrivate) },
+                enabled = !creating && name.isNotBlank()
+            ) {
+                if (creating) {
+                    CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                } else {
+                    Text("Create")
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, enabled = !creating) { Text("Cancel") }
+        }
+    )
 }
 
 @Composable

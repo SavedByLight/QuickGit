@@ -145,6 +145,20 @@ class GitHubApi(private val token: String?) {
         (0 until arr.length()).map { i -> arr.getJSONObject(i).toRemoteRepo() }
     }
 
+    /** Forks a repo into the authenticated user's own account. */
+    fun forkRepo(owner: String, repo: String): Result<GitHubRemoteRepo> = runCatching {
+        (request("POST", "/repos/$owner/$repo/forks", JSONObject()) as JSONObject).toRemoteRepo()
+    }
+
+    /** Creates a new repo owned by the authenticated user. */
+    fun createRepo(name: String, description: String?, isPrivate: Boolean): Result<GitHubRemoteRepo> = runCatching {
+        val payload = JSONObject()
+            .put("name", name)
+            .put("private", isPrivate)
+        if (!description.isNullOrBlank()) payload.put("description", description)
+        (request("POST", "/user/repos", payload) as JSONObject).toRemoteRepo()
+    }
+
     private fun JSONObject.toRemoteRepo(): GitHubRemoteRepo {
         val owner = optJSONObject("owner")
         val fullName = getString("full_name")
