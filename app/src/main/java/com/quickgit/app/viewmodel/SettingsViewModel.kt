@@ -35,17 +35,31 @@ data class SettingsUiState(
     val reposRootPath: String = "",
     val reposRootIsUserChosen: Boolean = false,
     val statusMessage: String? = null,
-    val isError: Boolean = false
+    val isError: Boolean = false,
+    // App update (GitHub Releases)
+    val appVersionName: String = "",
+    val appVersionCode: Long = 0L,
+    val updateChecking: Boolean = false,
+    val updateAvailable: Boolean = false,
+    val updateLatestName: String? = null,
+    val updateNotes: String? = null,
+    val updateDownloading: Boolean = false,
+    val updateProgress: Int = 0,
+    val updateNeedsInstallPermission: Boolean = false,
+    val downloadedApkPath: String? = null
 )
 
 class SettingsViewModel(
     private val credentialStore: CredentialStore,
     private val repoManager: RepoManager,
-    private val gitHubAccountManager: GitHubAccountManager
+    private val gitHubAccountManager: GitHubAccountManager,
+    private val appUpdateManager: com.quickgit.app.data.AppUpdateManager
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(SettingsUiState())
     val state: StateFlow<SettingsUiState> = _state.asStateFlow()
+
+    private var pendingApkAsset: com.quickgit.app.data.models.ReleaseAsset? = null
 
     init {
         loadForHost("github.com")
@@ -54,6 +68,113 @@ class SettingsViewModel(
         refreshReposRoot()
         refreshAuthor()
         verifyGitHubIfConnected()
+        refreshAppVersion()
+    }
+
+    private fun refreshAppVersion() {
+        val v = appUpdateManager.currentVersion()
+        _state.value = _state.value.copy(
+            appVersionName = v.versionName,
+            appVersionCode = v.versionCode
+        )
+    }
+
+    fun checkForUpdate() {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(
+                updateChecking = true,
+                updateAvailable = false,
+                updateLatestName = null,
+                updateNotes = null,
+                downloadedApkPath = null,
+                statusMessage = null
+            )
+            val result = withContext(Dispatchers.IO) { appUpdateManager.checkForUpdate() }
+            when (result) {
+                is com.quickgit.app.data.UpdateCheckResult.UpToDate -> {
+                    pendingApkAsset = null
+                    _state.value = _state.value.copy(
+                        updateChecking = false,
+                        updateAvailable = false,
+                        statusMessage = "You're on the latest version (${result.current.versionName})",
+                        isError = false
+                    )
+                }
+                is com.quickgit.app.data.UpdateCheckResult.Available -> {
+                    pendingApkAsset = result.apkAsset
+                    _state.value = _state.value.copy(
+                        updateChecking = false,
+                        updateAvailable = true,
+                        updateLatestName = result.latest.versionName,
+                        updateNotes = result.release.body,
+                        statusMessage = "Update available: ${result.latest.versionName}",
+                        isError = false
+                    )
+                }
+                is com.quickgit.app.data.UpdateCheckResult.Error -> {
+                    pendingApkAsset = null
+                    _state.value = _state.value.copy(
+                        updateChecking = false,
+                        updateAvailable = false,
+                        statusMessage = result.message,
+                        isError = true
+                    )
+                }
+            }
+        }
+    }
+
+    fun downloadAndInstallUpdate() {
+        val asset = pendingApkAsset ?: return
+        viewModelScope.launch {
+            if (!appUpdateManager.canRequestPackageInstalls()) {
+                _state.value = _state.value.copy(updateNeedsInstallPermission = true)
+                return@launch
+            }
+            _state.value = _state.value.copy(
+                updateDownloading = true,
+                updateProgress = 0,
+                updateNeedsInstallPermission = false,
+                statusMessage = null
+            )
+            val result = withContext(Dispatchers.IO) {
+                appUpdateManager.downloadApk(asset) { pct ->
+                    _state.value = _state.value.copy(updateProgress = pct)
+                }
+            }
+            when (result) {
+                is com.quickgit.app.data.DownloadResult.Success -> {
+                    _state.value = _state.value.copy(
+                        updateDownloading = false,
+                        updateProgress = 100,
+                        downloadedApkPath = result.apkFile.absolutePath,
+                        statusMessage = "Download complete — opening installer…",
+                        isError = false
+                    )
+                    val ok = appUpdateManager.installApk(result.apkFile)
+                    if (!ok) {
+                        _state.value = _state.value.copy(
+                            statusMessage = "Could not open the package installer",
+                            isError = true
+                        )
+                    }
+                }
+                is com.quickgit.app.data.DownloadResult.Error -> {
+                    _state.value = _state.value.copy(
+                        updateDownloading = false,
+                        statusMessage = result.message,
+                        isError = true
+                    )
+                }
+            }
+        }
+    }
+
+    /** Returns the settings intent for unknown-sources; UI starts it. */
+    fun installPermissionIntent() = appUpdateManager.installPermissionSettingsIntent()
+
+    fun clearInstallPermissionFlag() {
+        _state.value = _state.value.copy(updateNeedsInstallPermission = false)
     }
 
     private fun refreshAuthor() {
