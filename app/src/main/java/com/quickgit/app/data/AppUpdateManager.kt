@@ -22,7 +22,7 @@ import java.net.URL
  * Update them if you fork or rename the upstream.
  */
 object AppUpdateConfig {
-    const val OWNER = "quickgit"
+    const val OWNER = "SavedByLight"
     const val REPO = "QuickGit"
 }
 
