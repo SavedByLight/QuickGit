@@ -53,26 +53,59 @@ fun RepoDetailScreen(
     }
 
     Scaffold(
-        snackbarHost = { SnackbarHost(snackbarHost) },
-        topBar = {
-            TopAppBar(
-                title = { Column { Text(repoName); Text(state.branch, style = MaterialTheme.typography.bodySmall) } },
-                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back") } },
-                actions = {
-                    IconButton(onClick = onOpenFiles) { Icon(Icons.Default.FolderOpen, "Files") }
-                    IconButton(onClick = onOpenHistory) { Icon(Icons.Default.History, "History") }
-                    IconButton(onClick = onOpenBranches) { Icon(Icons.Default.AccountTree, "Branches") }
-                    IconButton(onClick = onOpenPullRequests) { Icon(Icons.Default.CallMerge, "Pull requests") }
-                    IconButton(onClick = onOpenIssues) { Icon(Icons.Default.BugReport, "Issues") }
-                    IconButton(onClick = onOpenWorkflows) { Icon(Icons.Default.PlayCircle, "Actions") }
-                }
-            )
-        }
+        snackbarHost = { SnackbarHost(snackbarHost) }
     ) { padding ->
         val status = state.status
         Column(Modifier.padding(padding).fillMaxSize()) {
 
-            Row(Modifier.fillMaxWidth().padding(16.dp, 8.dp)) {
+            // Back + centered repo name / branch
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = 4.dp, bottom = 2.dp)
+            ) {
+                IconButton(
+                    onClick = onBack,
+                    modifier = Modifier.align(Alignment.CenterStart)
+                ) {
+                    Icon(Icons.Default.ArrowBack, "Back")
+                }
+                Column(
+                    Modifier
+                        .align(Alignment.Center)
+                        .padding(horizontal = 48.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        repoName,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1
+                    )
+                    Text(
+                        state.branch,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            // Sub-page navigation under the name
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly
+            ) {
+                SubPageButton(Icons.Default.FolderOpen, "Files", onOpenFiles)
+                SubPageButton(Icons.Default.History, "History", onOpenHistory)
+                SubPageButton(Icons.Default.AccountTree, "Branches", onOpenBranches)
+                SubPageButton(Icons.Default.CallMerge, "PRs", onOpenPullRequests)
+                SubPageButton(Icons.Default.BugReport, "Issues", onOpenIssues)
+                SubPageButton(Icons.Default.PlayCircle, "Actions", onOpenWorkflows)
+            }
+
+            Row(Modifier.fillMaxWidth().padding(16.dp, 4.dp)) {
                 OutlinedButton(onClick = { vm.pull() }, enabled = !state.busy, modifier = Modifier.weight(1f)) {
                     Icon(Icons.Default.ArrowDownward, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Pull")
                 }
@@ -157,6 +190,28 @@ fun RepoDetailScreen(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun SubPageButton(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    onClick: () -> Unit
+) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier
+            .clickableSimple(onClick)
+            .padding(horizontal = 4.dp, vertical = 4.dp)
+    ) {
+        Icon(icon, contentDescription = label, modifier = Modifier.size(22.dp))
+        Spacer(Modifier.height(2.dp))
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            maxLines = 1
+        )
     }
 }
 
