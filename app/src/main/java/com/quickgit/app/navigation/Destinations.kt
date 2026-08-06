@@ -15,6 +15,7 @@ object Dest {
     const val PULL_REQUESTS = "pull_requests/{repoPath}"
     const val ISSUES = "issues/{repoPath}"
     const val WORKFLOWS = "workflows/{repoPath}"
+    const val RELEASES = "releases/{repoPath}"
     const val BROWSE_GITHUB = "browse_github"
     const val PROFILE_SELF = "profile"
     const val PROFILE_USER = "profile/{login}"
@@ -38,6 +39,7 @@ object Dest {
     }
     fun issues(path: String) = "issues/${encode(path)}"
     fun workflows(path: String) = "workflows/${encode(path)}"
+    fun releases(path: String) = "releases/${encode(path)}"
     fun remoteBrowse(owner: String, repo: String, ref: String, path: String = "") =
         "remote_browse/${encode(owner)}/${encode(repo)}/${encode(ref)}/${encodePath(path)}"
     fun remoteFile(owner: String, repo: String, ref: String, path: String) =

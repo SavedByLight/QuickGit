@@ -45,6 +45,8 @@ class ViewModelFactory(private val app: Application) : ViewModelProvider.Factory
                 IssuesViewModel(gitApp.issueManager)
             modelClass.isAssignableFrom(WorkflowsViewModel::class.java) ->
                 WorkflowsViewModel(gitApp.workflowManager)
+            modelClass.isAssignableFrom(ReleasesViewModel::class.java) ->
+                ReleasesViewModel(gitApp.releaseManager)
             modelClass.isAssignableFrom(BrowseGitHubViewModel::class.java) ->
                 BrowseGitHubViewModel(gitApp.gitHubAccountManager, gitApp.repoManager)
             modelClass.isAssignableFrom(ProfileViewModel::class.java) ->

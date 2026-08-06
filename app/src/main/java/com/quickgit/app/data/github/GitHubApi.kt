@@ -7,6 +7,8 @@ import com.quickgit.app.data.models.MergeMethod
 import com.quickgit.app.data.models.PrComment
 import com.quickgit.app.data.models.PrOpResult
 import com.quickgit.app.data.models.PullRequest
+import com.quickgit.app.data.models.Release
+import com.quickgit.app.data.models.ReleaseAsset
 import com.quickgit.app.data.models.Workflow
 import com.quickgit.app.data.models.WorkflowJob
 import com.quickgit.app.data.models.WorkflowRun
@@ -383,6 +385,53 @@ class GitHubApi(private val token: String?) {
     fun rerunWorkflowRun(owner: String, repo: String, runId: Long): Result<Unit> = runCatching {
         request("POST", "/repos/$owner/$repo/actions/runs/$runId/rerun")
         Unit
+    }
+
+    // ── Releases ────────────────────────────────────────────────────────────
+
+    fun listReleases(owner: String, repo: String, perPage: Int = 30): Result<List<Release>> = runCatching {
+        val arr = request("GET", "/repos/$owner/$repo/releases?per_page=$perPage") as JSONArray
+        (0 until arr.length()).map { i -> arr.getJSONObject(i).toRelease() }
+    }
+
+    fun getRelease(owner: String, repo: String, releaseId: Long): Result<Release> = runCatching {
+        (request("GET", "/repos/$owner/$repo/releases/$releaseId") as JSONObject).toRelease()
+    }
+
+    fun getLatestRelease(owner: String, repo: String): Result<Release> = runCatching {
+        (request("GET", "/repos/$owner/$repo/releases/latest") as JSONObject).toRelease()
+    }
+
+    private fun JSONObject.toRelease(): Release {
+        val assetsArr = optJSONArray("assets")
+        val assets = if (assetsArr == null) emptyList() else (0 until assetsArr.length()).map { i ->
+            val a = assetsArr.getJSONObject(i)
+            ReleaseAsset(
+                id = a.getLong("id"),
+                name = a.optString("name", ""),
+                size = a.optLong("size", 0L),
+                downloadCount = a.optInt("download_count", 0),
+                contentType = a.optString("content_type").takeIf { it.isNotBlank() },
+                browserDownloadUrl = a.optString("browser_download_url", ""),
+                createdAt = a.optString("created_at", ""),
+                updatedAt = a.optString("updated_at", "")
+            )
+        }
+        return Release(
+            id = getLong("id"),
+            tagName = optString("tag_name", ""),
+            name = optString("name", "").ifBlank { optString("tag_name", "") },
+            body = if (!has("body") || isNull("body")) null else getString("body"),
+            draft = optBoolean("draft", false),
+            prerelease = optBoolean("prerelease", false),
+            authorLogin = optJSONObject("author")?.optString("login"),
+            htmlUrl = optString("html_url", ""),
+            tarballUrl = optString("tarball_url").takeIf { it.isNotBlank() },
+            zipballUrl = optString("zipball_url").takeIf { it.isNotBlank() },
+            createdAt = optString("created_at", ""),
+            publishedAt = optString("published_at").takeIf { it.isNotBlank() },
+            assets = assets
+        )
     }
 
     private fun JSONObject.toWorkflow() = Workflow(

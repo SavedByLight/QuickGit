@@ -35,6 +35,7 @@ fun RepoDetailScreen(
     onOpenPullRequests: () -> Unit,
     onOpenIssues: () -> Unit,
     onOpenWorkflows: () -> Unit,
+    onOpenReleases: () -> Unit,
     onConflicts: () -> Unit,
     onNeedsAuth: (String) -> Unit
 ) {
@@ -90,19 +91,21 @@ fun RepoDetailScreen(
                 }
             }
 
-            // Sub-page navigation under the name
-            Row(
+            // Sub-page navigation under the name (scrollable — fits 7 entries)
+            androidx.compose.foundation.lazy.LazyRow(
                 Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 8.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly
+                    .padding(vertical = 8.dp),
+                contentPadding = PaddingValues(horizontal = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                SubPageButton(Icons.Default.FolderOpen, "Files", onOpenFiles)
-                SubPageButton(Icons.Default.History, "History", onOpenHistory)
-                SubPageButton(Icons.Default.AccountTree, "Branches", onOpenBranches)
-                SubPageButton(Icons.Default.CallMerge, "PRs", onOpenPullRequests)
-                SubPageButton(Icons.Default.BugReport, "Issues", onOpenIssues)
-                SubPageButton(Icons.Default.PlayCircle, "Actions", onOpenWorkflows)
+                item { SubPageButton(Icons.Default.FolderOpen, "Files", onOpenFiles) }
+                item { SubPageButton(Icons.Default.History, "History", onOpenHistory) }
+                item { SubPageButton(Icons.Default.AccountTree, "Branches", onOpenBranches) }
+                item { SubPageButton(Icons.Default.CallMerge, "PRs", onOpenPullRequests) }
+                item { SubPageButton(Icons.Default.BugReport, "Issues", onOpenIssues) }
+                item { SubPageButton(Icons.Default.PlayCircle, "Actions", onOpenWorkflows) }
+                item { SubPageButton(Icons.Default.NewReleases, "Releases", onOpenReleases) }
             }
 
             Row(Modifier.fillMaxWidth().padding(16.dp, 4.dp)) {
@@ -202,8 +205,9 @@ private fun SubPageButton(
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
+            .widthIn(min = 56.dp)
             .clickableSimple(onClick)
-            .padding(horizontal = 4.dp, vertical = 4.dp)
+            .padding(horizontal = 6.dp, vertical = 4.dp)
     ) {
         Icon(icon, contentDescription = label, modifier = Modifier.size(22.dp))
         Spacer(Modifier.height(2.dp))
