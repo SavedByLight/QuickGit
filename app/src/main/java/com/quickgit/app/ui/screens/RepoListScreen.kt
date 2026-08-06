@@ -9,6 +9,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material3.*
@@ -31,6 +33,8 @@ fun RepoListScreen(
     onOpenRepo: (RepoInfo) -> Unit,
     onClone: () -> Unit,
     onBrowseGitHub: () -> Unit = {},
+    onOpenProfile: () -> Unit = {},
+    onSearchPeople: () -> Unit = {},
     onSettings: () -> Unit,
     onLogs: () -> Unit
 ) {
@@ -54,6 +58,8 @@ fun RepoListScreen(
             TopAppBar(
                 title = { Text("QuickGit") },
                 actions = {
+                    IconButton(onClick = onOpenProfile) { Icon(Icons.Default.Person, "Profile") }
+                    IconButton(onClick = onSearchPeople) { Icon(Icons.Default.Search, "Search people") }
                     IconButton(onClick = onBrowseGitHub) {
                         Icon(Icons.Default.CloudDownload, "GitHub repos")
                     }

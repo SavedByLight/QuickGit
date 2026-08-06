@@ -24,6 +24,7 @@ data class BrowseGitHubUiState(
     val accountName: String? = null,
     val loading: Boolean = false,
     val cloning: Boolean = false,
+    val creating: Boolean = false,
     val progressText: String = "",
     val repos: List<GitHubRemoteRepo> = emptyList(),
     val query: String = "",
@@ -185,6 +186,25 @@ class BrowseGitHubViewModel(
             statusMessage = null,
             cloneResult = null
         )
+    }
+
+    fun createRepo(name: String, description: String, isPrivate: Boolean) {
+        if (name.isBlank()) return
+        viewModelScope.launch {
+            _state.value = _state.value.copy(creating = true, errorMessage = null)
+            val (repo, result) = withContext(Dispatchers.IO) {
+                accountManager.createRepo(name.trim(), description.trim(), isPrivate)
+            }
+            _state.value = when (result) {
+                is PrOpResult.Success -> _state.value.copy(
+                    creating = false,
+                    repos = if (repo != null) listOf(repo) + _state.value.repos else _state.value.repos,
+                    statusMessage = "Created ${repo?.name ?: name.trim()}"
+                )
+                is PrOpResult.AuthRequired -> _state.value.copy(creating = false, authRequired = true, connected = false)
+                is PrOpResult.Error -> _state.value.copy(creating = false, errorMessage = result.message)
+            }
+        }
     }
 
     private fun applyListResult(base: BrowseGitHubUiState, result: PrOpResult): BrowseGitHubUiState =

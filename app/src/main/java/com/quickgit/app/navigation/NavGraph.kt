@@ -27,8 +27,48 @@ fun QuickGitNavGraph() {
                 onOpenRepo = { repo: RepoInfo -> navController.navigate(Dest.repoDetail(repo.localPath)) },
                 onClone = { navController.navigate(Dest.CLONE) },
                 onBrowseGitHub = { navController.navigate(Dest.BROWSE_GITHUB) },
+                onOpenProfile = { navController.navigate(Dest.profile()) },
+                onSearchPeople = { navController.navigate(Dest.USER_SEARCH) },
                 onSettings = { navController.navigate(Dest.SETTINGS) },
                 onLogs = { navController.navigate(Dest.LOGS) }
+            )
+        }
+
+        composable(Dest.USER_SEARCH) {
+            val vm: UserSearchViewModel = viewModel(factory = factory)
+            UserSearchScreen(
+                vm = vm,
+                onBack = { navController.popBackStack() },
+                onOpenUser = { login -> navController.navigate(Dest.profile(login)) },
+                onNeedsAuth = { navController.navigate(Dest.SETTINGS) }
+            )
+        }
+
+        composable(Dest.PROFILE_SELF) {
+            val vm: ProfileViewModel = viewModel(factory = factory)
+            ProfileScreen(
+                vm = vm,
+                login = null,
+                onBack = { navController.popBackStack() },
+                onOpenUser = { login -> navController.navigate(Dest.profile(login)) },
+                onCloneRepo = { navController.navigate(Dest.CLONE) },
+                onNeedsAuth = { navController.navigate(Dest.SETTINGS) }
+            )
+        }
+
+        composable(
+            Dest.PROFILE_USER,
+            arguments = listOf(navArgument("login") { type = NavType.StringType })
+        ) { backStackEntry ->
+            val login = Dest.decode(backStackEntry.arguments!!.getString("login")!!)
+            val vm: ProfileViewModel = viewModel(factory = factory)
+            ProfileScreen(
+                vm = vm,
+                login = login,
+                onBack = { navController.popBackStack() },
+                onOpenUser = { other -> navController.navigate(Dest.profile(other)) },
+                onCloneRepo = { navController.navigate(Dest.CLONE) },
+                onNeedsAuth = { navController.navigate(Dest.SETTINGS) }
             )
         }
 

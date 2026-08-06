@@ -49,20 +49,74 @@ class GitHubApi(private val token: String?) {
         val name: String?,
         val email: String?,
         val avatarUrl: String?,
-        val htmlUrl: String
+        val htmlUrl: String,
+        val bio: String? = null,
+        val company: String? = null,
+        val location: String? = null,
+        val blog: String? = null,
+        val publicRepos: Int = 0,
+        val followers: Int = 0,
+        val following: Int = 0,
+        val createdAt: String = ""
+    )
+
+    data class GitHubUserSummary(
+        val login: String,
+        val avatarUrl: String?,
+        val htmlUrl: String,
+        val type: String = "User"
     )
 
     /** Verifies the token and returns the authenticated user. */
     fun getAuthenticatedUser(): Result<GitHubUser> = runCatching {
-        val o = request("GET", "/user") as JSONObject
-        GitHubUser(
-            login = o.getString("login"),
-            name = if (o.isNull("name")) null else o.optString("name").takeIf { it.isNotBlank() },
-            email = if (o.isNull("email")) null else o.optString("email").takeIf { it.isNotBlank() },
-            avatarUrl = o.optString("avatar_url").takeIf { it.isNotBlank() },
-            htmlUrl = o.optString("html_url", "")
-        )
+        (request("GET", "/user") as JSONObject).toGitHubUser()
     }
+
+    /** Public profile for any user. */
+    fun getUser(login: String): Result<GitHubUser> = runCatching {
+        (request("GET", "/users/${login.trim()}") as JSONObject).toGitHubUser()
+    }
+
+    /** Search users by login/name (GitHub Search API). */
+    fun searchUsers(query: String, perPage: Int = 30): Result<List<GitHubUserSummary>> = runCatching {
+        val q = query.trim()
+        if (q.isEmpty()) return@runCatching emptyList()
+        val encoded = java.net.URLEncoder.encode(q, "UTF-8")
+        val arr = (request("GET", "/search/users?q=$encoded&per_page=$perPage") as JSONObject)
+            .getJSONArray("items")
+        (0 until arr.length()).map { i ->
+            val o = arr.getJSONObject(i)
+            GitHubUserSummary(
+                login = o.getString("login"),
+                avatarUrl = o.optString("avatar_url").takeIf { it.isNotBlank() },
+                htmlUrl = o.optString("html_url", ""),
+                type = o.optString("type", "User")
+            )
+        }
+    }
+
+    /** Public repos for a user (or the authenticated user when login matches). */
+    fun listPublicRepos(login: String, perPage: Int = 30, page: Int = 1): Result<List<GitHubRemoteRepo>> = runCatching {
+        val path = "/users/${login.trim()}/repos?sort=updated&direction=desc&per_page=$perPage&page=$page&type=owner"
+        val arr = request("GET", path) as JSONArray
+        (0 until arr.length()).map { i -> arr.getJSONObject(i).toRemoteRepo() }
+    }
+
+    private fun JSONObject.toGitHubUser(): GitHubUser = GitHubUser(
+        login = getString("login"),
+        name = if (isNull("name")) null else optString("name").takeIf { it.isNotBlank() },
+        email = if (isNull("email")) null else optString("email").takeIf { it.isNotBlank() },
+        avatarUrl = optString("avatar_url").takeIf { it.isNotBlank() },
+        htmlUrl = optString("html_url", ""),
+        bio = if (isNull("bio")) null else optString("bio").takeIf { it.isNotBlank() },
+        company = if (isNull("company")) null else optString("company").takeIf { it.isNotBlank() },
+        location = if (isNull("location")) null else optString("location").takeIf { it.isNotBlank() },
+        blog = if (isNull("blog")) null else optString("blog").takeIf { it.isNotBlank() },
+        publicRepos = optInt("public_repos", 0),
+        followers = optInt("followers", 0),
+        following = optInt("following", 0),
+        createdAt = optString("created_at", "")
+    )
 
     /**
      * Lists repositories the authenticated user can access.
@@ -89,6 +143,20 @@ class GitHubApi(private val token: String?) {
         val arr = (request("GET", "/search/repositories?q=$encoded&per_page=$perPage&sort=updated") as JSONObject)
             .getJSONArray("items")
         (0 until arr.length()).map { i -> arr.getJSONObject(i).toRemoteRepo() }
+    }
+
+    /** Forks a repo into the authenticated user's own account. */
+    fun forkRepo(owner: String, repo: String): Result<GitHubRemoteRepo> = runCatching {
+        (request("POST", "/repos/$owner/$repo/forks", JSONObject()) as JSONObject).toRemoteRepo()
+    }
+
+    /** Creates a new repo owned by the authenticated user. */
+    fun createRepo(name: String, description: String?, isPrivate: Boolean): Result<GitHubRemoteRepo> = runCatching {
+        val payload = JSONObject()
+            .put("name", name)
+            .put("private", isPrivate)
+        if (!description.isNullOrBlank()) payload.put("description", description)
+        (request("POST", "/user/repos", payload) as JSONObject).toRemoteRepo()
     }
 
     private fun JSONObject.toRemoteRepo(): GitHubRemoteRepo {
