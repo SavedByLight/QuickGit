@@ -179,6 +179,7 @@ fun QuickGitNavGraph() {
                 onOpenFiles = { navController.navigate(Dest.files(repoPath)) },
                 onOpenPullRequests = { navController.navigate(Dest.pullRequests(repoPath)) },
                 onOpenIssues = { navController.navigate(Dest.issues(repoPath)) },
+                onOpenWorkflows = { navController.navigate(Dest.workflows(repoPath)) },
                 onConflicts = { navController.navigate(Dest.merge(repoPath)) },
                 onNeedsAuth = { navController.navigate(Dest.SETTINGS) }
             )
@@ -192,6 +193,20 @@ fun QuickGitNavGraph() {
             val vm: IssuesViewModel = viewModel(factory = factory)
             androidx.compose.runtime.LaunchedEffect(repoPath) { vm.init(repoPath) }
             IssuesScreen(
+                vm = vm,
+                onBack = { navController.popBackStack() },
+                onNeedsAuth = { navController.navigate(Dest.SETTINGS) }
+            )
+        }
+
+        composable(
+            Dest.WORKFLOWS,
+            arguments = listOf(navArgument("repoPath") { type = NavType.StringType })
+        ) { backStackEntry ->
+            val repoPath = Dest.decode(backStackEntry.arguments!!.getString("repoPath")!!)
+            val vm: WorkflowsViewModel = viewModel(factory = factory)
+            androidx.compose.runtime.LaunchedEffect(repoPath) { vm.init(repoPath) }
+            WorkflowsScreen(
                 vm = vm,
                 onBack = { navController.popBackStack() },
                 onNeedsAuth = { navController.navigate(Dest.SETTINGS) }

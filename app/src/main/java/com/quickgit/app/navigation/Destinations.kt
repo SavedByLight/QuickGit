@@ -14,6 +14,7 @@ object Dest {
     const val LOGS = "logs"
     const val PULL_REQUESTS = "pull_requests/{repoPath}"
     const val ISSUES = "issues/{repoPath}"
+    const val WORKFLOWS = "workflows/{repoPath}"
     const val BROWSE_GITHUB = "browse_github"
     const val PROFILE_SELF = "profile"
     const val PROFILE_USER = "profile/{login}"
@@ -36,6 +37,7 @@ object Dest {
         return if (q.isEmpty()) PROFILE_SELF else "profile/${encode(q)}"
     }
     fun issues(path: String) = "issues/${encode(path)}"
+    fun workflows(path: String) = "workflows/${encode(path)}"
     fun remoteBrowse(owner: String, repo: String, ref: String, path: String = "") =
         "remote_browse/${encode(owner)}/${encode(repo)}/${encode(ref)}/${encodePath(path)}"
     fun remoteFile(owner: String, repo: String, ref: String, path: String) =

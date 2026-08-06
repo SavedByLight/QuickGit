@@ -7,6 +7,10 @@ import com.quickgit.app.data.models.MergeMethod
 import com.quickgit.app.data.models.PrComment
 import com.quickgit.app.data.models.PrOpResult
 import com.quickgit.app.data.models.PullRequest
+import com.quickgit.app.data.models.Workflow
+import com.quickgit.app.data.models.WorkflowJob
+import com.quickgit.app.data.models.WorkflowRun
+import com.quickgit.app.data.models.WorkflowStep
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
@@ -313,9 +317,130 @@ class GitHubApi(private val token: String?) {
         Unit
     }
 
+    // ── GitHub Actions / Workflows ──────────────────────────────────────────
 
-    /** Maps a Result<T> failure onto PrOpResult, distinguishing auth failures for the caller. */
-    
+    fun listWorkflows(owner: String, repo: String): Result<List<Workflow>> = runCatching {
+        val obj = request("GET", "/repos/$owner/$repo/actions/workflows?per_page=100") as JSONObject
+        val arr = obj.getJSONArray("workflows")
+        (0 until arr.length()).map { i -> arr.getJSONObject(i).toWorkflow() }
+    }
+
+    fun listWorkflowRuns(
+        owner: String,
+        repo: String,
+        workflowId: Long? = null,
+        status: String? = null,
+        perPage: Int = 30
+    ): Result<List<WorkflowRun>> = runCatching {
+        val params = mutableListOf("per_page=$perPage")
+        if (!status.isNullOrBlank()) params += "status=$status"
+        val path = if (workflowId != null) {
+            "/repos/$owner/$repo/actions/workflows/$workflowId/runs?${params.joinToString("&")}"
+        } else {
+            "/repos/$owner/$repo/actions/runs?${params.joinToString("&")}"
+        }
+        val obj = request("GET", path) as JSONObject
+        val arr = obj.getJSONArray("workflow_runs")
+        (0 until arr.length()).map { i -> arr.getJSONObject(i).toWorkflowRun() }
+    }
+
+    fun getWorkflowRun(owner: String, repo: String, runId: Long): Result<WorkflowRun> = runCatching {
+        (request("GET", "/repos/$owner/$repo/actions/runs/$runId") as JSONObject).toWorkflowRun()
+    }
+
+    fun listJobsForRun(owner: String, repo: String, runId: Long): Result<List<WorkflowJob>> = runCatching {
+        val obj = request("GET", "/repos/$owner/$repo/actions/runs/$runId/jobs?per_page=100") as JSONObject
+        val arr = obj.getJSONArray("jobs")
+        (0 until arr.length()).map { i -> arr.getJSONObject(i).toWorkflowJob() }
+    }
+
+    /**
+     * Trigger a workflow_dispatch event.
+     * [ref] is the branch/tag/SHA; [inputs] are optional key/value pairs for the workflow's inputs.
+     */
+    fun dispatchWorkflow(
+        owner: String,
+        repo: String,
+        workflowId: Long,
+        ref: String,
+        inputs: Map<String, String> = emptyMap()
+    ): Result<Unit> = runCatching {
+        val payload = JSONObject().put("ref", ref)
+        if (inputs.isNotEmpty()) {
+            val inputsObj = JSONObject()
+            inputs.forEach { (k, v) -> inputsObj.put(k, v) }
+            payload.put("inputs", inputsObj)
+        }
+        request("POST", "/repos/$owner/$repo/actions/workflows/$workflowId/dispatches", payload)
+        Unit
+    }
+
+    fun cancelWorkflowRun(owner: String, repo: String, runId: Long): Result<Unit> = runCatching {
+        request("POST", "/repos/$owner/$repo/actions/runs/$runId/cancel")
+        Unit
+    }
+
+    fun rerunWorkflowRun(owner: String, repo: String, runId: Long): Result<Unit> = runCatching {
+        request("POST", "/repos/$owner/$repo/actions/runs/$runId/rerun")
+        Unit
+    }
+
+    private fun JSONObject.toWorkflow() = Workflow(
+        id = getLong("id"),
+        name = optString("name", ""),
+        path = optString("path", ""),
+        state = optString("state", "active"),
+        badgeUrl = optString("badge_url").takeIf { it.isNotBlank() },
+        htmlUrl = optString("html_url", ""),
+        createdAt = optString("created_at", ""),
+        updatedAt = optString("updated_at", "")
+    )
+
+    private fun JSONObject.toWorkflowRun() = WorkflowRun(
+        id = getLong("id"),
+        name = optString("name", ""),
+        displayTitle = optString("display_title", optString("name", "")),
+        workflowId = optLong("workflow_id", 0L),
+        workflowName = optString("name", ""),
+        status = optString("status", ""),
+        conclusion = if (has("conclusion") && !isNull("conclusion")) optString("conclusion") else null,
+        event = optString("event", ""),
+        headBranch = optString("head_branch").takeIf { it.isNotBlank() },
+        headSha = optString("head_sha").takeIf { it.isNotBlank() },
+        actorLogin = optJSONObject("actor")?.optString("login"),
+        runNumber = optInt("run_number", 0),
+        runAttempt = optInt("run_attempt", 1),
+        htmlUrl = optString("html_url", ""),
+        createdAt = optString("created_at", ""),
+        updatedAt = optString("updated_at", ""),
+        runStartedAt = optString("run_started_at").takeIf { it.isNotBlank() }
+    )
+
+    private fun JSONObject.toWorkflowJob(): WorkflowJob {
+        val stepsArr = optJSONArray("steps")
+        val steps = if (stepsArr == null) emptyList() else (0 until stepsArr.length()).map { i ->
+            val s = stepsArr.getJSONObject(i)
+            WorkflowStep(
+                name = s.optString("name", ""),
+                status = s.optString("status", ""),
+                conclusion = if (s.has("conclusion") && !s.isNull("conclusion")) s.optString("conclusion") else null,
+                number = s.optInt("number", 0),
+                startedAt = s.optString("started_at").takeIf { it.isNotBlank() },
+                completedAt = s.optString("completed_at").takeIf { it.isNotBlank() }
+            )
+        }
+        return WorkflowJob(
+            id = getLong("id"),
+            name = optString("name", ""),
+            status = optString("status", ""),
+            conclusion = if (has("conclusion") && !isNull("conclusion")) optString("conclusion") else null,
+            startedAt = optString("started_at").takeIf { it.isNotBlank() },
+            completedAt = optString("completed_at").takeIf { it.isNotBlank() },
+            htmlUrl = optString("html_url", ""),
+            steps = steps
+        )
+    }
+
     private fun JSONObject.toIssue(): Issue {
         val labelsArr = optJSONArray("labels")
         val labels = if (labelsArr == null) emptyList() else (0 until labelsArr.length()).mapNotNull { i ->
