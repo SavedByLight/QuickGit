@@ -145,80 +145,70 @@ fun RepoDetailScreen(
             }
 
             if (showForcePushConfirm) {
-                AlertDialog(
-                    onDismissRequest = { showForcePushConfirm = false },
-                    title = { Text("Force push") },
-                    text = {
-                        Column {
+                // Custom dialog so options are never clipped (M3 AlertDialog text slot often truncates)
+                androidx.compose.ui.window.Dialog(onDismissRequest = { showForcePushConfirm = false }) {
+                    Surface(
+                        shape = MaterialTheme.shapes.extraLarge,
+                        tonalElevation = 6.dp,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(Modifier.padding(24.dp)) {
+                            Text(
+                                "Force push",
+                                style = MaterialTheme.typography.headlineSmall
+                            )
+                            Spacer(Modifier.height(8.dp))
                             Text(
                                 "Choose how to overwrite the remote branch:",
-                                style = MaterialTheme.typography.bodyMedium
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
-                            Spacer(Modifier.height(12.dp))
+                            Spacer(Modifier.height(16.dp))
+
+                            ForcePushModeOption(
+                                title = "Force with lease",
+                                subtitle = "Only if remote still matches your last fetch (safer)",
+                                selected = forcePushUseLease,
+                                onSelect = { forcePushUseLease = true }
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            ForcePushModeOption(
+                                title = "Force (no lease)",
+                                subtitle = "Always overwrite — can discard others’ commits",
+                                selected = !forcePushUseLease,
+                                onSelect = { forcePushUseLease = false }
+                            )
+
+                            Spacer(Modifier.height(20.dp))
                             Row(
-                                Modifier
-                                    .fillMaxWidth()
-                                    .clickableSimple { forcePushUseLease = true },
-                                verticalAlignment = Alignment.CenterVertically
+                                Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.End
                             ) {
-                                RadioButton(
-                                    selected = forcePushUseLease,
-                                    onClick = { forcePushUseLease = true }
-                                )
-                                Column(Modifier.padding(start = 4.dp)) {
-                                    Text("Force with lease", fontWeight = FontWeight.Medium)
-                                    Text(
-                                        "Only if remote still matches your last fetch",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
+                                TextButton(onClick = { showForcePushConfirm = false }) {
+                                    Text("Cancel")
                                 }
-                            }
-                            Spacer(Modifier.height(4.dp))
-                            Row(
-                                Modifier
-                                    .fillMaxWidth()
-                                    .clickableSimple { forcePushUseLease = false },
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                RadioButton(
-                                    selected = !forcePushUseLease,
-                                    onClick = { forcePushUseLease = false }
-                                )
-                                Column(Modifier.padding(start = 4.dp)) {
-                                    Text("Force (no lease)", fontWeight = FontWeight.Medium)
-                                    Text(
-                                        "Always overwrite — can discard others’ commits",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
+                                Spacer(Modifier.width(8.dp))
+                                Button(
+                                    onClick = {
+                                        showForcePushConfirm = false
+                                        if (forcePushUseLease) {
+                                            vm.push(forceWithLease = true)
+                                        } else {
+                                            vm.push(force = true)
+                                        }
+                                    },
+                                    colors = if (forcePushUseLease) {
+                                        ButtonDefaults.buttonColors()
+                                    } else {
+                                        ButtonDefaults.buttonColors(containerColor = GitRed)
+                                    }
+                                ) {
+                                    Text(if (forcePushUseLease) "Force with lease" else "Force push")
                                 }
                             }
                         }
-                    },
-                    confirmButton = {
-                        Button(
-                            onClick = {
-                                showForcePushConfirm = false
-                                if (forcePushUseLease) {
-                                    vm.push(forceWithLease = true)
-                                } else {
-                                    vm.push(force = true)
-                                }
-                            },
-                            colors = if (forcePushUseLease) {
-                                ButtonDefaults.buttonColors()
-                            } else {
-                                ButtonDefaults.buttonColors(containerColor = GitRed)
-                            }
-                        ) {
-                            Text(if (forcePushUseLease) "Force with lease" else "Force push")
-                        }
-                    },
-                    dismissButton = {
-                        TextButton(onClick = { showForcePushConfirm = false }) { Text("Cancel") }
                     }
-                )
+                }
             }
 
             if (status != null && status.conflicting.isNotEmpty()) {
@@ -293,6 +283,41 @@ fun RepoDetailScreen(
                         )
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ForcePushModeOption(
+    title: String,
+    subtitle: String,
+    selected: Boolean,
+    onSelect: () -> Unit
+) {
+    Surface(
+        onClick = onSelect,
+        shape = MaterialTheme.shapes.medium,
+        color = if (selected) {
+            MaterialTheme.colorScheme.primaryContainer
+        } else {
+            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+        },
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            Modifier.padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            RadioButton(selected = selected, onClick = onSelect)
+            Spacer(Modifier.width(4.dp))
+            Column(Modifier.weight(1f)) {
+                Text(title, fontWeight = FontWeight.SemiBold)
+                Text(
+                    subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
     }
