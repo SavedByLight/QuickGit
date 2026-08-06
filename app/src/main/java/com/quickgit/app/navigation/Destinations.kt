@@ -37,10 +37,20 @@ object Dest {
     }
     fun issues(path: String) = "issues/${encode(path)}"
     fun remoteBrowse(owner: String, repo: String, ref: String, path: String = "") =
-        "remote_browse/${encode(owner)}/${encode(repo)}/${encode(ref)}/${encode(path)}"
+        "remote_browse/${encode(owner)}/${encode(repo)}/${encode(ref)}/${encodePath(path)}"
     fun remoteFile(owner: String, repo: String, ref: String, path: String) =
-        "remote_file/${encode(owner)}/${encode(repo)}/${encode(ref)}/${encode(path)}"
+        "remote_file/${encode(owner)}/${encode(repo)}/${encode(ref)}/${encodePath(path)}"
 
     private fun encode(s: String) = java.net.URLEncoder.encode(s, "UTF-8")
     fun decode(s: String) = java.net.URLDecoder.decode(s, "UTF-8")
+
+    // Navigation Compose's route matcher requires each {arg} path segment to contain at
+    // least one character, so an empty "root" path can't be encoded as "" (that produced
+    // a trailing-slash URI that never matched the graph and crashed the app). Use "." as
+    // a stand-in for the repo root and translate it back on the way out.
+    private fun encodePath(s: String) = if (s.isEmpty()) "." else encode(s)
+    fun decodePath(s: String): String {
+        val decoded = decode(s)
+        return if (decoded == ".") "" else decoded
+    }
 }

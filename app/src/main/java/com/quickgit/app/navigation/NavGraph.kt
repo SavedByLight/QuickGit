@@ -90,7 +90,7 @@ fun QuickGitNavGraph() {
             val owner = Dest.decode(backStackEntry.arguments!!.getString("owner")!!)
             val repo = Dest.decode(backStackEntry.arguments!!.getString("repo")!!)
             val ref = Dest.decode(backStackEntry.arguments!!.getString("ref")!!)
-            val path = Dest.decode(backStackEntry.arguments!!.getString("path")!!)
+            val path = Dest.decodePath(backStackEntry.arguments!!.getString("path")!!)
             val vm: RemoteBrowseViewModel = viewModel(factory = factory)
             RemoteBrowseScreen(
                 owner = owner,
@@ -116,7 +116,7 @@ fun QuickGitNavGraph() {
             val owner = Dest.decode(backStackEntry.arguments!!.getString("owner")!!)
             val repo = Dest.decode(backStackEntry.arguments!!.getString("repo")!!)
             val ref = Dest.decode(backStackEntry.arguments!!.getString("ref")!!)
-            val path = Dest.decode(backStackEntry.arguments!!.getString("path")!!)
+            val path = Dest.decodePath(backStackEntry.arguments!!.getString("path")!!)
             val vm: RemoteFileViewModel = viewModel(factory = factory)
             RemoteFileScreen(
                 owner = owner,
