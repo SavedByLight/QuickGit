@@ -125,9 +125,24 @@ class GitHubAccountManager(private val credentialStore: CredentialStore) {
         return (result.getOrNull() ?: emptyList()) to result.toPrOpResult(host)
     }
 
+    /** Fetches every page of the user's public repos (GitHub paginates at 100/page). */
     fun listPublicRepos(login: String): Pair<List<GitHubRemoteRepo>, PrOpResult> {
         if (!isConnected()) return emptyList<GitHubRemoteRepo>() to PrOpResult.AuthRequired(host)
-        val result = api.listPublicRepos(login)
-        return (result.getOrNull() ?: emptyList()) to result.toPrOpResult(host)
+        val perPage = 100
+        val all = mutableListOf<GitHubRemoteRepo>()
+        var page = 1
+        while (true) {
+            val result = api.listPublicRepos(login, perPage = perPage, page = page)
+            val batch = result.getOrNull()
+            if (batch == null) {
+                // First page failing is a real error; a later page failing just stops pagination.
+                return if (page == 1) emptyList<GitHubRemoteRepo>() to result.toPrOpResult(host)
+                else all to PrOpResult.Success
+            }
+            all += batch
+            if (batch.size < perPage || page >= 10) break // 10-page safety cap (1000 repos)
+            page++
+        }
+        return all to PrOpResult.Success
     }
 }

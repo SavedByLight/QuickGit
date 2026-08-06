@@ -34,34 +34,6 @@ fun QuickGitNavGraph() {
             )
         }
 
-        composable(Dest.LOGS) {
-            val vm: LogsViewModel = viewModel(factory = factory)
-            LogsScreen(vm = vm, onBack = { navController.popBackStack() })
-        }
-
-        composable(Dest.CLONE) {
-            val vm: CloneViewModel = viewModel(factory = factory)
-            CloneScreen(
-                vm = vm,
-                onBack = { navController.popBackStack() },
-                onCloned = { navController.popBackStack() },
-                onNeedsAuth = { url -> navController.navigate(Dest.SETTINGS) },
-                onBrowseGitHub = { navController.navigate(Dest.BROWSE_GITHUB) }
-            )
-        }
-
-        composable(Dest.BROWSE_GITHUB) {
-            val vm: BrowseGitHubViewModel = viewModel(factory = factory)
-            BrowseGitHubScreen(
-                vm = vm,
-                onBack = { navController.popBackStack() },
-                onCloned = {
-                    navController.popBackStack(Dest.REPO_LIST, inclusive = false)
-                },
-                onNeedsAuth = { navController.navigate(Dest.SETTINGS) }
-            )
-        }
-
         composable(Dest.USER_SEARCH) {
             val vm: UserSearchViewModel = viewModel(factory = factory)
             UserSearchScreen(
@@ -96,6 +68,34 @@ fun QuickGitNavGraph() {
                 onBack = { navController.popBackStack() },
                 onOpenUser = { other -> navController.navigate(Dest.profile(other)) },
                 onCloneRepo = { navController.navigate(Dest.CLONE) },
+                onNeedsAuth = { navController.navigate(Dest.SETTINGS) }
+            )
+        }
+
+        composable(Dest.LOGS) {
+            val vm: LogsViewModel = viewModel(factory = factory)
+            LogsScreen(vm = vm, onBack = { navController.popBackStack() })
+        }
+
+        composable(Dest.CLONE) {
+            val vm: CloneViewModel = viewModel(factory = factory)
+            CloneScreen(
+                vm = vm,
+                onBack = { navController.popBackStack() },
+                onCloned = { navController.popBackStack() },
+                onNeedsAuth = { url -> navController.navigate(Dest.SETTINGS) },
+                onBrowseGitHub = { navController.navigate(Dest.BROWSE_GITHUB) }
+            )
+        }
+
+        composable(Dest.BROWSE_GITHUB) {
+            val vm: BrowseGitHubViewModel = viewModel(factory = factory)
+            BrowseGitHubScreen(
+                vm = vm,
+                onBack = { navController.popBackStack() },
+                onCloned = {
+                    navController.popBackStack(Dest.REPO_LIST, inclusive = false)
+                },
                 onNeedsAuth = { navController.navigate(Dest.SETTINGS) }
             )
         }
