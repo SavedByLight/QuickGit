@@ -156,6 +156,13 @@ class GitLabAccountManager(private val credentialStore: CredentialStore) {
         return "${parsed.owner}/${parsed.project}"
     }
 
+
+    fun searchUsers(query: String, h: String = host): Pair<List<com.quickgit.app.data.gitlab.GitLabApi.GitLabUserSummary>, PrOpResult> {
+        if (!isConnected(h)) return emptyList<com.quickgit.app.data.gitlab.GitLabApi.GitLabUserSummary>() to PrOpResult.AuthRequired(h)
+        val result = api(h).searchUsers(query)
+        return (result.getOrNull() ?: emptyList()) to result.toPrOpResult(h)
+    }
+
     // Persist primary GitLab host so UI can restore it
     private fun savePrimaryHost(h: String) {
         // reuse a simple preference key via the encrypted store's underlying prefs is awkward;
@@ -168,10 +175,3 @@ class GitLabAccountManager(private val credentialStore: CredentialStore) {
         } catch (_: Exception) {}
     }
 }
-
-
-    fun searchUsers(query: String, h: String = host): Pair<List<com.quickgit.app.data.gitlab.GitLabApi.GitLabUserSummary>, PrOpResult> {
-        if (!isConnected(h)) return emptyList<com.quickgit.app.data.gitlab.GitLabApi.GitLabUserSummary>() to PrOpResult.AuthRequired(h)
-        val result = api(h).searchUsers(query)
-        return (result.getOrNull() ?: emptyList()) to result.toPrOpResult(h)
-    }

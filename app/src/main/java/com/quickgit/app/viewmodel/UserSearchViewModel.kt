@@ -70,7 +70,10 @@ class UserSearchViewModel(
     fun selectTab(tab: UserSearchProvider) {
         _state.value = _state.value.copy(selectedTab = tab, searched = false)
         val q = _state.value.query.trim()
-        if (q.length >= 2) search(q)
+        if (q.length >= 2) {
+            searchJob?.cancel()
+            searchJob = viewModelScope.launch { search(q) }
+        }
     }
 
     fun setQuery(q: String) {

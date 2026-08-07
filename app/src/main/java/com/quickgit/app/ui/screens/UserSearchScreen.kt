@@ -96,7 +96,7 @@ fun UserSearchScreen(
                         items(state.githubResults, key = { it.login }) { user ->
                             ListItem(
                                 headlineContent = { Text(user.login, fontWeight = FontWeight.Medium) },
-                                supportingContent = { user.name?.let { Text(it) } },
+                                supportingContent = { Text(user.type) },
                                 leadingContent = {
                                     UserAvatar(avatarUrl = user.avatarUrl, login = user.login, size = 40.dp)
                                 },
@@ -109,7 +109,7 @@ fun UserSearchScreen(
                         items(state.gitlabResults, key = { it.id }) { user ->
                             ListItem(
                                 headlineContent = { Text(user.username, fontWeight = FontWeight.Medium) },
-                                supportingContent = { user.name?.let { Text(it) } },
+                                supportingContent = { Text(user.type) },
                                 leadingContent = {
                                     UserAvatar(avatarUrl = user.avatarUrl, login = user.username, size = 40.dp)
                                 },
