@@ -130,7 +130,7 @@ fun BrowseGitHubScreen(
         }
 
         PullToRefreshBox(
-            refreshing = state.loading,
+            isRefreshing = state.loading,
             onRefresh = { vm.refresh() },
             modifier = Modifier.fillMaxSize().padding(padding)
         ) {
