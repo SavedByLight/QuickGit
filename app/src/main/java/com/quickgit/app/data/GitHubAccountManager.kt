@@ -101,6 +101,40 @@ class GitHubAccountManager(private val credentialStore: CredentialStore) {
         return all to PrOpResult.Success
     }
 
+    /**
+     * Single page of repos (100 by default). [page] is 1-based.
+     * [hasMore] is true when the page was full.
+     */
+    fun listReposPage(
+        page: Int = 1,
+        perPage: Int = 100,
+        affiliation: String = "owner,collaborator,organization_member"
+    ): Triple<List<GitHubRemoteRepo>, Boolean, PrOpResult> {
+        if (!isConnected()) return Triple(emptyList(), false, PrOpResult.AuthRequired(host))
+        val result = api.listUserRepos(affiliation = affiliation, perPage = perPage, page = page)
+        val batch = result.getOrNull()
+        return if (batch == null) {
+            Triple(emptyList(), false, result.toPrOpResult(host))
+        } else {
+            Triple(batch, batch.size >= perPage, PrOpResult.Success)
+        }
+    }
+
+    fun searchReposPage(
+        query: String,
+        page: Int = 1,
+        perPage: Int = 100
+    ): Triple<List<GitHubRemoteRepo>, Boolean, PrOpResult> {
+        if (!isConnected()) return Triple(emptyList(), false, PrOpResult.AuthRequired(host))
+        // GitHub search API is not paged the same way for user repos; filter client-side from one page
+        val (all, op) = searchRepos(query)
+        if (op !is PrOpResult.Success) return Triple(emptyList(), false, op)
+        val from = ((page - 1) * perPage).coerceAtLeast(0)
+        if (from >= all.size) return Triple(emptyList(), false, PrOpResult.Success)
+        val slice = all.drop(from).take(perPage)
+        return Triple(slice, from + slice.size < all.size, PrOpResult.Success)
+    }
+
     fun searchRepos(query: String): Pair<List<GitHubRemoteRepo>, PrOpResult> {
         if (!isConnected()) return emptyList<GitHubRemoteRepo>() to PrOpResult.AuthRequired(host)
         val login = storedUsername()

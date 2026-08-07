@@ -124,8 +124,8 @@ class GerritApi(
      * @param query optional substring match (Gerrit `m=` parameter)
      * @param limit max results (Gerrit `n=`)
      */
-    fun listProjects(query: String? = null, limit: Int = 50): Result<List<GerritProject>> = runCatching {
-        val params = mutableListOf("d", "n=$limit")
+    fun listProjects(query: String? = null, limit: Int = 100, start: Int = 0): Result<List<GerritProject>> = runCatching {
+        val params = mutableListOf("d", "n=$limit", "S=$start")
         val q = query?.trim().orEmpty()
         if (q.isNotEmpty()) {
             params += "m=" + java.net.URLEncoder.encode(q, "UTF-8")
@@ -165,8 +165,34 @@ class GerritApi(
         list.sortedBy { it.name.lowercase() }
     }
 
-    fun searchProjects(query: String, limit: Int = 50): Result<List<GerritProject>> =
-        listProjects(query = query, limit = limit)
+    fun searchProjects(query: String, limit: Int = 100, start: Int = 0): Result<List<GerritProject>> =
+        listProjects(query = query, limit = limit, start = start)
+
+
+    data class GerritAccountSummary(
+        val accountId: Int,
+        val username: String,
+        val name: String?,
+        val email: String?
+    )
+
+    fun searchAccounts(query: String, limit: Int = 30): Result<List<GerritAccountSummary>> = runCatching {
+        val q = java.net.URLEncoder.encode(query.trim(), "UTF-8")
+        val raw = request("GET", "/accounts/?q=$q&n=$limit&o=DETAILS")
+        val arr = when (raw) {
+            is JSONArray -> raw
+            else -> JSONArray()
+        }
+        (0 until arr.length()).map { i ->
+            val o = arr.getJSONObject(i)
+            GerritAccountSummary(
+                accountId = o.optInt("_account_id", 0),
+                username = o.optString("username", o.optString("name", "")),
+                name = o.optString("name").takeIf { it.isNotBlank() },
+                email = o.optString("email").takeIf { it.isNotBlank() }
+            )
+        }
+    }
 
     // ---- Helpers ----
 

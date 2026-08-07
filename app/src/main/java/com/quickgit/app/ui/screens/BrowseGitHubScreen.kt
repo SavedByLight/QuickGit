@@ -25,6 +25,7 @@ import com.quickgit.app.data.models.GitLabProject
 import com.quickgit.app.data.models.GitOpResult
 import com.quickgit.app.ui.components.PullToRefreshBox
 import com.quickgit.app.viewmodel.BrowseGitHubViewModel
+import com.quickgit.app.viewmodel.BrowseProviderTab
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -92,6 +93,13 @@ fun BrowseGitHubScreen(
         )
     }
 
+    val tabs = listOf(
+        BrowseProviderTab.GITHUB to "GitHub",
+        BrowseProviderTab.GITLAB to "GitLab",
+        BrowseProviderTab.GERRIT to "Gerrit"
+    )
+    val selectedIndex = tabs.indexOfFirst { it.first == state.selectedTab }.coerceAtLeast(0)
+
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHost) },
         topBar = {
@@ -103,10 +111,8 @@ fun BrowseGitHubScreen(
                     }
                 },
                 actions = {
-                    if (state.githubConnected) {
-                        TextButton(onClick = { showCreateDialog = true }) {
-                            Text("New")
-                        }
+                    if (state.selectedTab == BrowseProviderTab.GITHUB && state.githubConnected) {
+                        TextButton(onClick = { showCreateDialog = true }) { Text("New") }
                     }
                 }
             )
@@ -129,184 +135,201 @@ fun BrowseGitHubScreen(
             return@Scaffold
         }
 
-        PullToRefreshBox(
-            isRefreshing = state.loading,
-            onRefresh = { vm.refresh() },
-            modifier = Modifier.fillMaxSize().padding(padding)
-        ) {
-            LazyColumn(Modifier.fillMaxSize()) {
-                item {
-                    OutlinedTextField(
-                        value = state.query,
-                        onValueChange = vm::onQueryChange,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 8.dp),
-                        placeholder = { Text("Search repos…") },
-                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-                        singleLine = true
-                    )
-                }
-
-                if (state.cloning && state.progressText.isNotBlank()) {
-                    item {
-                        LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 16.dp))
-                        Text(
-                            state.progressText,
-                            style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
-                        )
+        Column(Modifier.fillMaxSize().padding(padding)) {
+            TabRow(selectedTabIndex = selectedIndex) {
+                tabs.forEachIndexed { index, (tab, label) ->
+                    val connected = when (tab) {
+                        BrowseProviderTab.GITHUB -> state.githubConnected
+                        BrowseProviderTab.GITLAB -> state.gitlabConnected
+                        BrowseProviderTab.GERRIT -> state.gerritConnected
                     }
-                }
-
-                // ---- GitHub ----
-                item {
-                    ProviderSectionHeader(
-                        title = "GitHub",
-                        subtitle = when {
-                            !state.githubConnected -> "Not connected"
-                            state.githubLogin != null -> "@${state.githubLogin}"
-                            else -> "Connected"
+                    Tab(
+                        selected = selectedIndex == index,
+                        onClick = { vm.selectTab(tab) },
+                        text = {
+                            Text(
+                                if (connected) label else "$label · off",
+                                maxLines = 1
+                            )
                         },
-                        connected = state.githubConnected,
-                        count = state.githubRepos.size
+                        enabled = connected || tab == state.selectedTab
                     )
                 }
-                if (state.githubConnected) {
-                    if (state.githubRepos.isEmpty() && !state.loading) {
-                        item { EmptySectionHint("No GitHub repositories match.") }
-                    }
-                    items(state.githubRepos, key = { "gh-${it.id}" }) { repo ->
-                        GitHubRepoRow(
-                            repo = repo,
-                            cloning = state.cloningKey == "gh:${repo.id}",
-                            enabled = !state.cloning,
-                            onClone = { vm.cloneGitHubRepo(repo) },
-                            onCloneToFolder = {
-                                pendingFolderAction = { vm.cloneGitHubRepoAfterPickingFolder(repo) }
-                                destinationPicker.launch(null)
-                            }
-                        )
-                        HorizontalDivider(Modifier.padding(start = 50.dp))
-                    }
-                }
+            }
 
-                // ---- GitLab ----
-                item {
-                    ProviderSectionHeader(
-                        title = "GitLab",
-                        subtitle = when {
-                            !state.gitlabConnected -> "Not connected"
-                            state.gitlabUsername != null -> "@${state.gitlabUsername}"
-                            else -> "Connected"
-                        },
-                        connected = state.gitlabConnected,
-                        count = state.gitlabProjects.size
+            OutlinedTextField(
+                value = state.query,
+                onValueChange = vm::onQueryChange,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                placeholder = {
+                    Text(
+                        when (state.selectedTab) {
+                            BrowseProviderTab.GITHUB -> "Search GitHub repos…"
+                            BrowseProviderTab.GITLAB -> "Search GitLab projects…"
+                            BrowseProviderTab.GERRIT -> "Search Gerrit projects…"
+                        }
                     )
-                }
-                if (state.gitlabConnected) {
-                    if (state.gitlabProjects.isEmpty() && !state.loading) {
-                        item { EmptySectionHint("No GitLab projects match.") }
-                    }
-                    items(state.gitlabProjects, key = { "gl-${it.id}" }) { project ->
-                        GitLabProjectRow(
-                            project = project,
-                            cloning = state.cloningKey == "gl:${project.id}",
-                            enabled = !state.cloning,
-                            onClone = { vm.cloneGitLabProject(project) },
-                            onCloneToFolder = {
-                                pendingFolderAction = { vm.cloneGitLabProjectAfterPickingFolder(project) }
-                                destinationPicker.launch(null)
-                            }
-                        )
-                        HorizontalDivider(Modifier.padding(start = 50.dp))
-                    }
-                }
+                },
+                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                singleLine = true
+            )
 
-                // ---- Gerrit ----
-                item {
-                    ProviderSectionHeader(
-                        title = "Gerrit",
-                        subtitle = when {
-                            !state.gerritConnected -> "Not connected"
-                            state.gerritUsername != null && state.gerritHost != null ->
-                                "${state.gerritUsername} @ ${state.gerritHost}"
-                            state.gerritHost != null -> state.gerritHost!!
-                            else -> "Connected"
-                        },
-                        connected = state.gerritConnected,
-                        count = state.gerritProjects.size
-                    )
-                }
-                if (state.gerritConnected) {
-                    if (state.gerritProjects.isEmpty() && !state.loading) {
-                        item { EmptySectionHint("No Gerrit projects match.") }
+            val accountLine = when (state.selectedTab) {
+                BrowseProviderTab.GITHUB -> state.githubLogin?.let { "@$it" }
+                BrowseProviderTab.GITLAB -> state.gitlabUsername?.let { "@$it" }
+                BrowseProviderTab.GERRIT -> buildString {
+                    state.gerritUsername?.let { append(it) }
+                    state.gerritHost?.let {
+                        if (isNotEmpty()) append(" @ ")
+                        append(it)
                     }
-                    items(state.gerritProjects, key = { "ge-${it.id}" }) { project ->
-                        GerritProjectRow(
-                            project = project,
-                            cloning = state.cloningKey == "ge:${project.id}",
-                            enabled = !state.cloning,
-                            onClone = { vm.cloneGerritProject(project) },
-                            onCloneToFolder = {
-                                pendingFolderAction = { vm.cloneGerritProjectAfterPickingFolder(project) }
-                                destinationPicker.launch(null)
-                            }
-                        )
-                        HorizontalDivider(Modifier.padding(start = 50.dp))
-                    }
-                }
+                }.ifBlank { null }
+            }
+            if (accountLine != null) {
+                Text(
+                    accountLine,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp)
+                )
+            }
 
-                item { Spacer(Modifier.height(24.dp)) }
+            if (state.cloning && state.progressText.isNotBlank()) {
+                LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 16.dp))
+                Text(
+                    state.progressText,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                )
+            }
+
+            PullToRefreshBox(
+                isRefreshing = state.loading,
+                onRefresh = { vm.refresh() },
+                modifier = Modifier.fillMaxSize()
+            ) {
+                when (state.selectedTab) {
+                    BrowseProviderTab.GITHUB -> ProviderList(
+                        empty = state.githubRepos.isEmpty() && state.githubLoaded && !state.loading,
+                        emptyText = if (!state.githubConnected) "Connect GitHub in Settings."
+                        else "No GitHub repositories match.",
+                        loadingMore = state.loadingMore,
+                        hasMore = state.githubHasMore,
+                        onLoadMore = vm::loadMore
+                    ) {
+                        items(state.githubRepos, key = { "gh-${it.id}" }) { repo ->
+                            GitHubRepoRow(
+                                repo = repo,
+                                cloning = state.cloningKey == "gh:${repo.id}",
+                                enabled = !state.cloning,
+                                onClone = { vm.cloneGitHubRepo(repo) },
+                                onCloneToFolder = {
+                                    pendingFolderAction = { vm.cloneGitHubRepoAfterPickingFolder(repo) }
+                                    destinationPicker.launch(null)
+                                }
+                            )
+                            HorizontalDivider(Modifier.padding(start = 50.dp))
+                        }
+                    }
+                    BrowseProviderTab.GITLAB -> ProviderList(
+                        empty = state.gitlabProjects.isEmpty() && state.gitlabLoaded && !state.loading,
+                        emptyText = if (!state.gitlabConnected) "Connect GitLab in Settings."
+                        else "No GitLab projects match.",
+                        loadingMore = state.loadingMore,
+                        hasMore = state.gitlabHasMore,
+                        onLoadMore = vm::loadMore
+                    ) {
+                        items(state.gitlabProjects, key = { "gl-${it.id}" }) { project ->
+                            RemoteRepoRow(
+                                title = project.pathWithNamespace,
+                                subtitle = project.description,
+                                isPrivate = project.isPrivate,
+                                cloning = state.cloningKey == "gl:${project.id}",
+                                enabled = !state.cloning,
+                                onClone = { vm.cloneGitLabProject(project) },
+                                onCloneToFolder = {
+                                    pendingFolderAction = { vm.cloneGitLabProjectAfterPickingFolder(project) }
+                                    destinationPicker.launch(null)
+                                }
+                            )
+                            HorizontalDivider(Modifier.padding(start = 50.dp))
+                        }
+                    }
+                    BrowseProviderTab.GERRIT -> ProviderList(
+                        empty = state.gerritProjects.isEmpty() && state.gerritLoaded && !state.loading,
+                        emptyText = if (!state.gerritConnected) "Connect Gerrit in Settings."
+                        else "No Gerrit projects match.",
+                        loadingMore = state.loadingMore,
+                        hasMore = state.gerritHasMore,
+                        onLoadMore = vm::loadMore
+                    ) {
+                        items(state.gerritProjects, key = { "ge-${it.id}" }) { project ->
+                            RemoteRepoRow(
+                                title = project.name,
+                                subtitle = buildString {
+                                    project.description?.let { append(it) }
+                                    if (project.state != "ACTIVE") {
+                                        if (isNotEmpty()) append(" · ")
+                                        append(project.state)
+                                    }
+                                }.ifBlank { null },
+                                isPrivate = false,
+                                cloning = state.cloningKey == "ge:${project.id}",
+                                enabled = !state.cloning,
+                                onClone = { vm.cloneGerritProject(project) },
+                                onCloneToFolder = {
+                                    pendingFolderAction = { vm.cloneGerritProjectAfterPickingFolder(project) }
+                                    destinationPicker.launch(null)
+                                }
+                            )
+                            HorizontalDivider(Modifier.padding(start = 50.dp))
+                        }
+                    }
+                }
             }
         }
     }
 }
 
 @Composable
-private fun ProviderSectionHeader(
-    title: String,
-    subtitle: String,
-    connected: Boolean,
-    count: Int
+private fun ProviderList(
+    empty: Boolean,
+    emptyText: String,
+    loadingMore: Boolean,
+    hasMore: Boolean,
+    onLoadMore: () -> Unit,
+    content: androidx.compose.foundation.lazy.LazyListScope.() -> Unit
 ) {
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 4.dp)
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                title,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold
-            )
-            if (connected) {
-                Spacer(Modifier.width(8.dp))
+    LazyColumn(Modifier.fillMaxSize()) {
+        if (empty) {
+            item {
                 Text(
-                    "$count",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.primary
+                    emptyText,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(24.dp)
                 )
             }
         }
-        Text(
-            subtitle,
-            style = MaterialTheme.typography.bodySmall,
-            color = if (connected) MaterialTheme.colorScheme.onSurfaceVariant
-            else MaterialTheme.colorScheme.error
-        )
+        content()
+        if (hasMore) {
+            item {
+                Box(
+                    Modifier.fillMaxWidth().padding(16.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (loadingMore) {
+                        CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 2.dp)
+                    } else {
+                        OutlinedButton(onClick = onLoadMore) { Text("Load more") }
+                    }
+                }
+            }
+        }
+        item { Spacer(Modifier.height(24.dp)) }
     }
-}
-
-@Composable
-private fun EmptySectionHint(text: String) {
-    Text(
-        text,
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-    )
 }
 
 @Composable
@@ -331,50 +354,6 @@ private fun GitHubRepoRow(
             }
         }.ifBlank { null },
         isPrivate = repo.isPrivate,
-        cloning = cloning,
-        enabled = enabled,
-        onClone = onClone,
-        onCloneToFolder = onCloneToFolder
-    )
-}
-
-@Composable
-private fun GitLabProjectRow(
-    project: GitLabProject,
-    cloning: Boolean,
-    enabled: Boolean,
-    onClone: () -> Unit,
-    onCloneToFolder: () -> Unit
-) {
-    RemoteRepoRow(
-        title = project.pathWithNamespace,
-        subtitle = project.description,
-        isPrivate = project.isPrivate,
-        cloning = cloning,
-        enabled = enabled,
-        onClone = onClone,
-        onCloneToFolder = onCloneToFolder
-    )
-}
-
-@Composable
-private fun GerritProjectRow(
-    project: GerritProject,
-    cloning: Boolean,
-    enabled: Boolean,
-    onClone: () -> Unit,
-    onCloneToFolder: () -> Unit
-) {
-    RemoteRepoRow(
-        title = project.name,
-        subtitle = buildString {
-            project.description?.let { append(it) }
-            if (project.state != "ACTIVE") {
-                if (isNotEmpty()) append(" · ")
-                append(project.state)
-            }
-        }.ifBlank { null },
-        isPrivate = false,
         cloning = cloning,
         enabled = enabled,
         onClone = onClone,

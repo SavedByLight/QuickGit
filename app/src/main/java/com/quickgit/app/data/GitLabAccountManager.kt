@@ -113,6 +113,37 @@ class GitLabAccountManager(private val credentialStore: CredentialStore) {
         return all to PrOpResult.Success
     }
 
+    fun listProjectsPage(
+        page: Int = 1,
+        perPage: Int = 100,
+        h: String = host
+    ): Triple<List<GitLabProject>, Boolean, PrOpResult> {
+        if (!isConnected(h)) return Triple(emptyList(), false, PrOpResult.AuthRequired(h))
+        val result = api(h).listProjects(membership = true, perPage = perPage, page = page)
+        val batch = result.getOrNull()
+        return if (batch == null) {
+            Triple(emptyList(), false, result.toPrOpResult(h))
+        } else {
+            Triple(batch, batch.size >= perPage, PrOpResult.Success)
+        }
+    }
+
+    fun searchProjectsPage(
+        query: String,
+        page: Int = 1,
+        perPage: Int = 100,
+        h: String = host
+    ): Triple<List<GitLabProject>, Boolean, PrOpResult> {
+        if (!isConnected(h)) return Triple(emptyList(), false, PrOpResult.AuthRequired(h))
+        val result = api(h).searchProjects(query, perPage = perPage, page = page)
+        val batch = result.getOrNull()
+        return if (batch == null) {
+            Triple(emptyList(), false, result.toPrOpResult(h))
+        } else {
+            Triple(batch, batch.size >= perPage, PrOpResult.Success)
+        }
+    }
+
     fun searchProjects(query: String, h: String = host): Pair<List<GitLabProject>, PrOpResult> {
         if (!isConnected(h)) return emptyList<GitLabProject>() to PrOpResult.AuthRequired(h)
         val result = api(h).searchProjects(query)
@@ -137,3 +168,10 @@ class GitLabAccountManager(private val credentialStore: CredentialStore) {
         } catch (_: Exception) {}
     }
 }
+
+
+    fun searchUsers(query: String, h: String = host): Pair<List<com.quickgit.app.data.gitlab.GitLabApi.GitLabUserSummary>, PrOpResult> {
+        if (!isConnected(h)) return emptyList<com.quickgit.app.data.gitlab.GitLabApi.GitLabUserSummary>() to PrOpResult.AuthRequired(h)
+        val result = api(h).searchUsers(query)
+        return (result.getOrNull() ?: emptyList()) to result.toPrOpResult(h)
+    }

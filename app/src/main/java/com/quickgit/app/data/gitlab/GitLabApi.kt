@@ -77,10 +77,53 @@ class GitLabApi(
         (0 until arr.length()).map { i -> arr.getJSONObject(i).toProject() }
     }
 
-    fun searchProjects(query: String, perPage: Int = 30): Result<List<GitLabProject>> = runCatching {
+    fun searchProjects(query: String, perPage: Int = 30, page: Int = 1): Result<List<GitLabProject>> = runCatching {
         val q = java.net.URLEncoder.encode(query.trim(), "UTF-8")
-        val arr = request("GET", "/projects?search=$q&order_by=updated_at&sort=desc&per_page=$perPage&membership=true") as JSONArray
+        val arr = request("GET", "/projects?search=$q&order_by=updated_at&sort=desc&per_page=$perPage&page=$page&membership=true") as JSONArray
         (0 until arr.length()).map { i -> arr.getJSONObject(i).toProject() }
+    }
+
+    data class GitLabUserSummary(
+        val id: Long,
+        val username: String,
+        val name: String?,
+        val avatarUrl: String?,
+        val webUrl: String
+    )
+
+    fun searchUsers(query: String, perPage: Int = 30): Result<List<GitLabUserSummary>> = runCatching {
+        val q = java.net.URLEncoder.encode(query.trim(), "UTF-8")
+        val arr = request("GET", "/users?search=$q&per_page=$perPage") as JSONArray
+        (0 until arr.length()).map { i ->
+            val o = arr.getJSONObject(i)
+            GitLabUserSummary(
+                id = o.getLong("id"),
+                username = o.optString("username", ""),
+                name = o.optString("name").takeIf { it.isNotBlank() },
+                avatarUrl = o.optString("avatar_url").takeIf { it.isNotBlank() },
+                webUrl = o.optString("web_url", "")
+            )
+        }
+    }
+
+    fun getUser(username: String): Result<GitLabUser> = runCatching {
+        val encoded = java.net.URLEncoder.encode(username, "UTF-8")
+        // GitLab: /users?username= exact match returns array
+        val arr = request("GET", "/users?username=$encoded") as JSONArray
+        if (arr.length() == 0) error("User not found: $username")
+        val o = arr.getJSONObject(0)
+        // Re-fetch full profile if needed; array items are partial
+        val id = o.getLong("id")
+        val full = request("GET", "/users/$id") as JSONObject
+        GitLabUser(
+            id = id,
+            username = full.optString("username", o.optString("username", "")),
+            name = full.optString("name").takeIf { it.isNotBlank() },
+            email = full.optString("public_email").takeIf { it.isNotBlank() }
+                ?: full.optString("email").takeIf { it.isNotBlank() },
+            avatarUrl = full.optString("avatar_url").takeIf { it.isNotBlank() },
+            webUrl = full.optString("web_url", "")
+        )
     }
 
     fun getProject(idOrPath: String): Result<GitLabProject> = runCatching {

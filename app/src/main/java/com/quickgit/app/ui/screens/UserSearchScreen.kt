@@ -4,22 +4,18 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import com.quickgit.app.data.github.GitHubApi
 import com.quickgit.app.ui.components.UserAvatar
+import com.quickgit.app.viewmodel.UserSearchProvider
 import com.quickgit.app.viewmodel.UserSearchViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -27,108 +23,135 @@ import com.quickgit.app.viewmodel.UserSearchViewModel
 fun UserSearchScreen(
     vm: UserSearchViewModel,
     onBack: () -> Unit,
-    onOpenUser: (String) -> Unit,
+    onUserClick: (login: String) -> Unit,
     onNeedsAuth: () -> Unit
 ) {
     val state by vm.state.collectAsState()
-
-    LaunchedEffect(state.authRequired) {
-        if (state.authRequired) onNeedsAuth()
-    }
+    val tabs = listOf(
+        UserSearchProvider.GITHUB to "GitHub",
+        UserSearchProvider.GITLAB to "GitLab",
+        UserSearchProvider.GERRIT to "Gerrit"
+    )
+    val selectedIndex = tabs.indexOfFirst { it.first == state.selectedTab }.coerceAtLeast(0)
 
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text("Search people") },
                 navigationIcon = {
-                    IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back") }
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                    }
                 }
             )
         }
     ) { padding ->
-        Column(Modifier.padding(padding).fillMaxSize()) {
+        Column(Modifier.fillMaxSize().padding(padding)) {
+            if (state.authRequired) {
+                Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("Connect an account in Settings to search people.")
+                        Spacer(Modifier.height(12.dp))
+                        Button(onClick = onNeedsAuth) { Text("Open Settings") }
+                    }
+                }
+                return@Column
+            }
+
+            TabRow(selectedTabIndex = selectedIndex) {
+                tabs.forEachIndexed { index, (tab, label) ->
+                    val connected = when (tab) {
+                        UserSearchProvider.GITHUB -> state.githubConnected
+                        UserSearchProvider.GITLAB -> state.gitlabConnected
+                        UserSearchProvider.GERRIT -> state.gerritConnected
+                    }
+                    Tab(
+                        selected = selectedIndex == index,
+                        onClick = { vm.selectTab(tab) },
+                        text = { Text(if (connected) label else "$label · off") },
+                        enabled = connected
+                    )
+                }
+            }
+
             OutlinedTextField(
                 value = state.query,
                 onValueChange = vm::setQuery,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp, 12.dp),
-                placeholder = { Text("Search GitHub users") },
+                modifier = Modifier.fillMaxWidth().padding(16.dp),
+                placeholder = { Text("Search by name or username…") },
                 leadingIcon = { Icon(Icons.Default.Search, null) },
-                trailingIcon = {
-                    if (state.query.isNotEmpty()) {
-                        IconButton(onClick = { vm.setQuery("") }) {
-                            Icon(Icons.Default.Clear, "Clear")
-                        }
-                    }
-                },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                keyboardActions = KeyboardActions(onSearch = { vm.searchNow() })
+                singleLine = true
             )
 
-            when {
-                state.loading -> {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        CircularProgressIndicator()
+            if (state.loading) {
+                LinearProgressIndicator(Modifier.fillMaxWidth())
+            }
+            state.errorMessage?.let {
+                Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(16.dp))
+            }
+
+            LazyColumn(Modifier.fillMaxSize()) {
+                when (state.selectedTab) {
+                    UserSearchProvider.GITHUB -> {
+                        items(state.githubResults, key = { it.login }) { user ->
+                            ListItem(
+                                headlineContent = { Text(user.login, fontWeight = FontWeight.Medium) },
+                                supportingContent = { user.name?.let { Text(it) } },
+                                leadingContent = {
+                                    UserAvatar(avatarUrl = user.avatarUrl, login = user.login, size = 40.dp)
+                                },
+                                modifier = Modifier.clickable { onUserClick(user.login) }
+                            )
+                            HorizontalDivider()
+                        }
                     }
-                }
-                state.errorMessage != null -> {
-                    Text(
-                        state.errorMessage!!,
-                        Modifier.padding(16.dp),
-                        color = MaterialTheme.colorScheme.error
-                    )
-                }
-                state.searched && state.results.isEmpty() -> {
-                    Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
-                        Text(
-                            "No users found for “${state.query.trim()}”",
-                            textAlign = TextAlign.Center,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                    UserSearchProvider.GITLAB -> {
+                        items(state.gitlabResults, key = { it.id }) { user ->
+                            ListItem(
+                                headlineContent = { Text(user.username, fontWeight = FontWeight.Medium) },
+                                supportingContent = { user.name?.let { Text(it) } },
+                                leadingContent = {
+                                    UserAvatar(avatarUrl = user.avatarUrl, login = user.username, size = 40.dp)
+                                },
+                                modifier = Modifier.clickable { onUserClick(user.username) }
+                            )
+                            HorizontalDivider()
+                        }
                     }
-                }
-                state.results.isNotEmpty() -> {
-                    LazyColumn(Modifier.fillMaxSize()) {
-                        items(state.results, key = { it.login }) { user ->
-                            UserResultRow(user, onClick = { onOpenUser(user.login) })
+                    UserSearchProvider.GERRIT -> {
+                        items(state.gerritResults, key = { it.accountId }) { user ->
+                            ListItem(
+                                headlineContent = {
+                                    Text(user.username.ifBlank { "account ${user.accountId}" }, fontWeight = FontWeight.Medium)
+                                },
+                                supportingContent = {
+                                    Text(listOfNotNull(user.name, user.email).joinToString(" · "))
+                                },
+                                leadingContent = {
+                                    Icon(Icons.Default.Person, null, Modifier.size(40.dp))
+                                }
+                            )
                             HorizontalDivider()
                         }
                     }
                 }
-                else -> {
-                    Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
-                        Text(
-                            "Search for developers by name or username",
-                            textAlign = TextAlign.Center,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                if (state.searched && !state.loading) {
+                    val empty = when (state.selectedTab) {
+                        UserSearchProvider.GITHUB -> state.githubResults.isEmpty()
+                        UserSearchProvider.GITLAB -> state.gitlabResults.isEmpty()
+                        UserSearchProvider.GERRIT -> state.gerritResults.isEmpty()
+                    }
+                    if (empty) {
+                        item {
+                            Text(
+                                "No people found.",
+                                modifier = Modifier.padding(24.dp),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                 }
             }
-        }
-    }
-}
-
-@Composable
-private fun UserResultRow(user: GitHubApi.GitHubUserSummary, onClick: () -> Unit) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(16.dp, 12.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        UserAvatar(avatarUrl = user.avatarUrl, login = user.login, size = 40.dp)
-        Spacer(Modifier.width(12.dp))
-        Column {
-            Text(user.login, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
-            Text(
-                user.type,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
         }
     }
 }

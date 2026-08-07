@@ -74,13 +74,46 @@ fun ProfileScreen(
                     CircularProgressIndicator()
                 }
             }
-            state.user == null -> {
+            state.user == null && state.connectedProviders.isEmpty() -> {
                 Box(Modifier.padding(padding).fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
                     Text(
-                        state.errorMessage ?: "Connect a GitHub account in Settings to view profiles.",
+                        state.errorMessage ?: "Connect GitHub, GitLab, or Gerrit in Settings.",
                         textAlign = TextAlign.Center,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                }
+            }
+            state.user == null -> {
+                // Self profile with GitLab/Gerrit only (no GitHub user object)
+                LazyColumn(
+                    Modifier.padding(padding).fillMaxSize(),
+                    contentPadding = PaddingValues(bottom = 24.dp)
+                ) {
+                    item {
+                        Text(
+                            "Connected accounts",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(20.dp, 20.dp, 20.dp, 8.dp)
+                        )
+                    }
+                    items(state.connectedProviders, key = { it.provider + it.username }) { p ->
+                        ListItem(
+                            headlineContent = { Text(p.provider) },
+                            supportingContent = {
+                                Text(
+                                    buildString {
+                                        append(p.username)
+                                        if (!p.detail.isNullOrBlank()) {
+                                            append(" · ")
+                                            append(p.detail)
+                                        }
+                                    }
+                                )
+                            }
+                        )
+                        HorizontalDivider()
+                    }
                 }
             }
             else -> {
@@ -143,6 +176,31 @@ fun ProfileScreen(
                             }
                         }
                         HorizontalDivider()
+                        if (state.connectedProviders.isNotEmpty()) {
+                            Text(
+                                "Connected accounts",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.padding(16.dp, 12.dp, 16.dp, 4.dp)
+                            )
+                            state.connectedProviders.forEach { p ->
+                                ListItem(
+                                    headlineContent = { Text(p.provider) },
+                                    supportingContent = {
+                                        Text(
+                                            buildString {
+                                                append(p.username)
+                                                if (!p.detail.isNullOrBlank()) {
+                                                    append(" · ")
+                                                    append(p.detail)
+                                                }
+                                            }
+                                        )
+                                    }
+                                )
+                                HorizontalDivider()
+                            }
+                        }
                         Text(
                             "Repositories",
                             style = MaterialTheme.typography.titleMedium,

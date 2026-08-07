@@ -110,6 +110,48 @@ class GerritAccountManager(private val credentialStore: CredentialStore) {
         return (result.getOrNull() ?: emptyList()) to result.toGerritOpResult(h)
     }
 
+    fun listProjectsPage(
+        page: Int = 1,
+        perPage: Int = 100,
+        h: String = host
+    ): Triple<List<GerritProject>, Boolean, PrOpResult> {
+        val hostKey = h.ifBlank { primaryHost() ?: host }
+        if (!isConnected(hostKey)) return Triple(emptyList(), false, PrOpResult.AuthRequired(hostKey))
+        val start = ((page - 1) * perPage).coerceAtLeast(0)
+        val result = api(hostKey).listProjects(limit = perPage, start = start)
+        val batch = result.getOrNull()
+        return if (batch == null) {
+            Triple(emptyList(), false, result.toGerritOpResult(hostKey))
+        } else {
+            Triple(batch, batch.size >= perPage, PrOpResult.Success)
+        }
+    }
+
+    fun searchProjectsPage(
+        query: String,
+        page: Int = 1,
+        perPage: Int = 100,
+        h: String = host
+    ): Triple<List<GerritProject>, Boolean, PrOpResult> {
+        val hostKey = h.ifBlank { primaryHost() ?: host }
+        if (!isConnected(hostKey)) return Triple(emptyList(), false, PrOpResult.AuthRequired(hostKey))
+        val start = ((page - 1) * perPage).coerceAtLeast(0)
+        val result = api(hostKey).searchProjects(query, limit = perPage, start = start)
+        val batch = result.getOrNull()
+        return if (batch == null) {
+            Triple(emptyList(), false, result.toGerritOpResult(hostKey))
+        } else {
+            Triple(batch, batch.size >= perPage, PrOpResult.Success)
+        }
+    }
+
+    fun searchAccounts(query: String, h: String = host): Pair<List<com.quickgit.app.data.gerrit.GerritApi.GerritAccountSummary>, PrOpResult> {
+        val hostKey = h.ifBlank { primaryHost() ?: host }
+        if (!isConnected(hostKey)) return emptyList<com.quickgit.app.data.gerrit.GerritApi.GerritAccountSummary>() to PrOpResult.AuthRequired(hostKey)
+        val result = api(hostKey).searchAccounts(query)
+        return (result.getOrNull() ?: emptyList()) to result.toGerritOpResult(hostKey)
+    }
+
     fun listProjects(h: String = host, limit: Int = 50): Pair<List<GerritProject>, PrOpResult> {
         val hostKey = h.ifBlank { primaryHost() ?: host }
         if (!isConnected(hostKey)) return emptyList<GerritProject>() to PrOpResult.AuthRequired(hostKey)
