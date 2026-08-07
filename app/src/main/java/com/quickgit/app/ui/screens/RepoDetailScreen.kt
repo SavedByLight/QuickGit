@@ -118,28 +118,83 @@ fun RepoDetailScreen(
             var showForcePushConfirm by remember { mutableStateOf(false) }
             // true = force-with-lease (safer default), false = unconditional force
             var forcePushUseLease by remember { mutableStateOf(true) }
+            var showPushModeDialog by remember { mutableStateOf(false) }
+            // true = refs/for/<branch> review; false = normal branch push
+            var pushForReview by remember { mutableStateOf(true) }
 
             Row(Modifier.fillMaxWidth().padding(16.dp, 4.dp)) {
                 OutlinedButton(onClick = { vm.pull() }, enabled = !state.busy, modifier = Modifier.weight(1f)) {
                     Icon(Icons.Default.ArrowDownward, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Pull")
                 }
                 Spacer(Modifier.width(8.dp))
-                Button(onClick = { vm.push(force = false) }, enabled = !state.busy, modifier = Modifier.weight(1f)) {
+                Button(
+                    onClick = {
+                        if (state.isGerritRemote) {
+                            pushForReview = true
+                            showPushModeDialog = true
+                        } else {
+                            vm.push(force = false)
+                        }
+                    },
+                    enabled = !state.busy,
+                    modifier = Modifier.weight(1f)
+                ) {
                     Icon(Icons.Default.ArrowUpward, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Push")
                 }
             }
-            // Gerrit only: upload commit for code review (refs/for/<branch>)
-            if (state.isGerritRemote) {
-                OutlinedButton(
-                    onClick = { vm.pushForReview() },
-                    enabled = !state.busy,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 4.dp)
-                ) {
-                    Icon(Icons.Default.CloudUpload, null, Modifier.size(18.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text("Push for review")
+
+            if (showPushModeDialog) {
+                androidx.compose.ui.window.Dialog(onDismissRequest = { showPushModeDialog = false }) {
+                    Surface(
+                        shape = MaterialTheme.shapes.extraLarge,
+                        tonalElevation = 6.dp,
+                        modifier = Modifier.fillMaxWidth().padding(24.dp)
+                    ) {
+                        Column(Modifier.padding(24.dp)) {
+                            Text("Push", style = MaterialTheme.typography.headlineSmall)
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                "Choose how to push to Gerrit:",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(Modifier.height(16.dp))
+
+                            ForcePushModeOption(
+                                title = "Push for review",
+                                subtitle = "Upload to refs/for/${state.branch.ifBlank { "branch" }} for code review",
+                                selected = pushForReview,
+                                onSelect = { pushForReview = true }
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            ForcePushModeOption(
+                                title = "Push to branch",
+                                subtitle = "Update the remote branch tip directly (no review)",
+                                selected = !pushForReview,
+                                onSelect = { pushForReview = false }
+                            )
+
+                            Spacer(Modifier.height(20.dp))
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.End
+                            ) {
+                                TextButton(onClick = { showPushModeDialog = false }) {
+                                    Text("Cancel")
+                                }
+                                Spacer(Modifier.width(8.dp))
+                                Button(
+                                    onClick = {
+                                        showPushModeDialog = false
+                                        if (pushForReview) vm.pushForReview()
+                                        else vm.push(force = false)
+                                    }
+                                ) {
+                                    Text(if (pushForReview) "Push for review" else "Push")
+                                }
+                            }
+                        }
+                    }
                 }
             }
             Row(Modifier.fillMaxWidth().padding(16.dp, 0.dp, 16.dp, 4.dp)) {
