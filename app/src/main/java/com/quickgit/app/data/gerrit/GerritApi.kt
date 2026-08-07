@@ -147,8 +147,8 @@ class GerritApi(
             if (state.equals("HIDDEN", ignoreCase = true)) continue
             val id = info.optString("id", name)
             val desc = info.optString("description").takeIf { it.isNotBlank() }
-            // Gerrit HTTP clone: https://host/project  (or /a/ for auth — JGit uses credentials)
-            val clone = "$scheme://$hostClean/$name"
+            // Prefer authenticated HTTP path so stored credentials are used by git-upload-pack
+            val clone = "$scheme://$hostClean/a/$name"
             val sshUser = username?.takeIf { it.isNotBlank() } ?: "git"
             val ssh = "ssh://$sshUser@$hostClean:29418/$name"
             val web = "$scheme://$hostClean/admin/repos/$name"

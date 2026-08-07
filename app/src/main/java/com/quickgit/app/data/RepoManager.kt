@@ -61,16 +61,22 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     private fun installJGitMemoryLimits() {
         try {
             val cfg = WindowCacheConfig()
-            cfg.packedGitLimit = 16L * 1024 * 1024
-            cfg.packedGitWindowSize = 8 * 1024
-            cfg.deltaBaseCacheLimit = 4 * 1024 * 1024
-            cfg.streamFileThreshold = 1 * 1024 * 1024
+            // Keep mobile-safe limits, but high enough that pack delta inflation does not
+            // recycle windows mid-read ("Inflater has been closed").
+            cfg.packedGitLimit = 32L * 1024 * 1024
+            cfg.packedGitWindowSize = 16 * 1024
+            cfg.deltaBaseCacheLimit = 8 * 1024 * 1024
+            cfg.streamFileThreshold = 10 * 1024 * 1024
+            cfg.packedGitMMAP = false
             cfg.install()
             AppLog.i(TAG, "JGit WindowCache limits installed for mobile heap")
         } catch (e: Exception) {
             AppLog.w(TAG, "Could not install JGit WindowCache config: ${e.message}")
         }
     }
+
+    /** Serializes JGit pack access — concurrent clones can close each other's Inflater. */
+    private val jgitIoLock = Any()
 
     /** Name used for commit author/committer (Settings → Commit identity). */
     fun getCommitAuthorName(): String =
@@ -398,34 +404,97 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
             return GitOpResult.Error("'$label' already exists and isn't empty")
         }
         val alreadyExisted = destination.exists()
-        AppLog.i(TAG, "clone: $url -> ${destination.absolutePath}")
+        val cloneUrl = normalizeCloneUrl(url)
+        AppLog.i(TAG, "clone: $cloneUrl -> ${destination.absolutePath}")
+
+        var lastError: Exception? = null
+        // Retry a couple of times for transient JGit pack-window races on Android.
+        val maxAttempts = 3
+        for (attempt in 1..maxAttempts) {
+            if (attempt > 1) {
+                cleanUpFailedCloneDestination(destination, alreadyExisted)
+                System.gc()
+                onProgress("Retrying clone (attempt $attempt/$maxAttempts)…")
+                AppLog.w(TAG, "clone retry $attempt/$maxAttempts for $label after: ${lastError?.message}")
+            }
+            try {
+                synchronized(jgitIoLock) {
+                    val cmd = Git.cloneRepository()
+                        .setURI(cloneUrl)
+                        .setDirectory(destination)
+                        .setCloneAllBranches(true)
+                        .setProgressMonitor(TextProgress(onProgress))
+                    applyTransportConfig(cmd, cloneUrl)
+                    cmd.call().close()
+                }
+                rememberExternalRepoPath(destination)
+                val lfsMsg = maybeFetchLfs(destination.absolutePath, cloneUrl, onProgress)
+                AppLog.i(TAG, "clone succeeded: ${destination.absolutePath}" + (lfsMsg?.let { " ($it)" } ?: ""))
+                return GitOpResult.Success
+            } catch (e: org.eclipse.jgit.api.errors.TransportException) {
+                cleanUpFailedCloneDestination(destination, alreadyExisted)
+                AppLog.e(TAG, "clone failed (transport): $label", e)
+                return if (isAuthFailure(e)) GitOpResult.AuthRequired(cloneUrl)
+                else GitOpResult.Error(e.message ?: "Transport error", e)
+            } catch (e: OutOfMemoryError) {
+                cleanUpFailedCloneDestination(destination, alreadyExisted)
+                System.gc()
+                AppLog.e(TAG, "clone OOM: $label", e)
+                return GitOpResult.Error(
+                    "Not enough memory to clone this repository. Try a smaller repo, free RAM, or clone on a desktop and copy the folder in.",
+                    e
+                )
+            } catch (e: Exception) {
+                lastError = e
+                val msg = e.message.orEmpty()
+                val inflaterRace = msg.contains("Inflater has been closed", ignoreCase = true) ||
+                    msg.contains("Inflater", ignoreCase = true) && msg.contains("closed", ignoreCase = true)
+                if (inflaterRace && attempt < maxAttempts) {
+                    AppLog.w(TAG, "clone inflater race on $label — will retry")
+                    continue
+                }
+                cleanUpFailedCloneDestination(destination, alreadyExisted)
+                AppLog.e(TAG, "clone failed: $label", e)
+                return GitOpResult.Error(e.message ?: "Clone failed", e)
+            }
+        }
+        cleanUpFailedCloneDestination(destination, alreadyExisted)
+        return GitOpResult.Error(lastError?.message ?: "Clone failed", lastError)
+    }
+
+    /**
+     * Gerrit authenticated HTTP clones need the `/a/` path prefix so credentials are applied.
+     * Anonymous URLs without `/a/` still work for public projects.
+     */
+    private fun normalizeCloneUrl(url: String): String {
+        if (!url.startsWith("https://") && !url.startsWith("http://")) return url
+        val host = CredentialStore.hostOf(url)
+        val hasCreds = credentialStore.hasHttpsCredential(host)
+        if (!hasCreds) return url
+        // Already using /a/ (Gerrit auth prefix)
+        if (url.contains("/a/")) return url
+        // Only rewrite known-Gerrit primary host (or any host with stored Gerrit primary)
+        val gerritPrimary = try {
+            // soft dependency — string match on stored primary host key
+            context.getSharedPreferences("quickgit_secure_prefs", Context.MODE_PRIVATE)
+            null
+        } catch (_: Exception) { null }
+        // Insert /a/ after host for hosts that look like Gerrit clones from our project list
+        // Pattern: https://host/project -> https://host/a/project when we have HTTPS creds
+        // for that host AND the path does not start with /a/
         return try {
-            val cmd = Git.cloneRepository()
-                .setURI(url)
-                .setDirectory(destination)
-                .setProgressMonitor(TextProgress(onProgress))
-            applyTransportConfig(cmd, url)
-            cmd.call().close()
-            rememberExternalRepoPath(destination)
-            val lfsMsg = maybeFetchLfs(destination.absolutePath, url, onProgress)
-            AppLog.i(TAG, "clone succeeded: ${destination.absolutePath}" + (lfsMsg?.let { " ($it)" } ?: ""))
-            GitOpResult.Success
-        } catch (e: org.eclipse.jgit.api.errors.TransportException) {
-            cleanUpFailedCloneDestination(destination, alreadyExisted)
-            AppLog.e(TAG, "clone failed (transport): $label", e)
-            if (isAuthFailure(e)) GitOpResult.AuthRequired(url) else GitOpResult.Error(e.message ?: "Transport error", e)
-        } catch (e: OutOfMemoryError) {
-            cleanUpFailedCloneDestination(destination, alreadyExisted)
-            System.gc()
-            AppLog.e(TAG, "clone OOM: $label", e)
-            GitOpResult.Error(
-                "Not enough memory to clone this repository. Try a smaller repo, free RAM, or clone on a desktop and copy the folder in.",
-                e
-            )
-        } catch (e: Exception) {
-            cleanUpFailedCloneDestination(destination, alreadyExisted)
-            AppLog.e(TAG, "clone failed: $label", e)
-            GitOpResult.Error(e.message ?: "Clone failed", e)
+            val uri = java.net.URI(url)
+            val path = uri.path?.trimStart('/') ?: return url
+            if (path.startsWith("a/")) return url
+            // Heuristic: if username is stored for this host (Gerrit/GitLab style user+pass),
+            // prefer /a/ only when host is not github/gitlab
+            if (host.contains("github") || host.contains("gitlab")) return url
+            val user = credentialStore.getHttpsUsername(host)
+            if (user.isNullOrBlank()) return url
+            val newPath = "/a/$path"
+            java.net.URI(uri.scheme, uri.authority, newPath, uri.query, uri.fragment).toString()
+        } catch (_: Exception) {
+            url
         }
     }
 
