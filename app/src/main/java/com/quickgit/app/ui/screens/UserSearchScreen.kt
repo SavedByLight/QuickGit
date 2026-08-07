@@ -29,8 +29,7 @@ fun UserSearchScreen(
     val state by vm.state.collectAsState()
     val tabs = listOf(
         UserSearchProvider.GITHUB to "GitHub",
-        UserSearchProvider.GITLAB to "GitLab",
-        UserSearchProvider.GERRIT to "Gerrit"
+        UserSearchProvider.GITLAB to "GitLab"
     )
     val selectedIndex = tabs.indexOfFirst { it.first == state.selectedTab }.coerceAtLeast(0)
 
@@ -63,7 +62,6 @@ fun UserSearchScreen(
                     val connected = when (tab) {
                         UserSearchProvider.GITHUB -> state.githubConnected
                         UserSearchProvider.GITLAB -> state.gitlabConnected
-                        UserSearchProvider.GERRIT -> state.gerritConnected
                     }
                     Tab(
                         selected = selectedIndex == index,
@@ -118,28 +116,11 @@ fun UserSearchScreen(
                             HorizontalDivider()
                         }
                     }
-                    UserSearchProvider.GERRIT -> {
-                        items(state.gerritResults, key = { it.accountId }) { user ->
-                            ListItem(
-                                headlineContent = {
-                                    Text(user.username.ifBlank { "account ${user.accountId}" }, fontWeight = FontWeight.Medium)
-                                },
-                                supportingContent = {
-                                    Text(listOfNotNull(user.name, user.email).joinToString(" · "))
-                                },
-                                leadingContent = {
-                                    Icon(Icons.Default.Person, null, Modifier.size(40.dp))
-                                }
-                            )
-                            HorizontalDivider()
-                        }
-                    }
                 }
                 if (state.searched && !state.loading) {
                     val empty = when (state.selectedTab) {
                         UserSearchProvider.GITHUB -> state.githubResults.isEmpty()
                         UserSearchProvider.GITLAB -> state.gitlabResults.isEmpty()
-                        UserSearchProvider.GERRIT -> state.gerritResults.isEmpty()
                     }
                     if (empty) {
                         item {

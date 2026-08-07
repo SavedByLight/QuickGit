@@ -70,8 +70,7 @@ class ViewModelFactory(private val app: Application) : ViewModelProvider.Factory
             modelClass.isAssignableFrom(UserSearchViewModel::class.java) ->
                 UserSearchViewModel(
                     gitApp.gitHubAccountManager,
-                    gitApp.gitLabAccountManager,
-                    gitApp.gerritAccountManager
+                    gitApp.gitLabAccountManager
                 )
             modelClass.isAssignableFrom(RemoteBrowseViewModel::class.java) ->
                 RemoteBrowseViewModel(gitApp.gitHubAccountManager)

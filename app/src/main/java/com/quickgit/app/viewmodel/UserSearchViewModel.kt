@@ -2,10 +2,8 @@ package com.quickgit.app.viewmodel
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.quickgit.app.data.GerritAccountManager
 import com.quickgit.app.data.GitHubAccountManager
 import com.quickgit.app.data.GitLabAccountManager
-import com.quickgit.app.data.gerrit.GerritApi
 import com.quickgit.app.data.github.GitHubApi
 import com.quickgit.app.data.gitlab.GitLabApi
 import com.quickgit.app.data.models.PrOpResult
@@ -18,7 +16,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-enum class UserSearchProvider { GITHUB, GITLAB, GERRIT }
+enum class UserSearchProvider { GITHUB, GITLAB }
 
 data class UserSearchUiState(
     val selectedTab: UserSearchProvider = UserSearchProvider.GITHUB,
@@ -26,10 +24,8 @@ data class UserSearchUiState(
     val loading: Boolean = false,
     val githubConnected: Boolean = false,
     val gitlabConnected: Boolean = false,
-    val gerritConnected: Boolean = false,
     val githubResults: List<GitHubApi.GitHubUserSummary> = emptyList(),
     val gitlabResults: List<GitLabApi.GitLabUserSummary> = emptyList(),
-    val gerritResults: List<GerritApi.GerritAccountSummary> = emptyList(),
     val errorMessage: String? = null,
     val authRequired: Boolean = false,
     val searched: Boolean = false
@@ -37,8 +33,7 @@ data class UserSearchUiState(
 
 class UserSearchViewModel(
     private val accountManager: GitHubAccountManager,
-    private val gitLabAccountManager: GitLabAccountManager,
-    private val gerritAccountManager: GerritAccountManager
+    private val gitLabAccountManager: GitLabAccountManager
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(UserSearchUiState())
@@ -50,20 +45,15 @@ class UserSearchViewModel(
         val gh = accountManager.isConnected()
         val gl = gitLabAccountManager.isConnected(gitLabAccountManager.host) ||
             gitLabAccountManager.isConnected("gitlab.com")
-        val geHost = gerritAccountManager.primaryHost()
-        val ge = geHost != null && gerritAccountManager.isConnected(geHost)
         val tab = when {
             gh -> UserSearchProvider.GITHUB
             gl -> UserSearchProvider.GITLAB
-            ge -> UserSearchProvider.GERRIT
             else -> UserSearchProvider.GITHUB
         }
         _state.value = UserSearchUiState(
             selectedTab = tab,
             githubConnected = gh,
-            gitlabConnected = gl,
-            gerritConnected = ge,
-            authRequired = !gh && !gl && !ge
+            gitlabConnected = gl
         )
     }
 
@@ -76,16 +66,15 @@ class UserSearchViewModel(
         }
     }
 
-    fun setQuery(q: String) {
+    fun onQueryChange(q: String) {
         _state.value = _state.value.copy(query = q)
         searchJob?.cancel()
         if (q.trim().length < 2) {
             _state.value = _state.value.copy(
                 githubResults = emptyList(),
                 gitlabResults = emptyList(),
-                gerritResults = emptyList(),
                 searched = false,
-                loading = false
+                errorMessage = null
             )
             return
         }
@@ -96,9 +85,9 @@ class UserSearchViewModel(
     }
 
     fun searchNow() {
-        searchJob?.cancel()
         val q = _state.value.query.trim()
-        if (q.isEmpty()) return
+        if (q.length < 2) return
+        searchJob?.cancel()
         searchJob = viewModelScope.launch { search(q) }
     }
 
@@ -132,19 +121,6 @@ class UserSearchViewModel(
                 }
                 applyResult(result) {
                     copy(gitlabResults = results, searched = true, loading = false)
-                }
-            }
-            UserSearchProvider.GERRIT -> {
-                if (!s.gerritConnected) {
-                    _state.value = s.copy(loading = false, errorMessage = "Connect Gerrit in Settings")
-                    return
-                }
-                val host = gerritAccountManager.primaryHost() ?: gerritAccountManager.host
-                val (results, result) = withContext(Dispatchers.IO) {
-                    gerritAccountManager.searchAccounts(q, host)
-                }
-                applyResult(result) {
-                    copy(gerritResults = results, searched = true, loading = false)
                 }
             }
         }
