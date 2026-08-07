@@ -74,7 +74,7 @@ fun UserSearchScreen(
 
             OutlinedTextField(
                 value = state.query,
-                onValueChange = vm::setQuery,
+                onValueChange = vm::onQueryChange,
                 modifier = Modifier.fillMaxWidth().padding(16.dp),
                 placeholder = { Text("Search by name or username…") },
                 leadingIcon = { Icon(Icons.Default.Search, null) },
