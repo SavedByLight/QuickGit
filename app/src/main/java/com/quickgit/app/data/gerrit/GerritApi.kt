@@ -72,9 +72,19 @@ class GerritApi(
     }
 
     fun getChange(changeId: String): Result<GerritChange> = runCatching {
-        val encoded = java.net.URLEncoder.encode(changeId, "UTF-8")
-        val path = "/changes/$encoded/detail?o=DETAILED_LABELS&o=CURRENT_REVISION&o=DETAILED_ACCOUNTS&o=MESSAGES"
+        val encoded = encodeId(changeId)
+        val path = "/changes/$encoded/detail?o=DETAILED_LABELS&o=CURRENT_REVISION&o=DETAILED_ACCOUNTS&o=MESSAGES&o=CURRENT_FILES"
         (request("GET", path) as JSONObject).toChange()
+    }
+
+    /** Change detail plus the file list for the current revision (preferred path). */
+    fun getChangeWithFiles(changeId: String): Result<Pair<GerritChange, List<com.quickgit.app.data.models.GerritFileChange>>> = runCatching {
+        val encoded = encodeId(changeId)
+        val path = "/changes/$encoded/detail?o=DETAILED_LABELS&o=CURRENT_REVISION&o=DETAILED_ACCOUNTS&o=MESSAGES&o=CURRENT_FILES"
+        val obj = request("GET", path) as JSONObject
+        val change = obj.toChange()
+        val files = parseFilesFromChangeDetail(obj, change.currentRevision)
+        change to files
     }
 
     fun listMessages(changeId: String): Result<List<GerritMessage>> = runCatching {
@@ -121,36 +131,16 @@ class GerritApi(
     /**
      * List files changed in a revision.
      * Gerrit returns a map keyed by path; the special key "/COMMIT_MSG" is skipped.
+     * Prefer numeric change id (e.g. "12345") — the triplet form is more fragile.
      */
     fun listFiles(
         changeId: String,
         revision: String = "current"
     ): Result<List<com.quickgit.app.data.models.GerritFileChange>> = runCatching {
-        val encodedChange = java.net.URLEncoder.encode(changeId, "UTF-8")
-        val encodedRev = java.net.URLEncoder.encode(revision, "UTF-8")
-        val raw = request("GET", "/changes/$encodedChange/revisions/$encodedRev/files/")
-        val obj = when (raw) {
-            is JSONObject -> raw
-            else -> JSONObject()
-        }
-        val list = mutableListOf<com.quickgit.app.data.models.GerritFileChange>()
-        val keys = obj.keys()
-        while (keys.hasNext()) {
-            val path = keys.next()
-            if (path == "/COMMIT_MSG" || path == "/MERGE_LIST") continue
-            val info = obj.optJSONObject(path) ?: continue
-            val status = info.optString("status", "M").ifBlank { "M" }
-            list += com.quickgit.app.data.models.GerritFileChange(
-                path = path,
-                status = status,
-                linesInserted = info.optInt("lines_inserted", 0),
-                linesDeleted = info.optInt("lines_deleted", 0),
-                sizeDelta = info.optLong("size_delta", 0),
-                binary = info.optBoolean("binary", false),
-                oldPath = info.optString("old_path").takeIf { it.isNotBlank() }
-            )
-        }
-        list.sortedWith(compareBy({ it.status }, { it.path.lowercase() }))
+        val encodedChange = encodeId(changeId)
+        val encodedRev = encodeId(revision.ifBlank { "current" })
+        val raw = request("GET", "/changes/$encodedChange/revisions/$encodedRev/files")
+        parseFilesMap(raw)
     }
 
     /**
@@ -162,10 +152,10 @@ class GerritApi(
         filePath: String,
         revision: String = "current"
     ): Result<com.quickgit.app.data.models.FileDiff> = runCatching {
-        val encodedChange = java.net.URLEncoder.encode(changeId, "UTF-8")
-        val encodedRev = java.net.URLEncoder.encode(revision, "UTF-8")
-        // Gerrit requires path segments URL-encoded; leading slash paths use double encoding
-        val encodedPath = java.net.URLEncoder.encode(filePath, "UTF-8")
+        val encodedChange = encodeId(changeId)
+        val encodedRev = encodeId(revision.ifBlank { "current" })
+        // Each path segment must be encoded; '/' → %2F so Gerrit sees one path arg
+        val encodedPath = encodeId(filePath)
         val path = "/changes/$encodedChange/revisions/$encodedRev/files/$encodedPath/diff"
         val obj = request("GET", path) as JSONObject
 
@@ -182,7 +172,6 @@ class GerritApi(
 
         val content = obj.optJSONArray("content") ?: JSONArray()
         val lines = mutableListOf<com.quickgit.app.data.models.DiffLine>()
-        // Optional header from meta
         val metaA = obj.optJSONObject("meta_a")
         val metaB = obj.optJSONObject("meta_b")
         if (metaA != null || metaB != null) {
@@ -227,10 +216,58 @@ class GerritApi(
                     )
                 }
             }
-            // skip / skip_next are for context elision; ignore for now
         }
 
         com.quickgit.app.data.models.FileDiff(path = filePath, lines = lines, isBinary = false)
+    }
+
+    // ---- ID / files helpers ----
+
+    /** Encode a path segment for Gerrit REST. Leaves already-safe tokens alone. */
+    private fun encodeId(value: String): String =
+        java.net.URLEncoder.encode(value, "UTF-8").replace("+", "%20")
+
+    private fun parseFilesMap(raw: Any?): List<com.quickgit.app.data.models.GerritFileChange> {
+        val obj = when (raw) {
+            is JSONObject -> raw
+            else -> JSONObject()
+        }
+        val list = mutableListOf<com.quickgit.app.data.models.GerritFileChange>()
+        val keys = obj.keys()
+        while (keys.hasNext()) {
+            val path = keys.next()
+            if (path == "/COMMIT_MSG" || path == "/MERGE_LIST") continue
+            val info = obj.optJSONObject(path) ?: continue
+            // Modified files often omit "status"; Gerrit treats missing as "M"
+            val status = info.optString("status", "M").ifBlank { "M" }
+            list += com.quickgit.app.data.models.GerritFileChange(
+                path = path,
+                status = status,
+                linesInserted = info.optInt("lines_inserted", 0),
+                linesDeleted = info.optInt("lines_deleted", 0),
+                sizeDelta = info.optLong("size_delta", 0),
+                binary = info.optBoolean("binary", false),
+                oldPath = info.optString("old_path").takeIf { it.isNotBlank() }
+            )
+        }
+        return list.sortedWith(compareBy({ it.status }, { it.path.lowercase() }))
+    }
+
+    /**
+     * When o=CURRENT_FILES is requested, files live under
+     * revisions.<current_revision>.files (map path → FileInfo).
+     */
+    private fun parseFilesFromChangeDetail(
+        obj: JSONObject,
+        currentRevision: String?
+    ): List<com.quickgit.app.data.models.GerritFileChange> {
+        val revs = obj.optJSONObject("revisions") ?: return emptyList()
+        val revKey = currentRevision?.takeIf { it.isNotBlank() }
+            ?: revs.keys().asSequence().firstOrNull()
+            ?: return emptyList()
+        val rev = revs.optJSONObject(revKey) ?: return emptyList()
+        val filesObj = rev.optJSONObject("files") ?: return emptyList()
+        return parseFilesMap(filesObj)
     }
 
     /**

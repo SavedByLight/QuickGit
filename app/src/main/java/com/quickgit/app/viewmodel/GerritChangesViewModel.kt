@@ -108,17 +108,29 @@ class GerritChangesViewModel(
                 detailLoading = true,
                 errorMessage = null
             )
-            val changeId = change.id.ifBlank { change.number.toString() }
-            val (files, result) = withContext(Dispatchers.IO) {
-                gerritAccountManager.listChangeFiles(
-                    changeId = changeId,
-                    revision = change.currentRevision ?: "current",
-                    h = host
-                )
-            }
-            // Optionally refresh change detail for labels / messages
-            val (detail, _) = withContext(Dispatchers.IO) {
-                gerritAccountManager.getChange(changeId, host)
+            // Prefer numeric change number — more reliable than the project~branch~I… triplet
+            val changeId = if (change.number > 0) change.number.toString()
+                else change.id.ifBlank { change.number.toString() }
+
+            val (detail, files, result) = withContext(Dispatchers.IO) {
+                val triple = gerritAccountManager.getChangeWithFiles(changeId, host)
+                if (triple.second.isNotEmpty()) {
+                    triple
+                } else {
+                    // No files from detail (or detail failed) — hit /files endpoint
+                    val (fallbackFiles, fallbackResult) = gerritAccountManager.listChangeFiles(
+                        changeId = changeId,
+                        revision = "current",
+                        h = host
+                    )
+                    val mergedDetail = triple.first
+                    val mergedResult = when {
+                        fallbackFiles.isNotEmpty() -> PrOpResult.Success
+                        triple.third is PrOpResult.Success -> fallbackResult
+                        else -> triple.third
+                    }
+                    Triple(mergedDetail, fallbackFiles, mergedResult)
+                }
             }
             _state.value = applyResult(
                 _state.value.copy(
@@ -150,14 +162,27 @@ class GerritChangesViewModel(
                 diffLoading = true,
                 errorMessage = null
             )
-            val changeId = change.id.ifBlank { change.number.toString() }
+            val changeId = if (change.number > 0) change.number.toString()
+                else change.id.ifBlank { change.number.toString() }
             val (diff, result) = withContext(Dispatchers.IO) {
-                gerritAccountManager.getChangeFileDiff(
+                // Try "current" first (most reliable), then the SHA if present
+                var pair = gerritAccountManager.getChangeFileDiff(
                     changeId = changeId,
                     filePath = file.path,
-                    revision = change.currentRevision ?: "current",
+                    revision = "current",
                     h = host
                 )
+                if (pair.first == null && !change.currentRevision.isNullOrBlank()
+                    && change.currentRevision != "current"
+                ) {
+                    pair = gerritAccountManager.getChangeFileDiff(
+                        changeId = changeId,
+                        filePath = file.path,
+                        revision = change.currentRevision!!,
+                        h = host
+                    )
+                }
+                pair
             }
             _state.value = applyResult(
                 _state.value.copy(diffLoading = false, fileDiff = diff),
