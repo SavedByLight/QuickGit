@@ -13,6 +13,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Create
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Person
@@ -45,7 +46,8 @@ fun RepoListScreen(
     onOpenProfile: () -> Unit = {},
     onSearchPeople: () -> Unit = {},
     onSettings: () -> Unit,
-    onLogs: () -> Unit
+    onLogs: () -> Unit,
+    onNeedsAuth: () -> Unit = onSettings
 ) {
     val repos by vm.repos.collectAsState()
     val loading by vm.loading.collectAsState()
@@ -53,6 +55,12 @@ fun RepoListScreen(
     var repoToDelete by remember { mutableStateOf<RepoInfo?>(null) }
     var accountMenuExpanded by remember { mutableStateOf(false) }
     var fabExpanded by remember { mutableStateOf(false) }
+    var showCreateRepoDialog by remember { mutableStateOf(false) }
+    val creating by vm.creating.collectAsState()
+    val statusMessage by vm.statusMessage.collectAsState()
+    val errorMessage by vm.errorMessage.collectAsState()
+    val authRequired by vm.authRequired.collectAsState()
+    val snackbarHost = remember { SnackbarHostState() }
 
     // Re-scan after clone/settings: ViewModel stays alive on the back stack, so init{}
     // only runs once. Refresh whenever this screen is shown again.
@@ -65,7 +73,23 @@ fun RepoListScreen(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
+    LaunchedEffect(statusMessage, errorMessage, authRequired) {
+        statusMessage?.let {
+            snackbarHost.showSnackbar(it)
+            vm.consumeMessages()
+        }
+        errorMessage?.let {
+            snackbarHost.showSnackbar(it)
+            vm.consumeMessages()
+        }
+        if (authRequired) {
+            vm.consumeMessages()
+            onNeedsAuth()
+        }
+    }
+
     Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHost) },
         topBar = {
             TopAppBar(
                 title = { Text("QuickGit") },
@@ -131,6 +155,19 @@ fun RepoListScreen(
                     exit = fadeOut() + scaleOut()
                 ) {
                     Column(horizontalAlignment = Alignment.End) {
+                        FabMenuItem(
+                            label = "New repository",
+                            icon = Icons.Default.Create,
+                            onClick = {
+                                fabExpanded = false
+                                if (vm.isGitHubConnected()) {
+                                    showCreateRepoDialog = true
+                                } else {
+                                    onNeedsAuth()
+                                }
+                            }
+                        )
+                        Spacer(Modifier.height(12.dp))
                         FabMenuItem(
                             label = "Browse repos",
                             icon = Icons.Default.CloudDownload,
@@ -216,6 +253,76 @@ fun RepoListScreen(
             dismissButton = { TextButton(onClick = { repoToDelete = null }) { Text("Cancel") } }
         )
     }
+
+    if (showCreateRepoDialog) {
+        CreateRepoFromListDialog(
+            creating = creating,
+            onDismiss = { if (!creating) showCreateRepoDialog = false },
+            onCreate = { name, description, isPrivate ->
+                vm.createRepo(name, description, isPrivate)
+                showCreateRepoDialog = false
+            }
+        )
+    }
+}
+
+@Composable
+private fun CreateRepoFromListDialog(
+    creating: Boolean,
+    onDismiss: () -> Unit,
+    onCreate: (name: String, description: String?, isPrivate: Boolean) -> Unit
+) {
+    var name by remember { mutableStateOf("") }
+    var description by remember { mutableStateOf("") }
+    var isPrivate by remember { mutableStateOf(false) }
+
+    AlertDialog(
+        onDismissRequest = { if (!creating) onDismiss() },
+        title = { Text("New GitHub repository") },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Name") },
+                    singleLine = true,
+                    enabled = !creating,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = description,
+                    onValueChange = { description = it },
+                    label = { Text("Description (optional)") },
+                    enabled = !creating,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    Modifier.fillMaxWidth().clickable(enabled = !creating) { isPrivate = !isPrivate },
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Checkbox(checked = isPrivate, onCheckedChange = { isPrivate = it }, enabled = !creating)
+                    Text("Private repository")
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onCreate(name, description.ifBlank { null }, isPrivate) },
+                enabled = !creating && name.isNotBlank()
+            ) {
+                if (creating) {
+                    CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                } else {
+                    Text("Create")
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, enabled = !creating) { Text("Cancel") }
+        }
+    )
 }
 
 @Composable
