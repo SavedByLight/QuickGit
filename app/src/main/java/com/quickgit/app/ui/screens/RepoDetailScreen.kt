@@ -32,10 +32,10 @@ fun RepoDetailScreen(
     onOpenHistory: () -> Unit,
     onOpenBranches: () -> Unit,
     onOpenFiles: () -> Unit,
-    onOpenPullRequests: () -> Unit,
-    onOpenIssues: () -> Unit,
-    onOpenWorkflows: () -> Unit,
-    onOpenReleases: () -> Unit,
+    onOpenPullRequests: () -> Unit = {},
+    onOpenIssues: () -> Unit = {},
+    onOpenWorkflows: () -> Unit = {},
+    onOpenReleases: () -> Unit = {},
     onConflicts: () -> Unit,
     onNeedsAuth: (String) -> Unit
 ) {
@@ -107,24 +107,178 @@ fun RepoDetailScreen(
             ) {
                 item { SubPageButton(Icons.Default.FolderOpen, "Files", onOpenFiles) }
                 item { SubPageButton(Icons.Default.AccountTree, "Branches", onOpenBranches) }
-                item { SubPageButton(Icons.Default.CallMerge, "PRs", onOpenPullRequests) }
-                item { SubPageButton(Icons.Default.BugReport, "Issues", onOpenIssues) }
-                item { SubPageButton(Icons.Default.PlayCircle, "Actions", onOpenWorkflows) }
-                item { SubPageButton(Icons.Default.NewReleases, "Releases", onOpenReleases) }
+                if (!state.isGerritRemote) {
+                    item { SubPageButton(Icons.Default.CallMerge, "PRs", onOpenPullRequests) }
+                    item { SubPageButton(Icons.Default.BugReport, "Issues", onOpenIssues) }
+                    item { SubPageButton(Icons.Default.PlayCircle, "Actions", onOpenWorkflows) }
+                    item { SubPageButton(Icons.Default.NewReleases, "Releases", onOpenReleases) }
+                }
             }
+
+            var showForcePushConfirm by remember { mutableStateOf(false) }
+            // true = force-with-lease (safer default), false = unconditional force
+            var forcePushUseLease by remember { mutableStateOf(true) }
+            var showPushModeDialog by remember { mutableStateOf(false) }
+            // true = refs/for/<branch> review; false = normal branch push
+            var pushForReview by remember { mutableStateOf(true) }
 
             Row(Modifier.fillMaxWidth().padding(16.dp, 4.dp)) {
                 OutlinedButton(onClick = { vm.pull() }, enabled = !state.busy, modifier = Modifier.weight(1f)) {
                     Icon(Icons.Default.ArrowDownward, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Pull")
                 }
                 Spacer(Modifier.width(8.dp))
-                Button(onClick = { vm.push() }, enabled = !state.busy, modifier = Modifier.weight(1f)) {
+                Button(
+                    onClick = {
+                        if (state.isGerritRemote) {
+                            pushForReview = true
+                            showPushModeDialog = true
+                        } else {
+                            vm.push(force = false)
+                        }
+                    },
+                    enabled = !state.busy,
+                    modifier = Modifier.weight(1f)
+                ) {
                     Icon(Icons.Default.ArrowUpward, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Push")
                 }
             }
-            Row(Modifier.fillMaxWidth().padding(16.dp, 0.dp, 16.dp, 8.dp)) {
-                OutlinedButton(onClick = { vm.fetchLfs() }, enabled = !state.busy, modifier = Modifier.fillMaxWidth()) {
-                    Text("Fetch LFS files")
+
+            if (showPushModeDialog) {
+                androidx.compose.ui.window.Dialog(onDismissRequest = { showPushModeDialog = false }) {
+                    Surface(
+                        shape = MaterialTheme.shapes.extraLarge,
+                        tonalElevation = 6.dp,
+                        modifier = Modifier.fillMaxWidth().padding(24.dp)
+                    ) {
+                        Column(Modifier.padding(24.dp)) {
+                            Text("Push", style = MaterialTheme.typography.headlineSmall)
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                "Choose how to push to Gerrit:",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(Modifier.height(16.dp))
+
+                            ForcePushModeOption(
+                                title = "Push for review",
+                                subtitle = "Upload to refs/for/${state.branch.ifBlank { "branch" }} for code review",
+                                selected = pushForReview,
+                                onSelect = { pushForReview = true }
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            ForcePushModeOption(
+                                title = "Push to branch",
+                                subtitle = "Update the remote branch tip directly (no review)",
+                                selected = !pushForReview,
+                                onSelect = { pushForReview = false }
+                            )
+
+                            Spacer(Modifier.height(20.dp))
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.End
+                            ) {
+                                TextButton(onClick = { showPushModeDialog = false }) {
+                                    Text("Cancel")
+                                }
+                                Spacer(Modifier.width(8.dp))
+                                Button(
+                                    onClick = {
+                                        showPushModeDialog = false
+                                        if (pushForReview) vm.pushForReview()
+                                        else vm.push(force = false)
+                                    }
+                                ) {
+                                    Text(if (pushForReview) "Push for review" else "Push")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Row(Modifier.fillMaxWidth().padding(16.dp, 0.dp, 16.dp, 4.dp)) {
+                OutlinedButton(
+                    onClick = {
+                        forcePushUseLease = true
+                        showForcePushConfirm = true
+                    },
+                    enabled = !state.busy,
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = GitRed)
+                ) {
+                    Text("Force push")
+                }
+                Spacer(Modifier.width(8.dp))
+                OutlinedButton(onClick = { vm.fetchLfs() }, enabled = !state.busy, modifier = Modifier.weight(1f)) {
+                    Text("Fetch LFS")
+                }
+            }
+
+            if (showForcePushConfirm) {
+                // Custom dialog so options are never clipped (M3 AlertDialog text slot often truncates)
+                androidx.compose.ui.window.Dialog(onDismissRequest = { showForcePushConfirm = false }) {
+                    Surface(
+                        shape = MaterialTheme.shapes.extraLarge,
+                        tonalElevation = 6.dp,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(Modifier.padding(24.dp)) {
+                            Text(
+                                "Force push",
+                                style = MaterialTheme.typography.headlineSmall
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                "Choose how to overwrite the remote branch:",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(Modifier.height(16.dp))
+
+                            ForcePushModeOption(
+                                title = "Force with lease",
+                                subtitle = "Only if remote still matches your last fetch (safer)",
+                                selected = forcePushUseLease,
+                                onSelect = { forcePushUseLease = true }
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            ForcePushModeOption(
+                                title = "Force (no lease)",
+                                subtitle = "Always overwrite — can discard others’ commits",
+                                selected = !forcePushUseLease,
+                                onSelect = { forcePushUseLease = false }
+                            )
+
+                            Spacer(Modifier.height(20.dp))
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.End
+                            ) {
+                                TextButton(onClick = { showForcePushConfirm = false }) {
+                                    Text("Cancel")
+                                }
+                                Spacer(Modifier.width(8.dp))
+                                Button(
+                                    onClick = {
+                                        showForcePushConfirm = false
+                                        if (forcePushUseLease) {
+                                            vm.push(forceWithLease = true)
+                                        } else {
+                                            vm.push(force = true)
+                                        }
+                                    },
+                                    colors = if (forcePushUseLease) {
+                                        ButtonDefaults.buttonColors()
+                                    } else {
+                                        ButtonDefaults.buttonColors(containerColor = GitRed)
+                                    }
+                                ) {
+                                    Text(if (forcePushUseLease) "Force with lease" else "Force push")
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
@@ -191,11 +345,50 @@ fun RepoDetailScreen(
                         CommitBar(
                             message = state.commitMessage,
                             onMessageChange = vm::setCommitMessage,
+                            signOff = state.signOff,
+                            onSignOffChange = vm::setSignOff,
+                            authorName = state.authorName,
+                            authorEmail = state.authorEmail,
                             enabled = status.staged.isNotEmpty() && !state.busy,
                             onCommit = vm::commit
                         )
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ForcePushModeOption(
+    title: String,
+    subtitle: String,
+    selected: Boolean,
+    onSelect: () -> Unit
+) {
+    Surface(
+        onClick = onSelect,
+        shape = MaterialTheme.shapes.medium,
+        color = if (selected) {
+            MaterialTheme.colorScheme.primaryContainer
+        } else {
+            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+        },
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            Modifier.padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            RadioButton(selected = selected, onClick = onSelect)
+            Spacer(Modifier.width(4.dp))
+            Column(Modifier.weight(1f)) {
+                Text(title, fontWeight = FontWeight.SemiBold)
+                Text(
+                    subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
     }
@@ -278,6 +471,10 @@ private fun ChangeType.color() = when (this) {
 private fun CommitBar(
     message: String,
     onMessageChange: (String) -> Unit,
+    signOff: Boolean,
+    onSignOffChange: (Boolean) -> Unit,
+    authorName: String,
+    authorEmail: String,
     enabled: Boolean,
     onCommit: () -> Unit
 ) {
@@ -291,9 +488,28 @@ private fun CommitBar(
                 minLines = 2,
                 maxLines = 4
             )
+            Spacer(Modifier.height(4.dp))
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Checkbox(
+                    checked = signOff,
+                    onCheckedChange = onSignOffChange
+                )
+                Column(Modifier.weight(1f).clickableSimple { onSignOffChange(!signOff) }) {
+                    Text("Sign-off", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "Signed-off-by: $authorName <$authorEmail>",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1
+                    )
+                }
+            }
             Spacer(Modifier.height(8.dp))
             Button(onClick = onCommit, enabled = enabled && message.isNotBlank(), modifier = Modifier.fillMaxWidth()) {
-                Text("Commit to current branch")
+                Text(if (signOff) "Commit (signed-off)" else "Commit to current branch")
             }
         }
     }

@@ -22,7 +22,12 @@ data class RepoDetailUiState(
     val commitMessage: String = "",
     val lastResult: GitOpResult? = null,
     val authorName: String = "",
-    val authorEmail: String = ""
+    val authorEmail: String = "",
+    /** Append Signed-off-by trailer on commit (git commit -s). */
+    val signOff: Boolean = false,
+    val remoteUrl: String? = null,
+    /** True when origin looks like a Gerrit host — hides GH Actions/PRs/etc., shows push-for-review. */
+    val isGerritRemote: Boolean = false
 )
 
 class RepoDetailViewModel(private val repoManager: RepoManager) : ViewModel() {
@@ -35,7 +40,8 @@ class RepoDetailViewModel(private val repoManager: RepoManager) : ViewModel() {
         this.repoPath = repoPath
         _state.value = _state.value.copy(
             authorName = repoManager.getCommitAuthorName(),
-            authorEmail = repoManager.getCommitAuthorEmail()
+            authorEmail = repoManager.getCommitAuthorEmail(),
+            signOff = repoManager.isSignOffEnabled()
         )
         loadStatus(showRefreshing = true)
     }
@@ -47,12 +53,19 @@ class RepoDetailViewModel(private val repoManager: RepoManager) : ViewModel() {
         viewModelScope.launch {
             if (showRefreshing) _state.value = _state.value.copy(refreshing = true)
             val status = withContext(Dispatchers.IO) { repoManager.getStatus(repoPath) }
-            val branch = withContext(Dispatchers.IO) {
-                repoManager.openGit(repoPath).use { it.repository.branch }
+            val (branch, remoteUrl) = withContext(Dispatchers.IO) {
+                repoManager.openGit(repoPath).use { git ->
+                    val b = git.repository.branch
+                    val url = git.repository.config.getString("remote", "origin", "url")
+                    b to url
+                }
             }
+            val isGerrit = isGerritRemoteUrl(remoteUrl)
             _state.value = _state.value.copy(
                 status = status,
                 branch = branch ?: "",
+                remoteUrl = remoteUrl,
+                isGerritRemote = isGerrit,
                 refreshing = if (showRefreshing) false else _state.value.refreshing
             )
         }
@@ -111,23 +124,50 @@ class RepoDetailViewModel(private val repoManager: RepoManager) : ViewModel() {
 
     fun setCommitMessage(msg: String) { _state.value = _state.value.copy(commitMessage = msg) }
 
+    fun setSignOff(enabled: Boolean) {
+        repoManager.setSignOffEnabled(enabled)
+        _state.value = _state.value.copy(signOff = enabled)
+    }
+
     fun commit() {
         val msg = _state.value.commitMessage
         if (msg.isBlank()) return
         viewModelScope.launch {
             _state.value = _state.value.copy(busy = true)
             val result = withContext(Dispatchers.IO) {
-                repoManager.commit(repoPath, msg, _state.value.authorName, _state.value.authorEmail)
+                repoManager.commit(
+                    repoPath,
+                    msg,
+                    _state.value.authorName,
+                    _state.value.authorEmail,
+                    signOff = _state.value.signOff
+                )
             }
             _state.value = _state.value.copy(busy = false, lastResult = result, commitMessage = "")
             loadStatus(showRefreshing = false)
         }
     }
 
-    fun push() {
+    fun push(force: Boolean = false, forceWithLease: Boolean = false) {
         viewModelScope.launch {
             _state.value = _state.value.copy(busy = true)
-            val result = withContext(Dispatchers.IO) { repoManager.push(repoPath) }
+            val result = withContext(Dispatchers.IO) {
+                repoManager.push(repoPath, force = force, forceWithLease = forceWithLease)
+            }
+            _state.value = _state.value.copy(busy = false, lastResult = result)
+        }
+    }
+
+    /**
+     * Push current HEAD to Gerrit for code review (`refs/for/<branch>`).
+     * Optional [topic] becomes `refs/for/<branch>%topic=<topic>`.
+     */
+    fun pushForReview(topic: String? = null) {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(busy = true)
+            val result = withContext(Dispatchers.IO) {
+                repoManager.pushForReview(repoPath, topic = topic)
+            }
             _state.value = _state.value.copy(busy = false, lastResult = result)
         }
     }
@@ -151,4 +191,14 @@ class RepoDetailViewModel(private val repoManager: RepoManager) : ViewModel() {
     }
 
     fun consumeResult() { _state.value = _state.value.copy(lastResult = null) }
+
+    private fun isGerritRemoteUrl(url: String?): Boolean {
+        if (url.isNullOrBlank()) return false
+        val u = url.lowercase()
+        if (u.contains("github.com") || u.contains("gitlab.com") || u.contains("gitlab.")) return false
+        if (u.contains("gerrit")) return true
+        // Authenticated Gerrit HTTP clone path
+        if ("/a/" in u) return true
+        return false
+    }
 }

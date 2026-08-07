@@ -87,7 +87,7 @@ private fun LogRow(entry: LogEntry) {
     val color = when (entry.level) {
         LogLevel.ERROR -> GitRed
         LogLevel.WARN -> GitAmber
-        LogLevel.INFO -> MaterialTheme.colorScheme.onSurface
+        LogLevel.INFO, LogLevel.DEBUG -> MaterialTheme.colorScheme.onSurface
     }
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)

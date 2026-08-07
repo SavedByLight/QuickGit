@@ -20,8 +20,10 @@ import org.eclipse.jgit.lib.RepositoryState
 import org.eclipse.jgit.revwalk.RevCommit
 import org.eclipse.jgit.revwalk.RevWalk
 import org.eclipse.jgit.storage.file.FileRepositoryBuilder
+import org.eclipse.jgit.lib.NullProgressMonitor
 import org.eclipse.jgit.transport.CredentialsProvider
 import org.eclipse.jgit.transport.RefSpec
+import org.eclipse.jgit.transport.RemoteRefUpdate
 import org.eclipse.jgit.transport.SshTransport
 import org.eclipse.jgit.transport.Transport
 import org.eclipse.jgit.transport.UsernamePasswordCredentialsProvider
@@ -41,6 +43,7 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     private val PREF_AUTHOR_NAME = "commit_author_name"
     private val PREF_AUTHOR_EMAIL = "commit_author_email"
     private val PREF_GPG_SIGN = "gpg_sign_commits"
+    private val PREF_SIGN_OFF = "commit_sign_off"
 
     private val repoOperationLocks = ConcurrentHashMap<String, Any>()
 
@@ -58,16 +61,23 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     private fun installJGitMemoryLimits() {
         try {
             val cfg = WindowCacheConfig()
-            cfg.packedGitLimit = 16L * 1024 * 1024
-            cfg.packedGitWindowSize = 8 * 1024
-            cfg.deltaBaseCacheLimit = 4 * 1024 * 1024
-            cfg.streamFileThreshold = 1 * 1024 * 1024
+            // Keep mobile-safe limits, but high enough that pack delta inflation does not
+            // recycle windows mid-read ("Inflater has been closed").
+            cfg.packedGitLimit = 48L * 1024 * 1024
+            cfg.packedGitWindowSize = 32 * 1024
+            cfg.deltaBaseCacheLimit = 10 * 1024 * 1024
+            // Objects larger than this are streamed; streaming + WindowCache on Android
+            // is a common source of "Inflater has been closed". Prefer buffered windows.
+            cfg.streamFileThreshold = 50 * 1024 * 1024
             cfg.install()
             AppLog.i(TAG, "JGit WindowCache limits installed for mobile heap")
         } catch (e: Exception) {
             AppLog.w(TAG, "Could not install JGit WindowCache config: ${e.message}")
         }
     }
+
+    /** Serializes JGit pack access — concurrent clones can close each other's Inflater. */
+    private val jgitIoLock = Any()
 
     /** Name used for commit author/committer (Settings → Commit identity). */
     fun getCommitAuthorName(): String =
@@ -87,6 +97,13 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
 
     fun setGpgSigningEnabled(enabled: Boolean) {
         prefs.edit().putBoolean(PREF_GPG_SIGN, enabled).commit()
+    }
+
+    /** When true, commits get a `Signed-off-by: Name <email>` trailer (git commit -s). */
+    fun isSignOffEnabled(): Boolean = prefs.getBoolean(PREF_SIGN_OFF, false)
+
+    fun setSignOffEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(PREF_SIGN_OFF, enabled).commit()
     }
 
     /**
@@ -388,34 +405,105 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
             return GitOpResult.Error("'$label' already exists and isn't empty")
         }
         val alreadyExisted = destination.exists()
-        AppLog.i(TAG, "clone: $url -> ${destination.absolutePath}")
+        val cloneUrl = normalizeCloneUrl(url)
+        AppLog.i(TAG, "clone: $cloneUrl -> ${destination.absolutePath}")
+
+        var lastError: Exception? = null
+        // Retry a couple of times for transient JGit pack-window races on Android.
+        val maxAttempts = 3
+        for (attempt in 1..maxAttempts) {
+            if (attempt > 1) {
+                cleanUpFailedCloneDestination(destination, alreadyExisted)
+                System.gc()
+                onProgress("Retrying clone (attempt $attempt/$maxAttempts)…")
+                AppLog.w(TAG, "clone retry $attempt/$maxAttempts for $label after: ${lastError?.message}")
+            }
+            try {
+                synchronized(jgitIoLock) {
+                    // Re-install window cache each attempt — soft refs can leave a bad
+                    // Inflater in the shared cache after a failed clone.
+                    installJGitMemoryLimits()
+                    val cmd = Git.cloneRepository()
+                        .setURI(cloneUrl)
+                        .setDirectory(destination)
+                        // Mobile: single branch + shallow history avoids huge pack inflation
+                        // that triggers "Inflater has been closed" on Android heaps.
+                        .setCloneAllBranches(false)
+                        .setCloneSubmodules(false)
+                        .setDepth(1)
+                        .setProgressMonitor(TextProgress(onProgress))
+                    applyTransportConfig(cmd, cloneUrl)
+                    cmd.call().close()
+                }
+                rememberExternalRepoPath(destination)
+                val lfsMsg = maybeFetchLfs(destination.absolutePath, cloneUrl, onProgress)
+                AppLog.i(TAG, "clone succeeded: ${destination.absolutePath}" + (lfsMsg?.let { " ($it)" } ?: ""))
+                return GitOpResult.Success
+            } catch (e: org.eclipse.jgit.api.errors.TransportException) {
+                cleanUpFailedCloneDestination(destination, alreadyExisted)
+                AppLog.e(TAG, "clone failed (transport): $label", e)
+                return if (isAuthFailure(e)) GitOpResult.AuthRequired(cloneUrl)
+                else GitOpResult.Error(e.message ?: "Transport error", e)
+            } catch (e: OutOfMemoryError) {
+                cleanUpFailedCloneDestination(destination, alreadyExisted)
+                System.gc()
+                AppLog.e(TAG, "clone OOM: $label", e)
+                return GitOpResult.Error(
+                    "Not enough memory to clone this repository. Try a smaller repo, free RAM, or clone on a desktop and copy the folder in.",
+                    e
+                )
+            } catch (e: Exception) {
+                lastError = e
+                val msg = e.message.orEmpty()
+                val inflaterRace = msg.contains("Inflater has been closed", ignoreCase = true) ||
+                    msg.contains("Inflater", ignoreCase = true) && msg.contains("closed", ignoreCase = true)
+                if (inflaterRace && attempt < maxAttempts) {
+                    AppLog.w(TAG, "clone inflater race on $label — will retry")
+                    try { Thread.sleep(500L * attempt) } catch (_: InterruptedException) {}
+                    continue
+                }
+                cleanUpFailedCloneDestination(destination, alreadyExisted)
+                AppLog.e(TAG, "clone failed: $label", e)
+                return GitOpResult.Error(e.message ?: "Clone failed", e)
+            }
+        }
+        cleanUpFailedCloneDestination(destination, alreadyExisted)
+        return GitOpResult.Error(lastError?.message ?: "Clone failed", lastError)
+    }
+
+    /**
+     * Gerrit authenticated HTTP clones need the `/a/` path prefix so credentials are applied.
+     * Anonymous URLs without `/a/` still work for public projects.
+     */
+    private fun normalizeCloneUrl(url: String): String {
+        if (!url.startsWith("https://") && !url.startsWith("http://")) return url
+        val host = CredentialStore.hostOf(url)
+        val hasCreds = credentialStore.hasHttpsCredential(host)
+        if (!hasCreds) return url
+        // Already using /a/ (Gerrit auth prefix)
+        if (url.contains("/a/")) return url
+        // Only rewrite known-Gerrit primary host (or any host with stored Gerrit primary)
+        val gerritPrimary = try {
+            // soft dependency — string match on stored primary host key
+            context.getSharedPreferences("quickgit_secure_prefs", Context.MODE_PRIVATE)
+            null
+        } catch (_: Exception) { null }
+        // Insert /a/ after host for hosts that look like Gerrit clones from our project list
+        // Pattern: https://host/project -> https://host/a/project when we have HTTPS creds
+        // for that host AND the path does not start with /a/
         return try {
-            val cmd = Git.cloneRepository()
-                .setURI(url)
-                .setDirectory(destination)
-                .setProgressMonitor(TextProgress(onProgress))
-            applyTransportConfig(cmd, url)
-            cmd.call().close()
-            rememberExternalRepoPath(destination)
-            val lfsMsg = maybeFetchLfs(destination.absolutePath, url, onProgress)
-            AppLog.i(TAG, "clone succeeded: ${destination.absolutePath}" + (lfsMsg?.let { " ($it)" } ?: ""))
-            GitOpResult.Success
-        } catch (e: org.eclipse.jgit.api.errors.TransportException) {
-            cleanUpFailedCloneDestination(destination, alreadyExisted)
-            AppLog.e(TAG, "clone failed (transport): $label", e)
-            if (isAuthFailure(e)) GitOpResult.AuthRequired(url) else GitOpResult.Error(e.message ?: "Transport error", e)
-        } catch (e: OutOfMemoryError) {
-            cleanUpFailedCloneDestination(destination, alreadyExisted)
-            System.gc()
-            AppLog.e(TAG, "clone OOM: $label", e)
-            GitOpResult.Error(
-                "Not enough memory to clone this repository. Try a smaller repo, free RAM, or clone on a desktop and copy the folder in.",
-                e
-            )
-        } catch (e: Exception) {
-            cleanUpFailedCloneDestination(destination, alreadyExisted)
-            AppLog.e(TAG, "clone failed: $label", e)
-            GitOpResult.Error(e.message ?: "Clone failed", e)
+            val uri = java.net.URI(url)
+            val path = uri.path?.trimStart('/') ?: return url
+            if (path.startsWith("a/")) return url
+            // Heuristic: if username is stored for this host (Gerrit/GitLab style user+pass),
+            // prefer /a/ only when host is not github/gitlab
+            if (host.contains("github") || host.contains("gitlab")) return url
+            val user = credentialStore.getHttpsUsername(host)
+            if (user.isNullOrBlank()) return url
+            val newPath = "/a/$path"
+            java.net.URI(uri.scheme, uri.authority, newPath, uri.query, uri.fragment).toString()
+        } catch (_: Exception) {
+            url
         }
     }
 
@@ -584,15 +672,22 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
 
     // ---------------- Commit ----------------
 
-    fun commit(path: String, message: String, authorName: String, authorEmail: String): GitOpResult =
+    fun commit(
+        path: String,
+        message: String,
+        authorName: String,
+        authorEmail: String,
+        signOff: Boolean = isSignOffEnabled()
+    ): GitOpResult =
         withRepoLock(path) {
             val shouldSign = isGpgSigningEnabled() && credentialStore.hasGpgKey()
             val gpgKey = if (shouldSign) credentialStore.getGpgPrivateKey() else null
             val gpgPass = if (shouldSign) credentialStore.getGpgPassphrase() else null
+            val fullMessage = if (signOff) appendSignOff(message, authorName, authorEmail) else message
             openGit(path).use { git ->
                 val doCommit = {
                     val cmd = git.commit()
-                        .setMessage(message)
+                        .setMessage(fullMessage)
                         .setAuthor(PersonIdent(authorName, authorEmail))
                         .setCommitter(PersonIdent(authorName, authorEmail))
                     if (shouldSign && gpgKey != null) {
@@ -609,29 +704,66 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                     doCommit()
                 }
             }
-            AppLog.i(TAG, "commit succeeded: ${message.take(50)}" + if (shouldSign) " (signed)" else "")
+            AppLog.i(
+                TAG,
+                "commit succeeded: ${message.take(50)}" +
+                    (if (shouldSign) " (gpg-signed)" else "") +
+                    (if (signOff) " (signed-off)" else "")
+            )
             GitOpResult.Success
         }
 
+    /** Appends a Signed-off-by trailer if one is not already present (DCO / git commit -s). */
+    private fun appendSignOff(message: String, name: String, email: String): String {
+        val trailer = "Signed-off-by: $name <$email>"
+        val trimmed = message.trimEnd()
+        if (trimmed.lines().any { it.trim().equals(trailer, ignoreCase = true) }) {
+            return trimmed
+        }
+        // Ensure a blank line before the trailer when the body is non-empty
+        return if (trimmed.isEmpty()) trailer else "$trimmed\n\n$trailer"
+    }
+
     // ---------------- Push / Pull / Fetch ----------------
 
-    fun push(path: String): GitOpResult {
-        AppLog.i(TAG, "push: $path")
+    /**
+     * Push to origin.
+     * - [forceWithLease]: only overwrite remote if it still matches our remote-tracking tip
+     *   (safe against clobbering others' commits; requires a prior fetch).
+     * - [force]: unconditional overwrite (`--force`). Prefer lease unless you know you need this.
+     * If both are true, lease wins.
+     */
+    fun push(
+        path: String,
+        force: Boolean = false,
+        forceWithLease: Boolean = false
+    ): GitOpResult {
+        val mode = when {
+            forceWithLease -> "force-with-lease"
+            force -> "force"
+            else -> "normal"
+        }
+        AppLog.i(TAG, "push: $path mode=$mode")
         return try {
             openGit(path).use { git ->
                 val remoteUrl = git.repository.config.getString("remote", "origin", "url") ?: ""
                 maybeUploadLfs(path, remoteUrl)?.let { AppLog.i(TAG, it) }
-                val cmd = git.push()
-                applyTransportConfig(cmd, remoteUrl)
-                val results = cmd.call()
-                val rejected = results.flatMap { it.remoteUpdates }
-                    .filter { it.status.name.contains("REJECTED") }
-                if (rejected.isNotEmpty()) {
-                    AppLog.w(TAG, "push rejected: ${rejected.size} ref(s)")
-                    GitOpResult.Error("Push rejected — pull first (${rejected.size} ref(s) rejected)")
+
+                if (forceWithLease || force) {
+                    pushForced(git, remoteUrl, withLease = forceWithLease)
                 } else {
-                    AppLog.i(TAG, "push succeeded")
-                    GitOpResult.Success
+                    val cmd = git.push()
+                    applyTransportConfig(cmd, remoteUrl)
+                    val results = cmd.call()
+                    val rejected = results.flatMap { it.remoteUpdates }
+                        .filter { it.status.name.contains("REJECTED") }
+                    if (rejected.isNotEmpty()) {
+                        AppLog.w(TAG, "push rejected: ${rejected.size} ref(s)")
+                        GitOpResult.Error("Push rejected — pull first (${rejected.size} ref(s) rejected)")
+                    } else {
+                        AppLog.i(TAG, "push succeeded")
+                        GitOpResult.Success
+                    }
                 }
             }
         } catch (e: org.eclipse.jgit.api.errors.TransportException) {
@@ -643,6 +775,138 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         } catch (e: Exception) {
             AppLog.e(TAG, "push failed", e)
             GitOpResult.Error(e.message ?: "Push failed", e)
+        }
+    }
+
+    /**
+     * Upload the current branch HEAD to Gerrit for review.
+     * Pushes to `refs/for/<branch>` (optionally `%topic=…`).
+     */
+    fun pushForReview(path: String, topic: String? = null, targetBranch: String? = null): GitOpResult {
+        AppLog.i(TAG, "pushForReview: $path topic=$topic target=$targetBranch")
+        return try {
+            openGit(path).use { git ->
+                val repo = git.repository
+                val branch = targetBranch?.takeIf { it.isNotBlank() }
+                    ?: repo.branch
+                    ?: return GitOpResult.Error("Detached HEAD — check out a branch before pushing for review")
+                val remoteUrl = repo.config.getString("remote", "origin", "url") ?: ""
+                if (remoteUrl.isBlank()) {
+                    return GitOpResult.Error("No origin remote configured")
+                }
+                maybeUploadLfs(path, remoteUrl)?.let { AppLog.i(TAG, it) }
+
+                var dest = "refs/for/$branch"
+                val t = topic?.trim().orEmpty()
+                if (t.isNotEmpty()) {
+                    dest += "%topic=${t.replace(" ", "_")}"
+                }
+                val spec = RefSpec("HEAD:$dest")
+                AppLog.i(TAG, "pushForReview refspec=$spec")
+                val cmd = git.push()
+                    .setRemote("origin")
+                    .setRefSpecs(spec)
+                applyTransportConfig(cmd, remoteUrl)
+                val results = cmd.call()
+                val messages = results.flatMap { it.messages?.lines().orEmpty() }
+                messages.forEach { AppLog.i(TAG, "gerrit: $it") }
+                val rejected = results.flatMap { it.remoteUpdates }
+                    .filter { it.status.name.contains("REJECTED") || it.status.name.contains("NON_EXISTING") }
+                if (rejected.isNotEmpty()) {
+                    val detail = rejected.joinToString { "${it.remoteName}: ${it.status}" }
+                    AppLog.w(TAG, "pushForReview rejected: $detail")
+                    return GitOpResult.Error("Review push rejected ($detail)")
+                }
+                AppLog.i(TAG, "pushForReview succeeded -> $dest")
+                GitOpResult.Success
+            }
+        } catch (e: org.eclipse.jgit.api.errors.TransportException) {
+            AppLog.e(TAG, "pushForReview failed (transport)", e)
+            if (isAuthFailure(e)) {
+                val url = openGit(path).use { it.repository.config.getString("remote", "origin", "url") } ?: ""
+                GitOpResult.AuthRequired(url)
+            } else GitOpResult.Error(e.message ?: "Push for review failed", e)
+        } catch (e: Exception) {
+            AppLog.e(TAG, "pushForReview failed", e)
+            GitOpResult.Error(e.message ?: "Push for review failed", e)
+        }
+    }
+
+    /**
+     * Force / force-with-lease push of the current branch via [RemoteRefUpdate].
+     * Lease uses the remote-tracking ref (`refs/remotes/origin/<branch>`) as the expected
+     * remote tip — same as `git push --force-with-lease`.
+     */
+    private fun pushForced(git: Git, remoteUrl: String, withLease: Boolean): GitOpResult {
+        val repo = git.repository
+        val branch = repo.branch
+            ?: return GitOpResult.Error("Detached HEAD — check out a branch before force push")
+        val localRef = "refs/heads/$branch"
+        val remoteRef = "refs/heads/$branch"
+        val trackingRef = "refs/remotes/origin/$branch"
+        val localId = repo.resolve(localRef)
+            ?: return GitOpResult.Error("No local branch $branch")
+
+        val expectedRemoteId: ObjectId? = if (withLease) {
+            val id = repo.resolve(trackingRef)
+            if (id == null) {
+                return GitOpResult.Error(
+                    "No remote-tracking branch origin/$branch — fetch first before force-with-lease"
+                )
+            }
+            id
+        } else {
+            null
+        }
+
+        if (withLease) {
+            AppLog.w(TAG, "push: FORCE-WITH-LEASE expected remote tip ${expectedRemoteId!!.name}")
+        } else {
+            AppLog.w(TAG, "push: FORCE (no lease)")
+        }
+
+        val update = RemoteRefUpdate(
+            repo,
+            localRef,
+            remoteRef,
+            /* forceUpdate = */ true,
+            trackingRef,
+            expectedRemoteId
+        )
+
+        Transport.open(repo, remoteUrl).use { transport ->
+            configureTransport(transport, remoteUrl)
+            val result = transport.push(NullProgressMonitor.INSTANCE, listOf(update))
+            val rejected = result.remoteUpdates
+                .filter { it.status.name.contains("REJECTED") || it.status.name.contains("NON_EXISTING") }
+            if (rejected.isNotEmpty()) {
+                val statuses = rejected.joinToString { "${it.remoteName}: ${it.status}" }
+                AppLog.w(TAG, "force push rejected: $statuses")
+                val leaseHint = if (withLease) {
+                    "Remote moved since your last fetch — pull/rebase and try again"
+                } else {
+                    "Force push rejected"
+                }
+                return GitOpResult.Error("$leaseHint ($statuses)")
+            }
+        }
+        AppLog.i(TAG, "push succeeded (${if (withLease) "force-with-lease" else "force"})")
+        return GitOpResult.Success
+    }
+
+    private fun configureTransport(transport: Transport, url: String) {
+        if (url.startsWith("https://")) {
+            val host = CredentialStore.hostOf(url)
+            val user = credentialStore.getHttpsUsername(host)
+            val token = credentialStore.getHttpsToken(host)
+            if (token != null) {
+                transport.credentialsProvider =
+                    UsernamePasswordCredentialsProvider(user ?: "x-access-token", token)
+            }
+        } else if (url.startsWith("git@") || url.startsWith("ssh://")) {
+            if (transport is SshTransport) {
+                transport.sshSessionFactory = sshFactory
+            }
         }
     }
 
@@ -1105,6 +1369,30 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         if (!dir.mkdirs()) throw IllegalStateException("Could not create folder: $cleaned")
         return cleaned
     }
+
+    /**
+     * Deletes a file or directory in the working tree (not under `.git`).
+     * Directories are removed recursively. Does not stage the deletion — stage
+     * via the Changes UI after delete if you want it in the next commit.
+     */
+    fun deleteWorkingPath(repoPath: String, relativePath: String) {
+        val cleaned = relativePath.trim().trimStart('/').replace("\\", "/")
+        if (cleaned.isBlank()) throw IllegalArgumentException("Path is required")
+        if (cleaned.contains("..")) throw IllegalArgumentException("Invalid path")
+        if (cleaned == ".git" || cleaned.startsWith(".git/")) {
+            throw IllegalArgumentException("Refusing to delete .git")
+        }
+        val root = File(repoPath).canonicalFile
+        val target = File(repoPath, cleaned).canonicalFile
+        if (!target.path.startsWith(root.path)) {
+            throw IllegalArgumentException("Path escapes repository")
+        }
+        if (!target.exists()) throw IllegalArgumentException("Not found: $cleaned")
+        val ok = if (target.isDirectory) target.deleteRecursively() else target.delete()
+        if (!ok) throw IllegalStateException("Could not delete: $cleaned")
+        AppLog.i(TAG, "deleted working path: $cleaned")
+    }
+
 
     /** Resolves a human-readable file name for a content Uri picked via the system file picker. */
     fun displayNameFor(uri: android.net.Uri): String {

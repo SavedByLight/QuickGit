@@ -48,6 +48,20 @@ class CredentialStore(context: Context) {
         prefs.edit().remove("https_user_$host").remove("https_token_$host").commit()
     }
 
+    // ---- Primary Gerrit host (so Settings can restore connection after process death) ----
+
+    fun savePrimaryGerritHost(host: String) {
+        val ok = prefs.edit().putString("primary_gerrit_host", host).commit()
+        if (!ok) throw IllegalStateException("Failed to persist primary Gerrit host")
+    }
+
+    fun getPrimaryGerritHost(): String? =
+        prefs.getString("primary_gerrit_host", null)?.takeIf { it.isNotBlank() }
+
+    fun clearPrimaryGerritHost() {
+        prefs.edit().remove("primary_gerrit_host").commit()
+    }
+
     // ---- SSH identity (single key pair imported by the user) ----
 
     fun saveSshKey(privateKeyPem: String, passphrase: String?) {

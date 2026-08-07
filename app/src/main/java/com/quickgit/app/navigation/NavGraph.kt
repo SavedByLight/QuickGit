@@ -34,12 +34,16 @@ fun QuickGitNavGraph() {
             )
         }
 
+
+
+
+
         composable(Dest.USER_SEARCH) {
             val vm: UserSearchViewModel = viewModel(factory = factory)
             UserSearchScreen(
                 vm = vm,
                 onBack = { navController.popBackStack() },
-                onOpenUser = { login -> navController.navigate(Dest.profile(login)) },
+                onUserClick = { login -> navController.navigate(Dest.profile(login)) },
                 onNeedsAuth = { navController.navigate(Dest.SETTINGS) }
             )
         }
@@ -182,65 +186,13 @@ fun QuickGitNavGraph() {
                 onOpenWorkflows = { navController.navigate(Dest.workflows(repoPath)) },
                 onOpenReleases = { navController.navigate(Dest.releases(repoPath)) },
                 onConflicts = { navController.navigate(Dest.merge(repoPath)) },
-                onNeedsAuth = { navController.navigate(Dest.SETTINGS) }
+                onNeedsAuth = { _ -> navController.navigate(Dest.SETTINGS) }
             )
         }
 
-        composable(
-            Dest.ISSUES,
-            arguments = listOf(navArgument("repoPath") { type = NavType.StringType })
-        ) { backStackEntry ->
-            val repoPath = Dest.decode(backStackEntry.arguments!!.getString("repoPath")!!)
-            val vm: IssuesViewModel = viewModel(factory = factory)
-            androidx.compose.runtime.LaunchedEffect(repoPath) { vm.init(repoPath) }
-            IssuesScreen(
-                vm = vm,
-                onBack = { navController.popBackStack() },
-                onNeedsAuth = { navController.navigate(Dest.SETTINGS) }
-            )
-        }
 
-        composable(
-            Dest.WORKFLOWS,
-            arguments = listOf(navArgument("repoPath") { type = NavType.StringType })
-        ) { backStackEntry ->
-            val repoPath = Dest.decode(backStackEntry.arguments!!.getString("repoPath")!!)
-            val vm: WorkflowsViewModel = viewModel(factory = factory)
-            androidx.compose.runtime.LaunchedEffect(repoPath) { vm.init(repoPath) }
-            WorkflowsScreen(
-                vm = vm,
-                onBack = { navController.popBackStack() },
-                onNeedsAuth = { navController.navigate(Dest.SETTINGS) }
-            )
-        }
 
-        composable(
-            Dest.RELEASES,
-            arguments = listOf(navArgument("repoPath") { type = NavType.StringType })
-        ) { backStackEntry ->
-            val repoPath = Dest.decode(backStackEntry.arguments!!.getString("repoPath")!!)
-            val vm: ReleasesViewModel = viewModel(factory = factory)
-            androidx.compose.runtime.LaunchedEffect(repoPath) { vm.init(repoPath) }
-            ReleasesScreen(
-                vm = vm,
-                onBack = { navController.popBackStack() },
-                onNeedsAuth = { navController.navigate(Dest.SETTINGS) }
-            )
-        }
 
-        composable(
-            Dest.PULL_REQUESTS,
-            arguments = listOf(navArgument("repoPath") { type = NavType.StringType })
-        ) { backStackEntry ->
-            val repoPath = Dest.decode(backStackEntry.arguments!!.getString("repoPath")!!)
-            val vm: PullRequestsViewModel = viewModel(factory = factory)
-            androidx.compose.runtime.LaunchedEffect(repoPath) { vm.init(repoPath) }
-            PullRequestsScreen(
-                vm = vm,
-                onBack = { navController.popBackStack() },
-                onNeedsAuth = { navController.navigate(Dest.SETTINGS) }
-            )
-        }
 
         composable(
             Dest.HISTORY,
@@ -320,5 +272,62 @@ fun QuickGitNavGraph() {
                 onFinished = { navController.popBackStack() }
             )
         }
+
+        composable(
+            Dest.ISSUES,
+            arguments = listOf(navArgument("repoPath") { type = NavType.StringType })
+        ) { backStackEntry ->
+            val repoPath = Dest.decode(backStackEntry.arguments!!.getString("repoPath")!!)
+            val vm: IssuesViewModel = viewModel(factory = factory)
+            androidx.compose.runtime.LaunchedEffect(repoPath) { vm.init(repoPath) }
+            IssuesScreen(
+                vm = vm,
+                onBack = { navController.popBackStack() },
+                onNeedsAuth = { navController.navigate(Dest.SETTINGS) }
+            )
+        }
+
+        composable(
+            Dest.WORKFLOWS,
+            arguments = listOf(navArgument("repoPath") { type = NavType.StringType })
+        ) { backStackEntry ->
+            val repoPath = Dest.decode(backStackEntry.arguments!!.getString("repoPath")!!)
+            val vm: WorkflowsViewModel = viewModel(factory = factory)
+            androidx.compose.runtime.LaunchedEffect(repoPath) { vm.init(repoPath) }
+            WorkflowsScreen(
+                vm = vm,
+                onBack = { navController.popBackStack() },
+                onNeedsAuth = { navController.navigate(Dest.SETTINGS) }
+            )
+        }
+
+        composable(
+            Dest.RELEASES,
+            arguments = listOf(navArgument("repoPath") { type = NavType.StringType })
+        ) { backStackEntry ->
+            val repoPath = Dest.decode(backStackEntry.arguments!!.getString("repoPath")!!)
+            val vm: ReleasesViewModel = viewModel(factory = factory)
+            androidx.compose.runtime.LaunchedEffect(repoPath) { vm.init(repoPath) }
+            ReleasesScreen(
+                vm = vm,
+                onBack = { navController.popBackStack() },
+                onNeedsAuth = { navController.navigate(Dest.SETTINGS) }
+            )
+        }
+
+        composable(
+            Dest.PULL_REQUESTS,
+            arguments = listOf(navArgument("repoPath") { type = NavType.StringType })
+        ) { backStackEntry ->
+            val repoPath = Dest.decode(backStackEntry.arguments!!.getString("repoPath")!!)
+            val vm: PullRequestsViewModel = viewModel(factory = factory)
+            androidx.compose.runtime.LaunchedEffect(repoPath) { vm.init(repoPath) }
+            PullRequestsScreen(
+                vm = vm,
+                onBack = { navController.popBackStack() },
+                onNeedsAuth = { navController.navigate(Dest.SETTINGS) }
+            )
+        }
+
     }
 }

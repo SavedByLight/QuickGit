@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Folder
@@ -23,6 +24,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -68,6 +70,7 @@ fun FilesScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     var createMenuExpanded by remember { mutableStateOf(false) }
     var showCreateDialog by remember { mutableStateOf(false) }
+    var entryToDelete by remember { mutableStateOf<com.quickgit.app.data.models.RepoEntry?>(null) }
     var createFolderMode by remember { mutableStateOf(false) }
     var newName by remember { mutableStateOf("") }
 
@@ -231,7 +234,7 @@ fun FilesScreen(
                                             onOpenFile(entry.relativePath)
                                         }
                                     }
-                                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                                    .padding(horizontal = 16.dp, vertical = 8.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Icon(
@@ -247,6 +250,13 @@ fun FilesScreen(
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 }
+                                IconButton(onClick = { entryToDelete = entry }) {
+                                    Icon(
+                                        Icons.Default.Delete,
+                                        contentDescription = "Delete",
+                                        tint = MaterialTheme.colorScheme.error
+                                    )
+                                }
                             }
                             HorizontalDivider()
                         }
@@ -257,6 +267,34 @@ fun FilesScreen(
                 }
             }
         }
+    }
+
+
+    entryToDelete?.let { entry ->
+        AlertDialog(
+            onDismissRequest = { entryToDelete = null },
+            title = { Text(if (entry.isDirectory) "Delete folder?" else "Delete file?") },
+            text = {
+                Text(
+                    if (entry.isDirectory)
+                        "Delete '${entry.name}' and everything inside it from the working tree?"
+                    else
+                        "Delete '${entry.name}' from the working tree?"
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        vm.deleteEntry(entry)
+                        entryToDelete = null
+                    },
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                ) { Text("Delete") }
+            },
+            dismissButton = {
+                TextButton(onClick = { entryToDelete = null }) { Text("Cancel") }
+            }
+        )
     }
 
     if (showCreateDialog) {
