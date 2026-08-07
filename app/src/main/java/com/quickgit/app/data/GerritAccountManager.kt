@@ -60,6 +60,11 @@ class GerritAccountManager(private val credentialStore: CredentialStore) {
         val result = api(h).getAuthenticatedUser()
         val account = result.getOrNull()
         return if (account != null) {
+            try {
+                credentialStore.savePrimaryGerritHost(h)
+            } catch (e: Exception) {
+                AppLog.w(TAG, "failed to persist primary Gerrit host: ${e.message}")
+            }
             AppLog.i(TAG, "connect succeeded: ${account.username}@$h")
             ConnectedAccount(account.username, account.name, account.email, h) to PrOpResult.Success
         } else {
@@ -74,8 +79,14 @@ class GerritAccountManager(private val credentialStore: CredentialStore) {
     fun disconnect(h: String = host) {
         AppLog.i(TAG, "disconnect $h")
         credentialStore.clearHttpsToken(h)
+        if (credentialStore.getPrimaryGerritHost() == h) {
+            credentialStore.clearPrimaryGerritHost()
+        }
         if (h == host) host = "gerrit.googlesource.com"
     }
+
+    /** Last successfully connected Gerrit host, if any. */
+    fun primaryHost(): String? = credentialStore.getPrimaryGerritHost()
 
     fun refreshAccount(h: String = host): Pair<ConnectedAccount?, PrOpResult> {
         if (!isConnected(h)) return null to PrOpResult.Error("Not connected")

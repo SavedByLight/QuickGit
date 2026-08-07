@@ -669,8 +669,19 @@ class SettingsViewModel(
     // ---- Gerrit ----
 
     private fun verifyGerritIfConnected() {
-        val h = _state.value.gerritHost
-        if (h.isBlank() || !gerritAccountManager.isConnected(h)) return
+        // gerritHost starts empty in UI state; restore from the host we persisted on connect.
+        val h = _state.value.gerritHost.takeIf { it.isNotBlank() }
+            ?: gerritAccountManager.primaryHost()
+            ?: return
+        if (!gerritAccountManager.isConnected(h)) return
+        // Seed host into state immediately so the form shows it while we refresh.
+        if (_state.value.gerritHost.isBlank()) {
+            _state.value = _state.value.copy(
+                gerritHost = h,
+                gerritUsername = gerritAccountManager.storedUsername(h),
+                gerritConnected = true
+            )
+        }
         viewModelScope.launch {
             val (account, result) = withContext(Dispatchers.IO) {
                 gerritAccountManager.refreshAccount(h)

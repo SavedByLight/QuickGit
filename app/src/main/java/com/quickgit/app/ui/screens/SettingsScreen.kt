@@ -335,6 +335,17 @@ fun SettingsScreen(
             var gerritHost by remember { mutableStateOf(state.gerritHost) }
             var gerritUser by remember { mutableStateOf("") }
             var gerritPass by remember { mutableStateOf("") }
+            // Keep the host field in sync when verifyGerritIfConnected restores it from disk.
+            LaunchedEffect(state.gerritHost) {
+                if (state.gerritHost.isNotBlank() && gerritHost != state.gerritHost) {
+                    gerritHost = state.gerritHost
+                }
+            }
+            LaunchedEffect(state.gerritUsername) {
+                if (!state.gerritUsername.isNullOrBlank() && gerritUser.isBlank()) {
+                    gerritUser = state.gerritUsername.orEmpty()
+                }
+            }
             OutlinedTextField(
                 value = gerritHost,
                 onValueChange = { gerritHost = it },
