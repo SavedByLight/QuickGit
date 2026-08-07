@@ -13,6 +13,7 @@ import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material.icons.filled.RateReview
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -34,6 +35,7 @@ fun RepoListScreen(
     onOpenRepo: (RepoInfo) -> Unit,
     onClone: () -> Unit,
     onBrowseGitHub: () -> Unit = {},
+    onGerritChanges: () -> Unit = {},
     onOpenProfile: () -> Unit = {},
     onSearchPeople: () -> Unit = {},
     onSettings: () -> Unit,
@@ -75,6 +77,9 @@ fun RepoListScreen(
                     IconButton(onClick = onSearchPeople) { Icon(Icons.Default.Search, "Search people") }
                     IconButton(onClick = onBrowseGitHub) {
                         Icon(Icons.Default.CloudDownload, "Browse repos")
+                    }
+                    IconButton(onClick = onGerritChanges) {
+                        Icon(Icons.Default.RateReview, "Gerrit changes")
                     }
                     IconButton(onClick = onLogs) { Icon(Icons.Default.Terminal, "Logs") }
                     IconButton(onClick = onSettings) { Icon(Icons.Default.Settings, "Settings") }

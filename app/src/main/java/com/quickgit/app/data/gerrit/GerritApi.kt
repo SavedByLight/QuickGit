@@ -118,6 +118,120 @@ class GerritApi(
         GerritReviewInput(message = message, labels = mapOf("Code-Review" to value))
     )
 
+    /**
+     * List files changed in a revision.
+     * Gerrit returns a map keyed by path; the special key "/COMMIT_MSG" is skipped.
+     */
+    fun listFiles(
+        changeId: String,
+        revision: String = "current"
+    ): Result<List<com.quickgit.app.data.models.GerritFileChange>> = runCatching {
+        val encodedChange = java.net.URLEncoder.encode(changeId, "UTF-8")
+        val encodedRev = java.net.URLEncoder.encode(revision, "UTF-8")
+        val raw = request("GET", "/changes/$encodedChange/revisions/$encodedRev/files/")
+        val obj = when (raw) {
+            is JSONObject -> raw
+            else -> JSONObject()
+        }
+        val list = mutableListOf<com.quickgit.app.data.models.GerritFileChange>()
+        val keys = obj.keys()
+        while (keys.hasNext()) {
+            val path = keys.next()
+            if (path == "/COMMIT_MSG" || path == "/MERGE_LIST") continue
+            val info = obj.optJSONObject(path) ?: continue
+            val status = info.optString("status", "M").ifBlank { "M" }
+            list += com.quickgit.app.data.models.GerritFileChange(
+                path = path,
+                status = status,
+                linesInserted = info.optInt("lines_inserted", 0),
+                linesDeleted = info.optInt("lines_deleted", 0),
+                sizeDelta = info.optLong("size_delta", 0),
+                binary = info.optBoolean("binary", false),
+                oldPath = info.optString("old_path").takeIf { it.isNotBlank() }
+            )
+        }
+        list.sortedWith(compareBy({ it.status }, { it.path.lowercase() }))
+    }
+
+    /**
+     * Unified diff for a single file in a revision.
+     * Parsed into the same DiffLine model used by the local Diff viewer.
+     */
+    fun getFileDiff(
+        changeId: String,
+        filePath: String,
+        revision: String = "current"
+    ): Result<com.quickgit.app.data.models.FileDiff> = runCatching {
+        val encodedChange = java.net.URLEncoder.encode(changeId, "UTF-8")
+        val encodedRev = java.net.URLEncoder.encode(revision, "UTF-8")
+        // Gerrit requires path segments URL-encoded; leading slash paths use double encoding
+        val encodedPath = java.net.URLEncoder.encode(filePath, "UTF-8")
+        val path = "/changes/$encodedChange/revisions/$encodedRev/files/$encodedPath/diff"
+        val obj = request("GET", path) as JSONObject
+
+        val binary = obj.optBoolean("binary", false) ||
+            obj.optJSONObject("meta_a")?.optBoolean("binary", false) == true ||
+            obj.optJSONObject("meta_b")?.optBoolean("binary", false) == true
+        if (binary) {
+            return@runCatching com.quickgit.app.data.models.FileDiff(
+                path = filePath,
+                lines = emptyList(),
+                isBinary = true
+            )
+        }
+
+        val content = obj.optJSONArray("content") ?: JSONArray()
+        val lines = mutableListOf<com.quickgit.app.data.models.DiffLine>()
+        // Optional header from meta
+        val metaA = obj.optJSONObject("meta_a")
+        val metaB = obj.optJSONObject("meta_b")
+        if (metaA != null || metaB != null) {
+            val aName = metaA?.optString("name") ?: "/dev/null"
+            val bName = metaB?.optString("name") ?: filePath
+            lines += com.quickgit.app.data.models.DiffLine(
+                com.quickgit.app.data.models.DiffLineType.HEADER,
+                "--- a/$aName"
+            )
+            lines += com.quickgit.app.data.models.DiffLine(
+                com.quickgit.app.data.models.DiffLineType.HEADER,
+                "+++ b/$bName"
+            )
+        }
+
+        for (i in 0 until content.length()) {
+            val section = content.getJSONObject(i)
+            val ab = section.optJSONArray("ab")
+            val a = section.optJSONArray("a")
+            val b = section.optJSONArray("b")
+            if (ab != null) {
+                for (j in 0 until ab.length()) {
+                    lines += com.quickgit.app.data.models.DiffLine(
+                        com.quickgit.app.data.models.DiffLineType.CONTEXT,
+                        " ${ab.getString(j)}"
+                    )
+                }
+            }
+            if (a != null) {
+                for (j in 0 until a.length()) {
+                    lines += com.quickgit.app.data.models.DiffLine(
+                        com.quickgit.app.data.models.DiffLineType.REMOVED,
+                        "-${a.getString(j)}"
+                    )
+                }
+            }
+            if (b != null) {
+                for (j in 0 until b.length()) {
+                    lines += com.quickgit.app.data.models.DiffLine(
+                        com.quickgit.app.data.models.DiffLineType.ADDED,
+                        "+${b.getString(j)}"
+                    )
+                }
+            }
+            // skip / skip_next are for context elision; ignore for now
+        }
+
+        com.quickgit.app.data.models.FileDiff(path = filePath, lines = lines, isBinary = false)
+    }
 
     /**
      * List projects the caller can see.

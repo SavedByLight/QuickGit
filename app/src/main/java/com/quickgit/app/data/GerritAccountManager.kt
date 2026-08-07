@@ -191,4 +191,29 @@ class GerritAccountManager(private val credentialStore: CredentialStore) {
         if (!isConnected(h)) return PrOpResult.AuthRequired(h)
         return api(h).voteCodeReview(changeId, value, message).toGerritOpResult(h)
     }
+
+    fun listChangeFiles(
+        changeId: String,
+        revision: String = "current",
+        h: String = host
+    ): Pair<List<com.quickgit.app.data.models.GerritFileChange>, PrOpResult> {
+        val hostKey = h.ifBlank { primaryHost() ?: host }
+        if (!isConnected(hostKey)) {
+            return emptyList<com.quickgit.app.data.models.GerritFileChange>() to PrOpResult.AuthRequired(hostKey)
+        }
+        val result = api(hostKey).listFiles(changeId, revision)
+        return (result.getOrNull() ?: emptyList()) to result.toGerritOpResult(hostKey)
+    }
+
+    fun getChangeFileDiff(
+        changeId: String,
+        filePath: String,
+        revision: String = "current",
+        h: String = host
+    ): Pair<com.quickgit.app.data.models.FileDiff?, PrOpResult> {
+        val hostKey = h.ifBlank { primaryHost() ?: host }
+        if (!isConnected(hostKey)) return null to PrOpResult.AuthRequired(hostKey)
+        val result = api(hostKey).getFileDiff(changeId, filePath, revision)
+        return result.getOrNull() to result.toGerritOpResult(hostKey)
+    }
 }

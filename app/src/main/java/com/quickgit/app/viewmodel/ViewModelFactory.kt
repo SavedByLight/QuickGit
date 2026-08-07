@@ -61,6 +61,8 @@ class ViewModelFactory(private val app: Application) : ViewModelProvider.Factory
                     gitApp.gerritAccountManager,
                     gitApp.repoManager
                 )
+            modelClass.isAssignableFrom(GerritChangesViewModel::class.java) ->
+                GerritChangesViewModel(gitApp.gerritAccountManager)
             modelClass.isAssignableFrom(ProfileViewModel::class.java) ->
                 ProfileViewModel(
                     gitApp.gitHubAccountManager,
