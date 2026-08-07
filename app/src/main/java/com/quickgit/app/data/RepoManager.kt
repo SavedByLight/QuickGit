@@ -744,8 +744,8 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
 
         Transport.open(repo, remoteUrl).use { transport ->
             configureTransport(transport, remoteUrl)
-            val results = transport.push(NullProgressMonitor.INSTANCE, listOf(update))
-            val rejected = results.flatMap { it.remoteUpdates }
+            val result = transport.push(NullProgressMonitor.INSTANCE, listOf(update))
+            val rejected = result.remoteUpdates
                 .filter { it.status.name.contains("REJECTED") || it.status.name.contains("NON_EXISTING") }
             if (rejected.isNotEmpty()) {
                 val statuses = rejected.joinToString { "${it.remoteName}: ${it.status}" }
