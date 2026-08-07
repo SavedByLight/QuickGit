@@ -24,7 +24,10 @@ data class RepoDetailUiState(
     val authorName: String = "",
     val authorEmail: String = "",
     /** Append Signed-off-by trailer on commit (git commit -s). */
-    val signOff: Boolean = false
+    val signOff: Boolean = false,
+    val remoteUrl: String? = null,
+    /** True when origin looks like a Gerrit host — hides GH Actions/PRs/etc., shows push-for-review. */
+    val isGerritRemote: Boolean = false
 )
 
 class RepoDetailViewModel(private val repoManager: RepoManager) : ViewModel() {
@@ -50,12 +53,19 @@ class RepoDetailViewModel(private val repoManager: RepoManager) : ViewModel() {
         viewModelScope.launch {
             if (showRefreshing) _state.value = _state.value.copy(refreshing = true)
             val status = withContext(Dispatchers.IO) { repoManager.getStatus(repoPath) }
-            val branch = withContext(Dispatchers.IO) {
-                repoManager.openGit(repoPath).use { it.repository.branch }
+            val (branch, remoteUrl) = withContext(Dispatchers.IO) {
+                repoManager.openGit(repoPath).use { git ->
+                    val b = git.repository.branch
+                    val url = git.repository.config.getString("remote", "origin", "url")
+                    b to url
+                }
             }
+            val isGerrit = isGerritRemoteUrl(remoteUrl)
             _state.value = _state.value.copy(
                 status = status,
                 branch = branch ?: "",
+                remoteUrl = remoteUrl,
+                isGerritRemote = isGerrit,
                 refreshing = if (showRefreshing) false else _state.value.refreshing
             )
         }
@@ -181,4 +191,14 @@ class RepoDetailViewModel(private val repoManager: RepoManager) : ViewModel() {
     }
 
     fun consumeResult() { _state.value = _state.value.copy(lastResult = null) }
+
+    private fun isGerritRemoteUrl(url: String?): Boolean {
+        if (url.isNullOrBlank()) return false
+        val u = url.lowercase()
+        if (u.contains("github.com") || u.contains("gitlab.com") || u.contains("gitlab.")) return false
+        if (u.contains("gerrit")) return true
+        // Authenticated Gerrit HTTP clone path
+        if ("/a/" in u) return true
+        return false
+    }
 }

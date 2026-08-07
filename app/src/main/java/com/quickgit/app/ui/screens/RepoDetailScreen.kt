@@ -32,6 +32,10 @@ fun RepoDetailScreen(
     onOpenHistory: () -> Unit,
     onOpenBranches: () -> Unit,
     onOpenFiles: () -> Unit,
+    onOpenPullRequests: () -> Unit = {},
+    onOpenIssues: () -> Unit = {},
+    onOpenWorkflows: () -> Unit = {},
+    onOpenReleases: () -> Unit = {},
     onConflicts: () -> Unit,
     onNeedsAuth: (String) -> Unit
 ) {
@@ -103,6 +107,12 @@ fun RepoDetailScreen(
             ) {
                 item { SubPageButton(Icons.Default.FolderOpen, "Files", onOpenFiles) }
                 item { SubPageButton(Icons.Default.AccountTree, "Branches", onOpenBranches) }
+                if (!state.isGerritRemote) {
+                    item { SubPageButton(Icons.Default.CallMerge, "PRs", onOpenPullRequests) }
+                    item { SubPageButton(Icons.Default.BugReport, "Issues", onOpenIssues) }
+                    item { SubPageButton(Icons.Default.PlayCircle, "Actions", onOpenWorkflows) }
+                    item { SubPageButton(Icons.Default.NewReleases, "Releases", onOpenReleases) }
+                }
             }
 
             var showForcePushConfirm by remember { mutableStateOf(false) }
@@ -118,17 +128,19 @@ fun RepoDetailScreen(
                     Icon(Icons.Default.ArrowUpward, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Push")
                 }
             }
-            // Gerrit: upload commit for code review (refs/for/<branch>)
-            OutlinedButton(
-                onClick = { vm.pushForReview() },
-                enabled = !state.busy,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 4.dp)
-            ) {
-                Icon(Icons.Default.CloudUpload, null, Modifier.size(18.dp))
-                Spacer(Modifier.width(8.dp))
-                Text("Push for review")
+            // Gerrit only: upload commit for code review (refs/for/<branch>)
+            if (state.isGerritRemote) {
+                OutlinedButton(
+                    onClick = { vm.pushForReview() },
+                    enabled = !state.busy,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp)
+                ) {
+                    Icon(Icons.Default.CloudUpload, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Push for review")
+                }
             }
             Row(Modifier.fillMaxWidth().padding(16.dp, 0.dp, 16.dp, 4.dp)) {
                 OutlinedButton(
