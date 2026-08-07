@@ -277,9 +277,9 @@ fun FilesScreen(
             text = {
                 Text(
                     if (entry.isDirectory)
-                        "Delete "${entry.name}" and everything inside it from the working tree?"
+                        "Delete '${entry.name}' and everything inside it from the working tree?"
                     else
-                        "Delete "${entry.name}" from the working tree?"
+                        "Delete '${entry.name}' from the working tree?"
                 )
             },
             confirmButton = {
