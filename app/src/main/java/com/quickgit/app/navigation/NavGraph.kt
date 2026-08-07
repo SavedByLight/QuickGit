@@ -39,7 +39,7 @@ fun QuickGitNavGraph() {
             UserSearchScreen(
                 vm = vm,
                 onBack = { navController.popBackStack() },
-                onOpenUser = { login -> navController.navigate(Dest.profile(login)) },
+                onUserClick = { login -> navController.navigate(Dest.profile(login)) },
                 onNeedsAuth = { navController.navigate(Dest.SETTINGS) }
             )
         }
@@ -50,7 +50,7 @@ fun QuickGitNavGraph() {
                 vm = vm,
                 login = null,
                 onBack = { navController.popBackStack() },
-                onOpenUser = { login -> navController.navigate(Dest.profile(login)) },
+                onUserClick = { login -> navController.navigate(Dest.profile(login)) },
                 onCloneRepo = { navController.navigate(Dest.CLONE) },
                 onOpenRepo = { repo ->
                     navController.navigate(Dest.remoteBrowse(repo.ownerLogin, repo.name, repo.defaultBranch))

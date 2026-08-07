@@ -109,7 +109,7 @@ fun UserSearchScreen(
                         items(state.gitlabResults, key = { it.id }) { user ->
                             ListItem(
                                 headlineContent = { Text(user.username, fontWeight = FontWeight.Medium) },
-                                supportingContent = { Text(user.type) },
+                                supportingContent = { user.name?.let { Text(it) } },
                                 leadingContent = {
                                     UserAvatar(avatarUrl = user.avatarUrl, login = user.username, size = 40.dp)
                                 },
