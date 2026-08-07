@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Soft radial-ish glow behind bolt (simple circle) -->
+    <path
+        android:fillColor="#33FFFFFF"
+        android:pathData="M54,54m-28,0a28,28 0,1,1 56,0a28,28 0,1,1 -56,0" />
+
+    <!-- Git tree branches (darker blue so they read on blue bg) -->
+    <!-- Main trunk -->
+    <path
+        android:pathData="M54,78 L54,42"
+        android:strokeWidth="3.2"
+        android:strokeColor="#0B1F4A"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+    <!-- Left branch -->
+    <path
+        android:pathData="M54,58 L38,46"
+        android:strokeWidth="3.2"
+        android:strokeColor="#0B1F4A"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+    <!-- Right branch -->
+    <path
+        android:pathData="M54,52 L70,40"
+        android:strokeWidth="3.2"
+        android:strokeColor="#0B1F4A"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+    <!-- Upper left tip branch -->
+    <path
+        android:pathData="M38,46 L30,38"
+        android:strokeWidth="2.6"
+        android:strokeColor="#0B1F4A"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+    <!-- Upper right tip -->
+    <path
+        android:pathData="M70,40 L78,32"
+        android:strokeWidth="2.6"
+        android:strokeColor="#0B1F4A"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+
+    <!-- Commit dots (nodes) -->
+    <path android:fillColor="#0B1F4A" android:pathData="M54,78m-3.6,0a3.6,3.6 0,1,1 7.2,0a3.6,3.6 0,1,1 -7.2,0" />
+    <path android:fillColor="#0B1F4A" android:pathData="M54,58m-3.2,0a3.2,3.2 0,1,1 6.4,0a3.2,3.2 0,1,1 -6.4,0" />
+    <path android:fillColor="#0B1F4A" android:pathData="M38,46m-3.2,0a3.2,3.2 0,1,1 6.4,0a3.2,3.2 0,1,1 -6.4,0" />
+    <path android:fillColor="#0B1F4A" android:pathData="M70,40m-3.2,0a3.2,3.2 0,1,1 6.4,0a3.2,3.2 0,1,1 -6.4,0" />
+    <path android:fillColor="#0B1F4A" android:pathData="M30,38m-2.8,0a2.8,2.8 0,1,1 5.6,0a2.8,2.8 0,1,1 -5.6,0" />
+    <path android:fillColor="#0B1F4A" android:pathData="M78,32m-2.8,0a2.8,2.8 0,1,1 5.6,0a2.8,2.8 0,1,1 -5.6,0" />
+    <path android:fillColor="#0B1F4A" android:pathData="M54,42m-3.2,0a3.2,3.2 0,1,1 6.4,0a3.2,3.2 0,1,1 -6.4,0" />
+
+    <!-- Lightning bolt (bright cyan-blue), centered, over the tree -->
+    <!-- Classic bolt shape, slightly transparent white edge via second path -->
+    <path
+        android:fillColor="#7DD3FC"
+        android:pathData="M58,28 L46,52 L53,52 L48,78 L66,48 L57,48 L62,28 Z" />
+    <!-- Inner highlight -->
+    <path
+        android:fillColor="#E0F2FE"
+        android:pathData="M57.2,32 L48.5,51 L54.2,51 L50.5,70 L62.5,49 L55.5,49 L58.5,32 Z" />
+</vector>
