@@ -63,10 +63,12 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
             val cfg = WindowCacheConfig()
             // Keep mobile-safe limits, but high enough that pack delta inflation does not
             // recycle windows mid-read ("Inflater has been closed").
-            cfg.packedGitLimit = 32L * 1024 * 1024
-            cfg.packedGitWindowSize = 16 * 1024
-            cfg.deltaBaseCacheLimit = 8 * 1024 * 1024
-            cfg.streamFileThreshold = 10 * 1024 * 1024
+            cfg.packedGitLimit = 48L * 1024 * 1024
+            cfg.packedGitWindowSize = 32 * 1024
+            cfg.deltaBaseCacheLimit = 10 * 1024 * 1024
+            // Objects larger than this are streamed; streaming + WindowCache on Android
+            // is a common source of "Inflater has been closed". Prefer buffered windows.
+            cfg.streamFileThreshold = 50 * 1024 * 1024
             cfg.install()
             AppLog.i(TAG, "JGit WindowCache limits installed for mobile heap")
         } catch (e: Exception) {
@@ -418,10 +420,17 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
             }
             try {
                 synchronized(jgitIoLock) {
+                    // Re-install window cache each attempt — soft refs can leave a bad
+                    // Inflater in the shared cache after a failed clone.
+                    installJGitMemoryLimits()
                     val cmd = Git.cloneRepository()
                         .setURI(cloneUrl)
                         .setDirectory(destination)
-                        .setCloneAllBranches(true)
+                        // Mobile: single branch + shallow history avoids huge pack inflation
+                        // that triggers "Inflater has been closed" on Android heaps.
+                        .setCloneAllBranches(false)
+                        .setCloneSubmodules(false)
+                        .setDepth(1)
                         .setProgressMonitor(TextProgress(onProgress))
                     applyTransportConfig(cmd, cloneUrl)
                     cmd.call().close()
@@ -450,6 +459,7 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                     msg.contains("Inflater", ignoreCase = true) && msg.contains("closed", ignoreCase = true)
                 if (inflaterRace && attempt < maxAttempts) {
                     AppLog.w(TAG, "clone inflater race on $label — will retry")
+                    try { Thread.sleep(500L * attempt) } catch (_: InterruptedException) {}
                     continue
                 }
                 cleanUpFailedCloneDestination(destination, alreadyExisted)
