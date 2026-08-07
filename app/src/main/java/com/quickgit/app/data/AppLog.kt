@@ -8,7 +8,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-enum class LogLevel { INFO, WARN, ERROR }
+enum class LogLevel { DEBUG, INFO, WARN, ERROR }
 
 data class LogEntry(
     val timestampMillis: Long,
@@ -31,6 +31,7 @@ object AppLog {
     private val _entries = MutableStateFlow<List<LogEntry>>(emptyList())
     val entries: StateFlow<List<LogEntry>> = _entries.asStateFlow()
 
+    fun d(tag: String, message: String) = add(tag, LogLevel.DEBUG, message)
     fun i(tag: String, message: String) = add(tag, LogLevel.INFO, message)
     fun w(tag: String, message: String) = add(tag, LogLevel.WARN, message)
     fun e(tag: String, message: String, throwable: Throwable? = null) =
@@ -46,6 +47,7 @@ object AppLog {
             _entries.value = (_entries.value + entry).takeLast(MAX_ENTRIES)
         }
         when (level) {
+            LogLevel.DEBUG -> Log.d(tag, message)
             LogLevel.INFO -> Log.i(tag, message)
             LogLevel.WARN -> Log.w(tag, message)
             LogLevel.ERROR -> Log.e(tag, message)
