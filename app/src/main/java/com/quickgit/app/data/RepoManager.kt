@@ -1376,7 +1376,7 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
      * via the Changes UI after delete if you want it in the next commit.
      */
     fun deleteWorkingPath(repoPath: String, relativePath: String) {
-        val cleaned = relativePath.trim().trimStart('/').replace("\", "/")
+        val cleaned = relativePath.trim().trimStart('/').replace("\\", "/")
         if (cleaned.isBlank()) throw IllegalArgumentException("Path is required")
         if (cleaned.contains("..")) throw IllegalArgumentException("Invalid path")
         if (cleaned == ".git" || cleaned.startsWith(".git/")) {
@@ -1392,6 +1392,7 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         if (!ok) throw IllegalStateException("Could not delete: $cleaned")
         AppLog.i(TAG, "deleted working path: $cleaned")
     }
+
 
     /** Resolves a human-readable file name for a content Uri picked via the system file picker. */
     fun displayNameFor(uri: android.net.Uri): String {

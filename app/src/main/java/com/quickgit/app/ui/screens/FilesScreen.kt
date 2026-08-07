@@ -24,6 +24,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -276,9 +277,9 @@ fun FilesScreen(
             text = {
                 Text(
                     if (entry.isDirectory)
-                        "Delete “${entry.name}” and everything inside it from the working tree?"
+                        "Delete "${entry.name}" and everything inside it from the working tree?"
                     else
-                        "Delete “${entry.name}” from the working tree?"
+                        "Delete "${entry.name}" from the working tree?"
                 )
             },
             confirmButton = {
