@@ -4,7 +4,9 @@ import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.quickgit.app.data.CredentialStore
+import com.quickgit.app.data.GerritAccountManager
 import com.quickgit.app.data.GitHubAccountManager
+import com.quickgit.app.data.GitLabAccountManager
 import com.quickgit.app.data.RepoManager
 import com.quickgit.app.data.models.PrOpResult
 import kotlinx.coroutines.Dispatchers
@@ -22,6 +24,14 @@ data class SettingsUiState(
     /** GitHub login verified via API when host is github.com. */
     val githubLogin: String? = null,
     val githubName: String? = null,
+    /** GitLab account (any host). */
+    val gitlabHost: String = "gitlab.com",
+    val gitlabUsername: String? = null,
+    val gitlabConnected: Boolean = false,
+    /** Gerrit account (any host). */
+    val gerritHost: String = "",
+    val gerritUsername: String? = null,
+    val gerritConnected: Boolean = false,
     val connecting: Boolean = false,
     val authorName: String = "",
     val authorEmail: String = "",
@@ -53,6 +63,8 @@ class SettingsViewModel(
     private val credentialStore: CredentialStore,
     private val repoManager: RepoManager,
     private val gitHubAccountManager: GitHubAccountManager,
+    private val gitLabAccountManager: GitLabAccountManager,
+    private val gerritAccountManager: GerritAccountManager,
     private val appUpdateManager: com.quickgit.app.data.AppUpdateManager
 ) : ViewModel() {
 
@@ -68,6 +80,8 @@ class SettingsViewModel(
         refreshReposRoot()
         refreshAuthor()
         verifyGitHubIfConnected()
+        verifyGitLabIfConnected()
+        verifyGerritIfConnected()
         refreshAppVersion()
     }
 
@@ -365,6 +379,11 @@ class SettingsViewModel(
             }
             return
         }
+        // For hosts that look like GitLab, verify via GitLabAccountManager
+        if (host.contains("gitlab", ignoreCase = true)) {
+            connectGitLab(host, token, s.username.ifBlank { null })
+            return
+        }
         try {
             val user = s.username.trim().ifBlank { "x-access-token" }
             credentialStore.saveHttpsToken(host, user, token)
@@ -385,10 +404,10 @@ class SettingsViewModel(
     fun clearHttpsToken() {
         val host = _state.value.host.trim()
         try {
-            if (host.equals("github.com", ignoreCase = true)) {
-                gitHubAccountManager.disconnect()
-            } else {
-                credentialStore.clearHttpsToken(host)
+            when {
+                host.equals("github.com", ignoreCase = true) -> gitHubAccountManager.disconnect()
+                host.contains("gitlab", ignoreCase = true) -> gitLabAccountManager.disconnect(host)
+                else -> credentialStore.clearHttpsToken(host)
             }
             _state.value = _state.value.copy(
                 username = "",
@@ -396,6 +415,8 @@ class SettingsViewModel(
                 hasStoredToken = false,
                 githubLogin = null,
                 githubName = null,
+                gitlabConnected = if (host.contains("gitlab", ignoreCase = true)) false else _state.value.gitlabConnected,
+                gitlabUsername = if (host.contains("gitlab", ignoreCase = true)) null else _state.value.gitlabUsername,
                 statusMessage = "Disconnected from $host",
                 isError = false
             )
@@ -550,5 +571,187 @@ class SettingsViewModel(
 
     fun consumeStatus() {
         _state.value = _state.value.copy(statusMessage = null, isError = false)
+    }
+
+    // ---- GitLab ----
+
+    private fun verifyGitLabIfConnected() {
+        // Check common hosts; primary is gitlab.com or whatever is stored
+        val candidates = listOf("gitlab.com") + listOfNotNull(
+            _state.value.gitlabHost.takeIf { it.isNotBlank() && it != "gitlab.com" }
+        )
+        for (h in candidates) {
+            if (!gitLabAccountManager.isConnected(h)) continue
+            viewModelScope.launch {
+                val (account, result) = withContext(Dispatchers.IO) {
+                    gitLabAccountManager.refreshAccount(h)
+                }
+                if (account != null) {
+                    _state.value = _state.value.copy(
+                        gitlabHost = account.host,
+                        gitlabUsername = account.username,
+                        gitlabConnected = true
+                    )
+                } else if (result is PrOpResult.AuthRequired) {
+                    _state.value = _state.value.copy(
+                        gitlabUsername = null,
+                        gitlabConnected = false
+                    )
+                }
+            }
+            break
+        }
+    }
+
+    fun connectGitLab(host: String, token: String, username: String? = null) {
+        val h = host.trim().ifBlank { "gitlab.com" }
+        val t = token.trim()
+        if (t.isBlank()) {
+            _state.value = _state.value.copy(
+                statusMessage = "GitLab token is required",
+                isError = true
+            )
+            return
+        }
+        _state.value = _state.value.copy(connecting = true, statusMessage = null)
+        viewModelScope.launch {
+            val (account, result) = withContext(Dispatchers.IO) {
+                gitLabAccountManager.connect(t, username, h)
+            }
+            when {
+                account != null -> {
+                    _state.value = _state.value.copy(
+                        connecting = false,
+                        gitlabHost = account.host,
+                        gitlabUsername = account.username,
+                        gitlabConnected = true,
+                        statusMessage = "GitLab connected as @${account.username} on ${account.host}",
+                        isError = false
+                    )
+                }
+                result is PrOpResult.AuthRequired -> {
+                    _state.value = _state.value.copy(
+                        connecting = false,
+                        gitlabConnected = false,
+                        statusMessage = "Invalid GitLab token for $h",
+                        isError = true
+                    )
+                }
+                result is PrOpResult.Error -> {
+                    _state.value = _state.value.copy(
+                        connecting = false,
+                        statusMessage = result.message,
+                        isError = true
+                    )
+                }
+                else -> {
+                    _state.value = _state.value.copy(
+                        connecting = false,
+                        statusMessage = "Could not verify GitLab token",
+                        isError = true
+                    )
+                }
+            }
+        }
+    }
+
+    fun disconnectGitLab() {
+        val h = _state.value.gitlabHost.ifBlank { "gitlab.com" }
+        gitLabAccountManager.disconnect(h)
+        _state.value = _state.value.copy(
+            gitlabUsername = null,
+            gitlabConnected = false,
+            statusMessage = "Disconnected from GitLab ($h)",
+            isError = false
+        )
+    }
+
+    // ---- Gerrit ----
+
+    private fun verifyGerritIfConnected() {
+        val h = _state.value.gerritHost
+        if (h.isBlank() || !gerritAccountManager.isConnected(h)) return
+        viewModelScope.launch {
+            val (account, result) = withContext(Dispatchers.IO) {
+                gerritAccountManager.refreshAccount(h)
+            }
+            if (account != null) {
+                _state.value = _state.value.copy(
+                    gerritHost = account.host,
+                    gerritUsername = account.username,
+                    gerritConnected = true
+                )
+            } else if (result is PrOpResult.AuthRequired) {
+                _state.value = _state.value.copy(
+                    gerritUsername = null,
+                    gerritConnected = false
+                )
+            }
+        }
+    }
+
+    fun connectGerrit(host: String, username: String, passwordOrToken: String) {
+        val h = host.trim()
+        val user = username.trim()
+        val pass = passwordOrToken.trim()
+        if (h.isBlank() || user.isBlank() || pass.isBlank()) {
+            _state.value = _state.value.copy(
+                statusMessage = "Gerrit host, username, and HTTP password/token are required",
+                isError = true
+            )
+            return
+        }
+        _state.value = _state.value.copy(connecting = true, statusMessage = null)
+        viewModelScope.launch {
+            val (account, result) = withContext(Dispatchers.IO) {
+                gerritAccountManager.connect(user, pass, h)
+            }
+            when {
+                account != null -> {
+                    _state.value = _state.value.copy(
+                        connecting = false,
+                        gerritHost = account.host,
+                        gerritUsername = account.username,
+                        gerritConnected = true,
+                        statusMessage = "Gerrit connected as ${account.username} on ${account.host}",
+                        isError = false
+                    )
+                }
+                result is PrOpResult.AuthRequired -> {
+                    _state.value = _state.value.copy(
+                        connecting = false,
+                        gerritConnected = false,
+                        statusMessage = "Invalid Gerrit credentials for $h",
+                        isError = true
+                    )
+                }
+                result is PrOpResult.Error -> {
+                    _state.value = _state.value.copy(
+                        connecting = false,
+                        statusMessage = result.message,
+                        isError = true
+                    )
+                }
+                else -> {
+                    _state.value = _state.value.copy(
+                        connecting = false,
+                        statusMessage = "Could not verify Gerrit credentials",
+                        isError = true
+                    )
+                }
+            }
+        }
+    }
+
+    fun disconnectGerrit() {
+        val h = _state.value.gerritHost
+        if (h.isNotBlank()) gerritAccountManager.disconnect(h)
+        _state.value = _state.value.copy(
+            gerritUsername = null,
+            gerritConnected = false,
+            gerritHost = "",
+            statusMessage = "Disconnected from Gerrit",
+            isError = false
+        )
     }
 }

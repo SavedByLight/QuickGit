@@ -239,6 +239,148 @@ fun SettingsScreen(
                 }
             }
 
+            // ---- GitLab ----
+            Spacer(Modifier.height(28.dp))
+            HorizontalDivider()
+            Spacer(Modifier.height(28.dp))
+
+            Text("GitLab account", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "Connect gitlab.com or a self-hosted instance. Token needs api + read_repository " +
+                    "(and write_repository for push). Enables MRs, issues, and remote file browsing.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (state.gitlabConnected && state.gitlabUsername != null) {
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.CheckCircle, null, tint = GitGreen, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        "Connected as @${state.gitlabUsername} on ${state.gitlabHost}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = GitGreen
+                    )
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+            var gitlabHost by remember { mutableStateOf(state.gitlabHost.ifBlank { "gitlab.com" }) }
+            var gitlabToken by remember { mutableStateOf("") }
+            OutlinedTextField(
+                value = gitlabHost,
+                onValueChange = { gitlabHost = it },
+                label = { Text("Host") },
+                placeholder = { Text("gitlab.com or gitlab.example.com") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = gitlabToken,
+                onValueChange = { gitlabToken = it },
+                label = { Text("Personal access token") },
+                visualTransformation = PasswordVisualTransformation(),
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
+            Spacer(Modifier.height(12.dp))
+            Row {
+                Button(
+                    onClick = { vm.connectGitLab(gitlabHost, gitlabToken) },
+                    enabled = gitlabToken.isNotBlank() && !state.connecting
+                ) {
+                    if (state.connecting) {
+                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Connecting…")
+                    } else {
+                        Text("Connect GitLab")
+                    }
+                }
+                Spacer(Modifier.width(8.dp))
+                OutlinedButton(
+                    onClick = { vm.disconnectGitLab() },
+                    enabled = state.gitlabConnected && !state.connecting
+                ) { Text("Disconnect") }
+            }
+
+            // ---- Gerrit ----
+            Spacer(Modifier.height(28.dp))
+            HorizontalDivider()
+            Spacer(Modifier.height(28.dp))
+
+            Text("Gerrit account", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "Connect any Gerrit host. Use your Gerrit username and an HTTP password " +
+                    "(Settings → HTTP Credentials) or access token. Enables browsing Changes and posting " +
+                    "comments / Code-Review votes (+2 / −1 etc.).",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (state.gerritConnected && state.gerritUsername != null) {
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.CheckCircle, null, tint = GitGreen, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        "Connected as ${state.gerritUsername} on ${state.gerritHost}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = GitGreen
+                    )
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+            var gerritHost by remember { mutableStateOf(state.gerritHost) }
+            var gerritUser by remember { mutableStateOf("") }
+            var gerritPass by remember { mutableStateOf("") }
+            OutlinedTextField(
+                value = gerritHost,
+                onValueChange = { gerritHost = it },
+                label = { Text("Host") },
+                placeholder = { Text("gerrit.example.com") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = gerritUser,
+                onValueChange = { gerritUser = it },
+                label = { Text("Username") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = gerritPass,
+                onValueChange = { gerritPass = it },
+                label = { Text("HTTP password / access token") },
+                visualTransformation = PasswordVisualTransformation(),
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
+            Spacer(Modifier.height(12.dp))
+            Row {
+                Button(
+                    onClick = { vm.connectGerrit(gerritHost, gerritUser, gerritPass) },
+                    enabled = gerritHost.isNotBlank() && gerritUser.isNotBlank() && gerritPass.isNotBlank() && !state.connecting
+                ) {
+                    if (state.connecting) {
+                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Connecting…")
+                    } else {
+                        Text("Connect Gerrit")
+                    }
+                }
+                Spacer(Modifier.width(8.dp))
+                OutlinedButton(
+                    onClick = { vm.disconnectGerrit() },
+                    enabled = state.gerritConnected && !state.connecting
+                ) { Text("Disconnect") }
+            }
+
             Spacer(Modifier.height(28.dp))
             HorizontalDivider()
             Spacer(Modifier.height(28.dp))
