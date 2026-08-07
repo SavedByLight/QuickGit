@@ -103,6 +103,22 @@ class FilesViewModel(private val repoManager: RepoManager) : ViewModel() {
         }
     }
 
+    fun deleteEntry(entry: com.quickgit.app.data.models.RepoEntry) {
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    repoManager.deleteWorkingPath(repoPath, entry.relativePath)
+                }
+                val kind = if (entry.isDirectory) "folder" else "file"
+                _state.value = _state.value.copy(statusMessage = "Deleted $kind ${entry.name}")
+                openDir(_state.value.currentDir)
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(error = e.message ?: "Could not delete")
+            }
+        }
+    }
+
+
     /**
      * Begins importing one or more files picked from local/device storage into the current
      * folder. Files that collide with an existing name are queued for a one-at-a-time overwrite

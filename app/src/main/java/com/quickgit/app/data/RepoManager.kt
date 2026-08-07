@@ -779,6 +779,60 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     }
 
     /**
+     * Upload the current branch HEAD to Gerrit for review.
+     * Pushes to `refs/for/<branch>` (optionally `%topic=…`).
+     */
+    fun pushForReview(path: String, topic: String? = null, targetBranch: String? = null): GitOpResult {
+        AppLog.i(TAG, "pushForReview: $path topic=$topic target=$targetBranch")
+        return try {
+            openGit(path).use { git ->
+                val repo = git.repository
+                val branch = targetBranch?.takeIf { it.isNotBlank() }
+                    ?: repo.branch
+                    ?: return GitOpResult.Error("Detached HEAD — check out a branch before pushing for review")
+                val remoteUrl = repo.config.getString("remote", "origin", "url") ?: ""
+                if (remoteUrl.isBlank()) {
+                    return GitOpResult.Error("No origin remote configured")
+                }
+                maybeUploadLfs(path, remoteUrl)?.let { AppLog.i(TAG, it) }
+
+                var dest = "refs/for/$branch"
+                val t = topic?.trim().orEmpty()
+                if (t.isNotEmpty()) {
+                    dest += "%topic=${t.replace(" ", "_")}"
+                }
+                val spec = RefSpec("HEAD:$dest")
+                AppLog.i(TAG, "pushForReview refspec=$spec")
+                val cmd = git.push()
+                    .setRemote("origin")
+                    .setRefSpecs(spec)
+                applyTransportConfig(cmd, remoteUrl)
+                val results = cmd.call()
+                val messages = results.flatMap { it.messages?.lines().orEmpty() }
+                messages.forEach { AppLog.i(TAG, "gerrit: $it") }
+                val rejected = results.flatMap { it.remoteUpdates }
+                    .filter { it.status.name.contains("REJECTED") || it.status.name.contains("NON_EXISTING") }
+                if (rejected.isNotEmpty()) {
+                    val detail = rejected.joinToString { "${it.remoteName}: ${it.status}" }
+                    AppLog.w(TAG, "pushForReview rejected: $detail")
+                    return GitOpResult.Error("Review push rejected ($detail)")
+                }
+                AppLog.i(TAG, "pushForReview succeeded -> $dest")
+                GitOpResult.Success
+            }
+        } catch (e: org.eclipse.jgit.api.errors.TransportException) {
+            AppLog.e(TAG, "pushForReview failed (transport)", e)
+            if (isAuthFailure(e)) {
+                val url = openGit(path).use { it.repository.config.getString("remote", "origin", "url") } ?: ""
+                GitOpResult.AuthRequired(url)
+            } else GitOpResult.Error(e.message ?: "Push for review failed", e)
+        } catch (e: Exception) {
+            AppLog.e(TAG, "pushForReview failed", e)
+            GitOpResult.Error(e.message ?: "Push for review failed", e)
+        }
+    }
+
+    /**
      * Force / force-with-lease push of the current branch via [RemoteRefUpdate].
      * Lease uses the remote-tracking ref (`refs/remotes/origin/<branch>`) as the expected
      * remote tip — same as `git push --force-with-lease`.
@@ -1314,6 +1368,29 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         if (dir.exists()) throw IllegalArgumentException("Already exists: $cleaned")
         if (!dir.mkdirs()) throw IllegalStateException("Could not create folder: $cleaned")
         return cleaned
+    }
+
+    /**
+     * Deletes a file or directory in the working tree (not under `.git`).
+     * Directories are removed recursively. Does not stage the deletion — stage
+     * via the Changes UI after delete if you want it in the next commit.
+     */
+    fun deleteWorkingPath(repoPath: String, relativePath: String) {
+        val cleaned = relativePath.trim().trimStart('/').replace("\", "/")
+        if (cleaned.isBlank()) throw IllegalArgumentException("Path is required")
+        if (cleaned.contains("..")) throw IllegalArgumentException("Invalid path")
+        if (cleaned == ".git" || cleaned.startsWith(".git/")) {
+            throw IllegalArgumentException("Refusing to delete .git")
+        }
+        val root = File(repoPath).canonicalFile
+        val target = File(repoPath, cleaned).canonicalFile
+        if (!target.path.startsWith(root.path)) {
+            throw IllegalArgumentException("Path escapes repository")
+        }
+        if (!target.exists()) throw IllegalArgumentException("Not found: $cleaned")
+        val ok = if (target.isDirectory) target.deleteRecursively() else target.delete()
+        if (!ok) throw IllegalStateException("Could not delete: $cleaned")
+        AppLog.i(TAG, "deleted working path: $cleaned")
     }
 
     /** Resolves a human-readable file name for a content Uri picked via the system file picker. */

@@ -148,6 +148,20 @@ class RepoDetailViewModel(private val repoManager: RepoManager) : ViewModel() {
         }
     }
 
+    /**
+     * Push current HEAD to Gerrit for code review (`refs/for/<branch>`).
+     * Optional [topic] becomes `refs/for/<branch>%topic=<topic>`.
+     */
+    fun pushForReview(topic: String? = null) {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(busy = true)
+            val result = withContext(Dispatchers.IO) {
+                repoManager.pushForReview(repoPath, topic = topic)
+            }
+            _state.value = _state.value.copy(busy = false, lastResult = result)
+        }
+    }
+
     fun pull() {
         viewModelScope.launch {
             _state.value = _state.value.copy(busy = true)

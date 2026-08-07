@@ -9,8 +9,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material3.*
@@ -24,7 +22,6 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.quickgit.app.data.models.RepoInfo
 import com.quickgit.app.ui.components.PullToRefreshBox
-import com.quickgit.app.ui.components.UserAvatar
 import com.quickgit.app.viewmodel.RepoListViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -34,14 +31,11 @@ fun RepoListScreen(
     onOpenRepo: (RepoInfo) -> Unit,
     onClone: () -> Unit,
     onBrowseGitHub: () -> Unit = {},
-    onOpenProfile: () -> Unit = {},
-    onSearchPeople: () -> Unit = {},
     onSettings: () -> Unit,
     onLogs: () -> Unit
 ) {
     val repos by vm.repos.collectAsState()
     val loading by vm.loading.collectAsState()
-    val account by vm.account.collectAsState()
     var repoToDelete by remember { mutableStateOf<RepoInfo?>(null) }
 
     // Re-scan after clone/settings: ViewModel stays alive on the back stack, so init{}
@@ -60,22 +54,10 @@ fun RepoListScreen(
             TopAppBar(
                 title = { Text("QuickGit") },
                 actions = {
-                    IconButton(onClick = onOpenProfile) {
-                        val avatarUrl = account?.avatarUrl
-                        if (avatarUrl.isNullOrBlank()) {
-                            Icon(Icons.Default.Person, "Profile")
-                        } else {
-                            UserAvatar(
-                                avatarUrl = avatarUrl,
-                                login = account?.login ?: "?",
-                                size = 28.dp
-                            )
-                        }
-                    }
-                    IconButton(onClick = onSearchPeople) { Icon(Icons.Default.Search, "Search people") }
                     IconButton(onClick = onBrowseGitHub) {
                         Icon(Icons.Default.CloudDownload, "Browse repos")
                     }
+                    IconButton(onClick = onLogs) { Icon(Icons.Default.Terminal, "Logs") }
                     IconButton(onClick = onSettings) { Icon(Icons.Default.Settings, "Settings") }
                 }
             )
