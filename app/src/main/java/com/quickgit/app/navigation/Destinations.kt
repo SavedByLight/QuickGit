@@ -17,6 +17,7 @@ object Dest {
     const val WORKFLOWS = "workflows/{repoPath}"
     const val RELEASES = "releases/{repoPath}"
     const val BROWSE_GITHUB = "browse_github"
+    const val GERRIT_CHANGES = "gerrit_changes"
     const val PROFILE_SELF = "profile"
     const val PROFILE_USER = "profile/{login}"
     const val USER_SEARCH = "user_search"

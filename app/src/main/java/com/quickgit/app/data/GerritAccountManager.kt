@@ -191,4 +191,56 @@ class GerritAccountManager(private val credentialStore: CredentialStore) {
         if (!isConnected(h)) return PrOpResult.AuthRequired(h)
         return api(h).voteCodeReview(changeId, value, message).toGerritOpResult(h)
     }
+
+    fun listChangeFiles(
+        changeId: String,
+        revision: String = "current",
+        h: String = host
+    ): Pair<List<com.quickgit.app.data.models.GerritFileChange>, PrOpResult> {
+        val hostKey = h.ifBlank { primaryHost() ?: host }
+        if (!isConnected(hostKey)) {
+            return emptyList<com.quickgit.app.data.models.GerritFileChange>() to PrOpResult.AuthRequired(hostKey)
+        }
+        // Prefer detail+CURRENT_FILES (single round-trip), fall back to /files endpoint
+        val withFiles = api(hostKey).getChangeWithFiles(changeId)
+        val fromDetail = withFiles.getOrNull()?.second
+        if (fromDetail != null && fromDetail.isNotEmpty()) {
+            return fromDetail to PrOpResult.Success
+        }
+        if (withFiles.isFailure) {
+            AppLog.w(TAG, "getChangeWithFiles failed, trying listFiles: ${withFiles.exceptionOrNull()?.message}")
+        }
+        val result = api(hostKey).listFiles(changeId, revision.ifBlank { "current" })
+        return (result.getOrNull() ?: emptyList()) to result.toGerritOpResult(hostKey)
+    }
+
+    /** Detail + files in one call when possible. */
+    fun getChangeWithFiles(
+        changeId: String,
+        h: String = host
+    ): Triple<GerritChange?, List<com.quickgit.app.data.models.GerritFileChange>, PrOpResult> {
+        val hostKey = h.ifBlank { primaryHost() ?: host }
+        if (!isConnected(hostKey)) {
+            return Triple(null, emptyList(), PrOpResult.AuthRequired(hostKey))
+        }
+        val result = api(hostKey).getChangeWithFiles(changeId)
+        val pair = result.getOrNull()
+        return if (pair != null) {
+            Triple(pair.first, pair.second, PrOpResult.Success)
+        } else {
+            Triple(null, emptyList(), result.toGerritOpResult(hostKey))
+        }
+    }
+
+    fun getChangeFileDiff(
+        changeId: String,
+        filePath: String,
+        revision: String = "current",
+        h: String = host
+    ): Pair<com.quickgit.app.data.models.FileDiff?, PrOpResult> {
+        val hostKey = h.ifBlank { primaryHost() ?: host }
+        if (!isConnected(hostKey)) return null to PrOpResult.AuthRequired(hostKey)
+        val result = api(hostKey).getFileDiff(changeId, filePath, revision.ifBlank { "current" })
+        return result.getOrNull() to result.toGerritOpResult(hostKey)
+    }
 }

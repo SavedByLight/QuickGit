@@ -67,3 +67,18 @@ data class GerritProject(
     val cloneUrl: String,
     val sshUrl: String
 )
+
+/** A file touched by a Gerrit change revision. */
+data class GerritFileChange(
+    val path: String,
+    val status: String,          // A | D | M | R | C | W | …
+    val linesInserted: Int = 0,
+    val linesDeleted: Int = 0,
+    val sizeDelta: Long = 0,
+    val binary: Boolean = false,
+    val oldPath: String? = null   // for renames
+) {
+    val isAdded get() = status.equals("A", ignoreCase = true)
+    val isDeleted get() = status.equals("D", ignoreCase = true)
+    val isModified get() = status.equals("M", ignoreCase = true) || status.equals("R", ignoreCase = true)
+}

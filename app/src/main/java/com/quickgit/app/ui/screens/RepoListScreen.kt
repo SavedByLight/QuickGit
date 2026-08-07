@@ -1,5 +1,10 @@
 package com.quickgit.app.ui.screens
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -7,10 +12,12 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.RateReview
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material3.*
@@ -34,6 +41,7 @@ fun RepoListScreen(
     onOpenRepo: (RepoInfo) -> Unit,
     onClone: () -> Unit,
     onBrowseGitHub: () -> Unit = {},
+    onGerritChanges: () -> Unit = {},
     onOpenProfile: () -> Unit = {},
     onSearchPeople: () -> Unit = {},
     onSettings: () -> Unit,
@@ -43,6 +51,8 @@ fun RepoListScreen(
     val loading by vm.loading.collectAsState()
     val account by vm.account.collectAsState()
     var repoToDelete by remember { mutableStateOf<RepoInfo?>(null) }
+    var accountMenuExpanded by remember { mutableStateOf(false) }
+    var fabExpanded by remember { mutableStateOf(false) }
 
     // Re-scan after clone/settings: ViewModel stays alive on the back stack, so init{}
     // only runs once. Refresh whenever this screen is shown again.
@@ -60,32 +70,108 @@ fun RepoListScreen(
             TopAppBar(
                 title = { Text("QuickGit") },
                 actions = {
-                    IconButton(onClick = onOpenProfile) {
-                        val avatarUrl = account?.avatarUrl
-                        if (avatarUrl.isNullOrBlank()) {
-                            Icon(Icons.Default.Person, "Profile")
-                        } else {
-                            UserAvatar(
-                                avatarUrl = avatarUrl,
-                                login = account?.login ?: "?",
-                                size = 28.dp
+                    // Profile + Search people in one menu
+                    Box {
+                        IconButton(onClick = { accountMenuExpanded = true }) {
+                            val avatarUrl = account?.avatarUrl
+                            if (avatarUrl.isNullOrBlank()) {
+                                Icon(Icons.Default.Person, contentDescription = "Account")
+                            } else {
+                                UserAvatar(
+                                    avatarUrl = avatarUrl,
+                                    login = account?.login ?: "?",
+                                    size = 28.dp
+                                )
+                            }
+                        }
+                        DropdownMenu(
+                            expanded = accountMenuExpanded,
+                            onDismissRequest = { accountMenuExpanded = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        if (account?.login.isNullOrBlank()) "Profile"
+                                        else "Profile (${account?.login})"
+                                    )
+                                },
+                                onClick = {
+                                    accountMenuExpanded = false
+                                    onOpenProfile()
+                                },
+                                leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Search people") },
+                                onClick = {
+                                    accountMenuExpanded = false
+                                    onSearchPeople()
+                                },
+                                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) }
                             )
                         }
                     }
-                    IconButton(onClick = onSearchPeople) { Icon(Icons.Default.Search, "Search people") }
-                    IconButton(onClick = onBrowseGitHub) {
-                        Icon(Icons.Default.CloudDownload, "Browse repos")
+                    IconButton(onClick = onGerritChanges) {
+                        Icon(Icons.Default.RateReview, contentDescription = "Gerrit changes")
                     }
-                    IconButton(onClick = onLogs) { Icon(Icons.Default.Terminal, "Logs") }
-                    IconButton(onClick = onSettings) { Icon(Icons.Default.Settings, "Settings") }
+                    IconButton(onClick = onLogs) {
+                        Icon(Icons.Default.Terminal, contentDescription = "Logs")
+                    }
+                    IconButton(onClick = onSettings) {
+                        Icon(Icons.Default.Settings, contentDescription = "Settings")
+                    }
                 }
             )
         },
         floatingActionButton = {
-            ExtendedFloatingActionButton(onClick = onClone, icon = { Icon(Icons.Default.Add, null) }, text = { Text("Clone") })
+            Column(horizontalAlignment = Alignment.End) {
+                AnimatedVisibility(
+                    visible = fabExpanded,
+                    enter = fadeIn() + scaleIn(),
+                    exit = fadeOut() + scaleOut()
+                ) {
+                    Column(horizontalAlignment = Alignment.End) {
+                        FabMenuItem(
+                            label = "Browse repos",
+                            icon = Icons.Default.CloudDownload,
+                            onClick = {
+                                fabExpanded = false
+                                onBrowseGitHub()
+                            }
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        FabMenuItem(
+                            label = "Clone URL",
+                            icon = Icons.Default.Add,
+                            onClick = {
+                                fabExpanded = false
+                                onClone()
+                            }
+                        )
+                        Spacer(Modifier.height(12.dp))
+                    }
+                }
+                FloatingActionButton(
+                    onClick = { fabExpanded = !fabExpanded }
+                ) {
+                    Icon(
+                        if (fabExpanded) Icons.Default.Close else Icons.Default.Add,
+                        contentDescription = if (fabExpanded) "Close" else "Add"
+                    )
+                }
+            }
         }
     ) { padding ->
         Box(Modifier.padding(padding).fillMaxSize()) {
+            // Dim overlay when FAB menu is open so taps dismiss it
+            if (fabExpanded) {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .clickable { fabExpanded = false }
+                )
+            }
+
             PullToRefreshBox(
                 isRefreshing = loading,
                 onRefresh = vm::refresh,
@@ -101,14 +187,10 @@ fun RepoListScreen(
                         Text("No repositories yet", style = MaterialTheme.typography.titleMedium)
                         Spacer(Modifier.height(8.dp))
                         Text(
-                            "Tap Clone for a URL, or the download icon to browse GitHub, GitLab, or Gerrit.",
+                            "Tap + to clone a URL or browse GitHub, GitLab, or Gerrit.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                        Spacer(Modifier.height(16.dp))
-                        OutlinedButton(onClick = onBrowseGitHub) {
-                            Text("Browse repos")
-                        }
                     }
                 } else {
                     LazyColumn(Modifier.fillMaxSize()) {
@@ -116,16 +198,9 @@ fun RepoListScreen(
                             RepoRow(repo, onClick = { onOpenRepo(repo) }, onDelete = { repoToDelete = repo })
                             HorizontalDivider()
                         }
-                        item { Spacer(Modifier.height(80.dp)) }
+                        item { Spacer(Modifier.height(96.dp)) }
                     }
                 }
-            }
-
-            FilledTonalIconButton(
-                onClick = onLogs,
-                modifier = Modifier.align(Alignment.BottomStart).padding(16.dp)
-            ) {
-                Icon(Icons.Default.Terminal, "Logs")
             }
         }
     }
@@ -140,6 +215,33 @@ fun RepoListScreen(
             },
             dismissButton = { TextButton(onClick = { repoToDelete = null }) { Text("Cancel") } }
         )
+    }
+}
+
+@Composable
+private fun FabMenuItem(
+    label: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    onClick: () -> Unit
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Surface(
+            shape = MaterialTheme.shapes.small,
+            tonalElevation = 2.dp,
+            shadowElevation = 2.dp
+        ) {
+            Text(
+                label,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                style = MaterialTheme.typography.labelLarge
+            )
+        }
+        SmallFloatingActionButton(onClick = onClick) {
+            Icon(icon, contentDescription = label)
+        }
     }
 }
 
@@ -169,6 +271,6 @@ private fun RepoRow(repo: RepoInfo, onClick: () -> Unit, onDelete: () -> Unit) {
                 maxLines = 1
             )
         }
-        IconButton(onClick = onDelete) { Icon(Icons.Default.Delete, "Remove") }
+        IconButton(onClick = onDelete) { Icon(Icons.Default.Delete, contentDescription = "Remove") }
     }
 }

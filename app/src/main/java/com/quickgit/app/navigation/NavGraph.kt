@@ -27,6 +27,7 @@ fun QuickGitNavGraph() {
                 onOpenRepo = { repo: RepoInfo -> navController.navigate(Dest.repoDetail(repo.localPath)) },
                 onClone = { navController.navigate(Dest.CLONE) },
                 onBrowseGitHub = { navController.navigate(Dest.BROWSE_GITHUB) },
+                onGerritChanges = { navController.navigate(Dest.GERRIT_CHANGES) },
                 onOpenProfile = { navController.navigate(Dest.profile()) },
                 onSearchPeople = { navController.navigate(Dest.USER_SEARCH) },
                 onSettings = { navController.navigate(Dest.SETTINGS) },
@@ -157,6 +158,15 @@ fun QuickGitNavGraph() {
                 onCloned = {
                     navController.popBackStack(Dest.REPO_LIST, inclusive = false)
                 },
+                onNeedsAuth = { navController.navigate(Dest.SETTINGS) }
+            )
+        }
+
+        composable(Dest.GERRIT_CHANGES) {
+            val vm: GerritChangesViewModel = viewModel(factory = factory)
+            GerritChangesScreen(
+                vm = vm,
+                onBack = { navController.popBackStack() },
                 onNeedsAuth = { navController.navigate(Dest.SETTINGS) }
             )
         }
