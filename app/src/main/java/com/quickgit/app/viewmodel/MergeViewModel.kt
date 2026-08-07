@@ -65,11 +65,13 @@ class MergeViewModel(private val repoManager: RepoManager) : ViewModel() {
         if (content != null) resolveWithContent(filePath, content)
     }
 
-    fun finishMerge(message: String, authorName: String, authorEmail: String) {
+    fun finishMerge(message: String) {
         viewModelScope.launch {
             _state.value = _state.value.copy(busy = true)
+            val name = repoManager.getCommitAuthorName()
+            val email = repoManager.getCommitAuthorEmail()
             val result = withContext(Dispatchers.IO) {
-                repoManager.continueMergeAsCommit(repoPath, message, authorName, authorEmail)
+                repoManager.continueMergeAsCommit(repoPath, message, name, email)
             }
             _state.value = _state.value.copy(busy = false, lastResult = result)
         }

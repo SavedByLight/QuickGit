@@ -11,19 +11,61 @@ class ViewModelFactory(private val app: Application) : ViewModelProvider.Factory
 
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>, extras: CreationExtras): T {
-        return when (modelClass) {
-            RepoListViewModel::class.java -> RepoListViewModel(gitApp.repoManager) as T
-            CloneViewModel::class.java -> CloneViewModel(gitApp.repoManager) as T
-            RepoDetailViewModel::class.java -> RepoDetailViewModel(gitApp.repoManager) as T
-            HistoryViewModel::class.java -> HistoryViewModel(gitApp.repoManager) as T
-            BranchesViewModel::class.java -> BranchesViewModel(gitApp.repoManager) as T
-            DiffViewModel::class.java -> DiffViewModel(gitApp.repoManager) as T
-            MergeViewModel::class.java -> MergeViewModel(gitApp.repoManager) as T
-            SettingsViewModel::class.java -> SettingsViewModel(gitApp.credentialStore) as T
-            FilesViewModel::class.java -> FilesViewModel(gitApp.repoManager) as T
-            EditorViewModel::class.java -> EditorViewModel(gitApp.repoManager) as T
-            LogsViewModel::class.java -> LogsViewModel() as T
+        return create(modelClass)
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    override fun <T : ViewModel> create(modelClass: Class<T>): T {
+        val vm: ViewModel = when {
+            modelClass.isAssignableFrom(RepoListViewModel::class.java) ->
+                RepoListViewModel(gitApp.repoManager, gitApp.gitHubAccountManager)
+            modelClass.isAssignableFrom(CloneViewModel::class.java) ->
+                CloneViewModel(gitApp.repoManager)
+            modelClass.isAssignableFrom(RepoDetailViewModel::class.java) ->
+                RepoDetailViewModel(gitApp.repoManager)
+            modelClass.isAssignableFrom(HistoryViewModel::class.java) ->
+                HistoryViewModel(gitApp.repoManager)
+            modelClass.isAssignableFrom(BranchesViewModel::class.java) ->
+                BranchesViewModel(gitApp.repoManager)
+            modelClass.isAssignableFrom(DiffViewModel::class.java) ->
+                DiffViewModel(gitApp.repoManager)
+            modelClass.isAssignableFrom(MergeViewModel::class.java) ->
+                MergeViewModel(gitApp.repoManager)
+            modelClass.isAssignableFrom(SettingsViewModel::class.java) ->
+                SettingsViewModel(
+                    gitApp.credentialStore,
+                    gitApp.repoManager,
+                    gitApp.gitHubAccountManager,
+                    gitApp.gitLabAccountManager,
+                    gitApp.gerritAccountManager,
+                    gitApp.appUpdateManager
+                )
+            modelClass.isAssignableFrom(FilesViewModel::class.java) ->
+                FilesViewModel(gitApp.repoManager)
+            modelClass.isAssignableFrom(EditorViewModel::class.java) ->
+                EditorViewModel(gitApp.repoManager)
+            modelClass.isAssignableFrom(LogsViewModel::class.java) ->
+                LogsViewModel()
+            modelClass.isAssignableFrom(PullRequestsViewModel::class.java) ->
+                PullRequestsViewModel(gitApp.repoManager, gitApp.pullRequestManager)
+            modelClass.isAssignableFrom(IssuesViewModel::class.java) ->
+                IssuesViewModel(gitApp.issueManager)
+            modelClass.isAssignableFrom(WorkflowsViewModel::class.java) ->
+                WorkflowsViewModel(gitApp.workflowManager)
+            modelClass.isAssignableFrom(ReleasesViewModel::class.java) ->
+                ReleasesViewModel(gitApp.releaseManager)
+            modelClass.isAssignableFrom(BrowseGitHubViewModel::class.java) ->
+                BrowseGitHubViewModel(gitApp.gitHubAccountManager, gitApp.repoManager)
+            modelClass.isAssignableFrom(ProfileViewModel::class.java) ->
+                ProfileViewModel(gitApp.gitHubAccountManager)
+            modelClass.isAssignableFrom(UserSearchViewModel::class.java) ->
+                UserSearchViewModel(gitApp.gitHubAccountManager)
+            modelClass.isAssignableFrom(RemoteBrowseViewModel::class.java) ->
+                RemoteBrowseViewModel(gitApp.gitHubAccountManager)
+            modelClass.isAssignableFrom(RemoteFileViewModel::class.java) ->
+                RemoteFileViewModel(gitApp.gitHubAccountManager)
             else -> throw IllegalArgumentException("Unknown ViewModel: $modelClass")
         }
+        return vm as T
     }
 }

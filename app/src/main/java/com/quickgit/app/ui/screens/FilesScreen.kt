@@ -18,7 +18,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Folder
-import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.UploadFile
@@ -109,9 +108,6 @@ fun FilesScreen(
                     IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, contentDescription = "Back") }
                 },
                 actions = {
-                    if (state.currentDir.isNotBlank()) {
-                        IconButton(onClick = vm::goUp) { Icon(Icons.Default.FolderOpen, contentDescription = "Up") }
-                    }
                     IconButton(onClick = { vm.openDir(state.currentDir) }) {
                         Icon(Icons.Default.Refresh, contentDescription = "Refresh")
                     }
@@ -174,18 +170,55 @@ fun FilesScreen(
                 .fillMaxSize()
         ) {
             when {
-                state.loading && state.entries.isEmpty() -> {
+                state.loading && state.entries.isEmpty() && state.currentDir.isBlank() -> {
                     CircularProgressIndicator(Modifier.align(Alignment.Center))
-                }
-                state.entries.isEmpty() -> {
-                    Text(
-                        "No files here",
-                        modifier = Modifier.align(Alignment.Center),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
                 }
                 else -> {
                     LazyColumn(Modifier.fillMaxSize()) {
+                        // Parent folder — shown above files/folders when not at repo root
+                        if (state.currentDir.isNotBlank()) {
+                            item(key = "__parent__") {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable(onClick = vm::goUp)
+                                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        "…",
+                                        style = MaterialTheme.typography.titleLarge,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.size(24.dp)
+                                    )
+                                    Spacer(Modifier.size(12.dp))
+                                    Column(Modifier.weight(1f)) {
+                                        Text("…", fontWeight = FontWeight.Medium)
+                                        Text(
+                                            "Parent folder",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                                HorizontalDivider()
+                            }
+                        }
+                        if (!state.loading && state.entries.isEmpty()) {
+                            item(key = "__empty__") {
+                                Box(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .padding(32.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        "No files here",
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
                         items(state.entries, key = { it.relativePath }) { entry ->
                             val isDir = entry.isDirectory
                             Row(
@@ -217,6 +250,9 @@ fun FilesScreen(
                             }
                             HorizontalDivider()
                         }
+                    }
+                    if (state.loading && state.entries.isEmpty() && state.currentDir.isNotBlank()) {
+                        CircularProgressIndicator(Modifier.align(Alignment.Center))
                     }
                 }
             }

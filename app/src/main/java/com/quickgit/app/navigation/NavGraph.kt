@@ -26,8 +26,106 @@ fun QuickGitNavGraph() {
                 vm = vm,
                 onOpenRepo = { repo: RepoInfo -> navController.navigate(Dest.repoDetail(repo.localPath)) },
                 onClone = { navController.navigate(Dest.CLONE) },
+                onBrowseGitHub = { navController.navigate(Dest.BROWSE_GITHUB) },
+                onOpenProfile = { navController.navigate(Dest.profile()) },
+                onSearchPeople = { navController.navigate(Dest.USER_SEARCH) },
                 onSettings = { navController.navigate(Dest.SETTINGS) },
                 onLogs = { navController.navigate(Dest.LOGS) }
+            )
+        }
+
+        composable(Dest.USER_SEARCH) {
+            val vm: UserSearchViewModel = viewModel(factory = factory)
+            UserSearchScreen(
+                vm = vm,
+                onBack = { navController.popBackStack() },
+                onOpenUser = { login -> navController.navigate(Dest.profile(login)) },
+                onNeedsAuth = { navController.navigate(Dest.SETTINGS) }
+            )
+        }
+
+        composable(Dest.PROFILE_SELF) {
+            val vm: ProfileViewModel = viewModel(factory = factory)
+            ProfileScreen(
+                vm = vm,
+                login = null,
+                onBack = { navController.popBackStack() },
+                onOpenUser = { login -> navController.navigate(Dest.profile(login)) },
+                onCloneRepo = { navController.navigate(Dest.CLONE) },
+                onOpenRepo = { repo ->
+                    navController.navigate(Dest.remoteBrowse(repo.ownerLogin, repo.name, repo.defaultBranch))
+                },
+                onNeedsAuth = { navController.navigate(Dest.SETTINGS) }
+            )
+        }
+
+        composable(
+            Dest.PROFILE_USER,
+            arguments = listOf(navArgument("login") { type = NavType.StringType })
+        ) { backStackEntry ->
+            val login = Dest.decode(backStackEntry.arguments!!.getString("login")!!)
+            val vm: ProfileViewModel = viewModel(factory = factory)
+            ProfileScreen(
+                vm = vm,
+                login = login,
+                onBack = { navController.popBackStack() },
+                onOpenUser = { other -> navController.navigate(Dest.profile(other)) },
+                onCloneRepo = { navController.navigate(Dest.CLONE) },
+                onOpenRepo = { repo ->
+                    navController.navigate(Dest.remoteBrowse(repo.ownerLogin, repo.name, repo.defaultBranch))
+                },
+                onNeedsAuth = { navController.navigate(Dest.SETTINGS) }
+            )
+        }
+
+        composable(
+            Dest.REMOTE_BROWSE,
+            arguments = listOf(
+                navArgument("owner") { type = NavType.StringType },
+                navArgument("repo") { type = NavType.StringType },
+                navArgument("ref") { type = NavType.StringType },
+                navArgument("path") { type = NavType.StringType }
+            )
+        ) { backStackEntry ->
+            val owner = Dest.decode(backStackEntry.arguments!!.getString("owner")!!)
+            val repo = Dest.decode(backStackEntry.arguments!!.getString("repo")!!)
+            val ref = Dest.decode(backStackEntry.arguments!!.getString("ref")!!)
+            val path = Dest.decodePath(backStackEntry.arguments!!.getString("path")!!)
+            val vm: RemoteBrowseViewModel = viewModel(factory = factory)
+            RemoteBrowseScreen(
+                owner = owner,
+                repo = repo,
+                ref = ref,
+                path = path,
+                vm = vm,
+                onBack = { navController.popBackStack() },
+                onOpenFile = { filePath -> navController.navigate(Dest.remoteFile(owner, repo, ref, filePath)) },
+                onNeedsAuth = { navController.navigate(Dest.SETTINGS) }
+            )
+        }
+
+        composable(
+            Dest.REMOTE_FILE,
+            arguments = listOf(
+                navArgument("owner") { type = NavType.StringType },
+                navArgument("repo") { type = NavType.StringType },
+                navArgument("ref") { type = NavType.StringType },
+                navArgument("path") { type = NavType.StringType }
+            )
+        ) { backStackEntry ->
+            val owner = Dest.decode(backStackEntry.arguments!!.getString("owner")!!)
+            val repo = Dest.decode(backStackEntry.arguments!!.getString("repo")!!)
+            val ref = Dest.decode(backStackEntry.arguments!!.getString("ref")!!)
+            val path = Dest.decodePath(backStackEntry.arguments!!.getString("path")!!)
+            val vm: RemoteFileViewModel = viewModel(factory = factory)
+            RemoteFileScreen(
+                owner = owner,
+                repo = repo,
+                ref = ref,
+                path = path,
+                vm = vm,
+                onBack = { navController.popBackStack() },
+                onNeedsAuth = { navController.navigate(Dest.SETTINGS) }
             )
         }
 
@@ -42,7 +140,20 @@ fun QuickGitNavGraph() {
                 vm = vm,
                 onBack = { navController.popBackStack() },
                 onCloned = { navController.popBackStack() },
-                onNeedsAuth = { url -> navController.navigate(Dest.SETTINGS) }
+                onNeedsAuth = { url -> navController.navigate(Dest.SETTINGS) },
+                onBrowseGitHub = { navController.navigate(Dest.BROWSE_GITHUB) }
+            )
+        }
+
+        composable(Dest.BROWSE_GITHUB) {
+            val vm: BrowseGitHubViewModel = viewModel(factory = factory)
+            BrowseGitHubScreen(
+                vm = vm,
+                onBack = { navController.popBackStack() },
+                onCloned = {
+                    navController.popBackStack(Dest.REPO_LIST, inclusive = false)
+                },
+                onNeedsAuth = { navController.navigate(Dest.SETTINGS) }
             )
         }
 
@@ -66,7 +177,67 @@ fun QuickGitNavGraph() {
                 onOpenHistory = { navController.navigate(Dest.history(repoPath)) },
                 onOpenBranches = { navController.navigate(Dest.branches(repoPath)) },
                 onOpenFiles = { navController.navigate(Dest.files(repoPath)) },
+                onOpenPullRequests = { navController.navigate(Dest.pullRequests(repoPath)) },
+                onOpenIssues = { navController.navigate(Dest.issues(repoPath)) },
+                onOpenWorkflows = { navController.navigate(Dest.workflows(repoPath)) },
+                onOpenReleases = { navController.navigate(Dest.releases(repoPath)) },
                 onConflicts = { navController.navigate(Dest.merge(repoPath)) },
+                onNeedsAuth = { navController.navigate(Dest.SETTINGS) }
+            )
+        }
+
+        composable(
+            Dest.ISSUES,
+            arguments = listOf(navArgument("repoPath") { type = NavType.StringType })
+        ) { backStackEntry ->
+            val repoPath = Dest.decode(backStackEntry.arguments!!.getString("repoPath")!!)
+            val vm: IssuesViewModel = viewModel(factory = factory)
+            androidx.compose.runtime.LaunchedEffect(repoPath) { vm.init(repoPath) }
+            IssuesScreen(
+                vm = vm,
+                onBack = { navController.popBackStack() },
+                onNeedsAuth = { navController.navigate(Dest.SETTINGS) }
+            )
+        }
+
+        composable(
+            Dest.WORKFLOWS,
+            arguments = listOf(navArgument("repoPath") { type = NavType.StringType })
+        ) { backStackEntry ->
+            val repoPath = Dest.decode(backStackEntry.arguments!!.getString("repoPath")!!)
+            val vm: WorkflowsViewModel = viewModel(factory = factory)
+            androidx.compose.runtime.LaunchedEffect(repoPath) { vm.init(repoPath) }
+            WorkflowsScreen(
+                vm = vm,
+                onBack = { navController.popBackStack() },
+                onNeedsAuth = { navController.navigate(Dest.SETTINGS) }
+            )
+        }
+
+        composable(
+            Dest.RELEASES,
+            arguments = listOf(navArgument("repoPath") { type = NavType.StringType })
+        ) { backStackEntry ->
+            val repoPath = Dest.decode(backStackEntry.arguments!!.getString("repoPath")!!)
+            val vm: ReleasesViewModel = viewModel(factory = factory)
+            androidx.compose.runtime.LaunchedEffect(repoPath) { vm.init(repoPath) }
+            ReleasesScreen(
+                vm = vm,
+                onBack = { navController.popBackStack() },
+                onNeedsAuth = { navController.navigate(Dest.SETTINGS) }
+            )
+        }
+
+        composable(
+            Dest.PULL_REQUESTS,
+            arguments = listOf(navArgument("repoPath") { type = NavType.StringType })
+        ) { backStackEntry ->
+            val repoPath = Dest.decode(backStackEntry.arguments!!.getString("repoPath")!!)
+            val vm: PullRequestsViewModel = viewModel(factory = factory)
+            androidx.compose.runtime.LaunchedEffect(repoPath) { vm.init(repoPath) }
+            PullRequestsScreen(
+                vm = vm,
+                onBack = { navController.popBackStack() },
                 onNeedsAuth = { navController.navigate(Dest.SETTINGS) }
             )
         }
