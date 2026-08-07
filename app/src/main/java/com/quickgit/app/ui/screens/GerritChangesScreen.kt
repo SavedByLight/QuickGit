@@ -387,9 +387,8 @@ private fun GerritChangeDetailContent(
             if (files.isEmpty() && !loading) {
                 item {
                     Text(
-                        "No file changes returned for this revision.
-" +
-                            "If this is unexpected, pull to refresh from the list or check your Gerrit permissions.",
+                        "No file changes returned for this revision. " +
+                            "If this is unexpected, go back and reopen the change, or check your Gerrit permissions.",
                         modifier = Modifier.padding(16.dp),
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         style = MaterialTheme.typography.bodyMedium
