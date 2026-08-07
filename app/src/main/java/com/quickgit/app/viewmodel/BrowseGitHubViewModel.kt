@@ -3,13 +3,18 @@ package com.quickgit.app.viewmodel
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.quickgit.app.data.GerritAccountManager
 import com.quickgit.app.data.GitHubAccountManager
+import com.quickgit.app.data.GitLabAccountManager
 import com.quickgit.app.data.RepoManager
+import com.quickgit.app.data.models.GerritProject
 import com.quickgit.app.data.models.GitHubRemoteRepo
+import com.quickgit.app.data.models.GitLabProject
 import com.quickgit.app.data.models.GitOpResult
 import com.quickgit.app.data.models.PrOpResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -19,19 +24,25 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 data class BrowseGitHubUiState(
-    val connected: Boolean = false,
-    val accountLogin: String? = null,
-    val accountName: String? = null,
+    val githubConnected: Boolean = false,
+    val gitlabConnected: Boolean = false,
+    val gerritConnected: Boolean = false,
+    val githubLogin: String? = null,
+    val gitlabUsername: String? = null,
+    val gerritUsername: String? = null,
+    val gerritHost: String? = null,
     val loading: Boolean = false,
     val cloning: Boolean = false,
     val creating: Boolean = false,
     val progressText: String = "",
-    val repos: List<GitHubRemoteRepo> = emptyList(),
+    val githubRepos: List<GitHubRemoteRepo> = emptyList(),
+    val gitlabProjects: List<GitLabProject> = emptyList(),
+    val gerritProjects: List<GerritProject> = emptyList(),
     val query: String = "",
     val errorMessage: String? = null,
     val statusMessage: String? = null,
     val authRequired: Boolean = false,
-    val cloningRepoId: Long? = null,
+    val cloningKey: String? = null,
     val cloneResult: GitOpResult? = null,
     val destinationPath: String? = null,
     val destinationError: String? = null
@@ -39,6 +50,8 @@ data class BrowseGitHubUiState(
 
 class BrowseGitHubViewModel(
     private val accountManager: GitHubAccountManager,
+    private val gitLabAccountManager: GitLabAccountManager,
+    private val gerritAccountManager: GerritAccountManager,
     private val repoManager: RepoManager
 ) : ViewModel() {
 
@@ -46,7 +59,6 @@ class BrowseGitHubViewModel(
     val state: StateFlow<BrowseGitHubUiState> = _state.asStateFlow()
 
     private var searchJob: Job? = null
-    private var pickedDestination: File? = null
     private var pendingCloneUrl: String? = null
     private var pendingCloneName: String? = null
 
@@ -56,112 +68,215 @@ class BrowseGitHubViewModel(
 
     fun refresh() {
         viewModelScope.launch {
-            val connected = accountManager.isConnected()
-            if (!connected) {
-                _state.value = BrowseGitHubUiState(connected = false, authRequired = true)
+            val ghConnected = accountManager.isConnected()
+            val glHost = gitLabAccountManager.host
+            val glConnected = gitLabAccountManager.isConnected(glHost) ||
+                listOf("gitlab.com").any { gitLabAccountManager.isConnected(it) }
+            val gerritHost = gerritAccountManager.primaryHost()
+                ?: gerritAccountManager.host.takeIf { gerritAccountManager.isConnected(it) }
+            val gerritConnected = gerritHost != null && gerritAccountManager.isConnected(gerritHost)
+
+            if (!ghConnected && !glConnected && !gerritConnected) {
+                _state.value = BrowseGitHubUiState(authRequired = true)
                 return@launch
             }
-            _state.value = _state.value.copy(loading = true, errorMessage = null, authRequired = false)
-            val (account, accountResult) = withContext(Dispatchers.IO) { accountManager.refreshAccount() }
-            if (accountResult is PrOpResult.AuthRequired || account == null) {
-                _state.value = _state.value.copy(
-                    loading = false,
-                    connected = false,
-                    authRequired = true,
-                    errorMessage = if (accountResult is PrOpResult.Error) accountResult.message
-                    else "Sign in with a GitHub token in Settings"
-                )
-                return@launch
-            }
-            val (repos, listResult) = withContext(Dispatchers.IO) {
-                if (_state.value.query.isBlank()) accountManager.listRepos()
-                else accountManager.searchRepos(_state.value.query)
-            }
-            _state.value = applyListResult(
-                _state.value.copy(
-                    loading = false,
-                    connected = true,
-                    accountLogin = account.login,
-                    accountName = account.name,
-                    repos = repos
-                ),
-                listResult
+
+            _state.value = _state.value.copy(
+                loading = true,
+                errorMessage = null,
+                authRequired = false,
+                githubConnected = ghConnected,
+                gitlabConnected = glConnected,
+                gerritConnected = gerritConnected,
+                gerritHost = gerritHost
             )
+
+            if (ghConnected) {
+                val (account, _) = withContext(Dispatchers.IO) { accountManager.refreshAccount() }
+                if (account != null) {
+                    _state.value = _state.value.copy(
+                        githubLogin = account.login,
+                        githubConnected = true
+                    )
+                }
+            }
+            if (glConnected) {
+                val host = if (gitLabAccountManager.isConnected(glHost)) glHost else "gitlab.com"
+                val (account, _) = withContext(Dispatchers.IO) { gitLabAccountManager.refreshAccount(host) }
+                if (account != null) {
+                    _state.value = _state.value.copy(
+                        gitlabUsername = account.username,
+                        gitlabConnected = true
+                    )
+                }
+            }
+            if (gerritConnected && gerritHost != null) {
+                val (account, _) = withContext(Dispatchers.IO) { gerritAccountManager.refreshAccount(gerritHost) }
+                if (account != null) {
+                    _state.value = _state.value.copy(
+                        gerritUsername = account.username,
+                        gerritHost = account.host,
+                        gerritConnected = true
+                    )
+                }
+            }
+
+            loadAll()
         }
     }
 
-    fun setQuery(q: String) {
-        _state.value = _state.value.copy(query = q)
+    fun onQueryChange(query: String) {
+        _state.value = _state.value.copy(query = query)
         searchJob?.cancel()
         searchJob = viewModelScope.launch {
             delay(350)
-            loadRepos()
+            loadAll()
         }
     }
 
-    private fun loadRepos() {
-        if (!accountManager.isConnected()) return
+    private fun loadAll() {
         viewModelScope.launch {
             _state.value = _state.value.copy(loading = true, errorMessage = null)
-            val (repos, result) = withContext(Dispatchers.IO) {
-                if (_state.value.query.isBlank()) accountManager.listRepos()
-                else accountManager.searchRepos(_state.value.query)
+            val q = _state.value.query.trim()
+            val errors = mutableListOf<String>()
+
+            val ghDeferred = async(Dispatchers.IO) {
+                if (!_state.value.githubConnected) return@async
+                val (repos, result) = if (q.isBlank()) accountManager.listRepos()
+                else accountManager.searchRepos(q)
+                when (result) {
+                    is PrOpResult.Success -> {
+                        _state.value = _state.value.copy(githubRepos = repos)
+                    }
+                    is PrOpResult.AuthRequired -> {
+                        _state.value = _state.value.copy(githubConnected = false, githubRepos = emptyList())
+                    }
+                    is PrOpResult.Error -> {
+                        errors += "GitHub: ${result.message}"
+                        _state.value = _state.value.copy(githubRepos = emptyList())
+                    }
+                }
             }
-            _state.value = applyListResult(
-                _state.value.copy(loading = false, repos = repos),
-                result
+
+            val glDeferred = async(Dispatchers.IO) {
+                if (!_state.value.gitlabConnected) return@async
+                val host = gitLabAccountManager.host.takeIf { gitLabAccountManager.isConnected(it) }
+                    ?: "gitlab.com".takeIf { gitLabAccountManager.isConnected(it) }
+                    ?: return@async
+                val (projects, result) = if (q.isBlank()) gitLabAccountManager.listProjects(host)
+                else gitLabAccountManager.searchProjects(q, host)
+                when (result) {
+                    is PrOpResult.Success -> {
+                        _state.value = _state.value.copy(gitlabProjects = projects)
+                    }
+                    is PrOpResult.AuthRequired -> {
+                        _state.value = _state.value.copy(gitlabConnected = false, gitlabProjects = emptyList())
+                    }
+                    is PrOpResult.Error -> {
+                        errors += "GitLab: ${result.message}"
+                        _state.value = _state.value.copy(gitlabProjects = emptyList())
+                    }
+                }
+            }
+
+            val geDeferred = async(Dispatchers.IO) {
+                if (!_state.value.gerritConnected) return@async
+                val host = _state.value.gerritHost
+                    ?: gerritAccountManager.primaryHost()
+                    ?: return@async
+                val (projects, result) = if (q.isBlank()) gerritAccountManager.listProjects(host)
+                else gerritAccountManager.searchProjects(q, host)
+                when (result) {
+                    is PrOpResult.Success -> {
+                        _state.value = _state.value.copy(gerritProjects = projects)
+                    }
+                    is PrOpResult.AuthRequired -> {
+                        _state.value = _state.value.copy(gerritConnected = false, gerritProjects = emptyList())
+                    }
+                    is PrOpResult.Error -> {
+                        errors += "Gerrit: ${result.message}"
+                        _state.value = _state.value.copy(gerritProjects = emptyList())
+                    }
+                }
+            }
+
+            ghDeferred.await()
+            glDeferred.await()
+            geDeferred.await()
+
+            _state.value = _state.value.copy(
+                loading = false,
+                errorMessage = errors.takeIf { it.isNotEmpty() }?.joinToString("\n")
             )
         }
     }
 
     fun onDestinationPicked(treeUri: Uri) {
-        when (val result = repoManager.resolveCloneDestination(treeUri)) {
-            is RepoManager.ResolveCloneDestinationResult.Success -> {
-                pickedDestination = result.path
-                _state.value = _state.value.copy(
-                    destinationPath = result.path.absolutePath,
-                    destinationError = null
-                )
-                val url = pendingCloneUrl
-                val name = pendingCloneName
-                if (url != null && name != null) {
-                    pendingCloneUrl = null
-                    pendingCloneName = null
-                    doClone(url, name, result.path)
+        viewModelScope.launch {
+            when (val result = repoManager.resolveCloneDestination(treeUri)) {
+                is RepoManager.ResolveCloneDestinationResult.Success -> {
+                    _state.value = _state.value.copy(
+                        destinationPath = result.path.absolutePath,
+                        destinationError = null
+                    )
+                    val url = pendingCloneUrl
+                    val name = pendingCloneName
+                    if (url != null && name != null) {
+                        pendingCloneUrl = null
+                        pendingCloneName = null
+                        doClone(url, name, result.path)
+                    }
+                }
+                is RepoManager.ResolveCloneDestinationResult.Error -> {
+                    _state.value = _state.value.copy(destinationError = result.message)
                 }
             }
-            is RepoManager.ResolveCloneDestinationResult.Error -> {
-                pickedDestination = null
-                _state.value = _state.value.copy(
-                    destinationPath = null,
-                    destinationError = result.message
-                )
-            }
         }
     }
 
-    fun cloneRepo(repo: GitHubRemoteRepo, useSsh: Boolean = false) {
+    fun cloneGitHubRepo(repo: GitHubRemoteRepo, useSsh: Boolean = false) {
         val url = if (useSsh) repo.sshUrl else repo.cloneUrl
-        val dest = pickedDestination
-        if (dest != null) {
-            val target = if (dest.listFiles()?.isEmpty() != false) dest else File(dest, repo.name)
-            doClone(url, repo.name, target, repo.id)
+        val target = File(repoManager.reposRoot, repo.name)
+        if (repoManager.reposRoot.canWrite()) {
+            doClone(url, repo.name, target, "gh:${repo.id}")
         } else {
-            doClone(url, repo.name, File(repoManager.reposRoot, repo.name), repo.id)
+            doClone(url, repo.name, File(repoManager.reposRoot, repo.name), "gh:${repo.id}")
         }
     }
 
-    fun cloneRepoAfterPickingFolder(repo: GitHubRemoteRepo, useSsh: Boolean = false) {
+    fun cloneGitHubRepoAfterPickingFolder(repo: GitHubRemoteRepo, useSsh: Boolean = false) {
         pendingCloneUrl = if (useSsh) repo.sshUrl else repo.cloneUrl
         pendingCloneName = repo.name
     }
 
-    private fun doClone(url: String, folderName: String, destination: File, repoId: Long? = null) {
+    fun cloneGitLabProject(project: GitLabProject, useSsh: Boolean = false) {
+        val url = if (useSsh) project.sshUrlToRepo else project.httpUrlToRepo
+        val folder = project.pathWithNamespace.substringAfterLast('/')
+        doClone(url, folder, File(repoManager.reposRoot, folder), "gl:${project.id}")
+    }
+
+    fun cloneGitLabProjectAfterPickingFolder(project: GitLabProject, useSsh: Boolean = false) {
+        pendingCloneUrl = if (useSsh) project.sshUrlToRepo else project.httpUrlToRepo
+        pendingCloneName = project.pathWithNamespace.substringAfterLast('/')
+    }
+
+    fun cloneGerritProject(project: GerritProject, useSsh: Boolean = false) {
+        val url = if (useSsh) project.sshUrl else project.cloneUrl
+        val folder = project.name.substringAfterLast('/')
+        doClone(url, folder, File(repoManager.reposRoot, folder), "ge:${project.id}")
+    }
+
+    fun cloneGerritProjectAfterPickingFolder(project: GerritProject, useSsh: Boolean = false) {
+        pendingCloneUrl = if (useSsh) project.sshUrl else project.cloneUrl
+        pendingCloneName = project.name.substringAfterLast('/')
+    }
+
+    private fun doClone(url: String, folderName: String, destination: File, key: String? = null) {
         viewModelScope.launch {
             _state.value = _state.value.copy(
                 cloning = true,
-                cloningRepoId = repoId,
-                progressText = "Starting…",
+                cloningKey = key,
+                progressText = "Cloning…",
                 cloneResult = null,
                 errorMessage = null
             )
@@ -172,11 +287,31 @@ class BrowseGitHubViewModel(
             }
             _state.value = _state.value.copy(
                 cloning = false,
-                cloningRepoId = null,
+                cloningKey = null,
                 cloneResult = result,
                 statusMessage = if (result is GitOpResult.Success) "Cloned $folderName" else null,
                 errorMessage = (result as? GitOpResult.Error)?.message
             )
+        }
+    }
+
+    fun createRepo(name: String, description: String?, isPrivate: Boolean) {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(creating = true, errorMessage = null)
+            val (repo, result) = withContext(Dispatchers.IO) {
+                accountManager.createRepo(name, description, isPrivate)
+            }
+            _state.value = when (result) {
+                is PrOpResult.Success -> _state.value.copy(
+                    creating = false,
+                    githubRepos = if (repo != null) listOf(repo) + _state.value.githubRepos else _state.value.githubRepos,
+                    statusMessage = "Created ${repo?.name ?: name.trim()}"
+                )
+                is PrOpResult.AuthRequired -> _state.value.copy(
+                    creating = false, authRequired = true, githubConnected = false
+                )
+                is PrOpResult.Error -> _state.value.copy(creating = false, errorMessage = result.message)
+            }
         }
     }
 
@@ -187,30 +322,4 @@ class BrowseGitHubViewModel(
             cloneResult = null
         )
     }
-
-    fun createRepo(name: String, description: String, isPrivate: Boolean) {
-        if (name.isBlank()) return
-        viewModelScope.launch {
-            _state.value = _state.value.copy(creating = true, errorMessage = null)
-            val (repo, result) = withContext(Dispatchers.IO) {
-                accountManager.createRepo(name.trim(), description.trim(), isPrivate)
-            }
-            _state.value = when (result) {
-                is PrOpResult.Success -> _state.value.copy(
-                    creating = false,
-                    repos = if (repo != null) listOf(repo) + _state.value.repos else _state.value.repos,
-                    statusMessage = "Created ${repo?.name ?: name.trim()}"
-                )
-                is PrOpResult.AuthRequired -> _state.value.copy(creating = false, authRequired = true, connected = false)
-                is PrOpResult.Error -> _state.value.copy(creating = false, errorMessage = result.message)
-            }
-        }
-    }
-
-    private fun applyListResult(base: BrowseGitHubUiState, result: PrOpResult): BrowseGitHubUiState =
-        when (result) {
-            is PrOpResult.Success -> base
-            is PrOpResult.Error -> base.copy(errorMessage = result.message)
-            is PrOpResult.AuthRequired -> base.copy(authRequired = true, connected = false)
-        }
 }

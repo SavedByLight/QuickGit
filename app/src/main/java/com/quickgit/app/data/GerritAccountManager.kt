@@ -3,6 +3,7 @@ package com.quickgit.app.data
 import com.quickgit.app.data.gerrit.GerritApi
 import com.quickgit.app.data.gerrit.toGerritOpResult
 import com.quickgit.app.data.models.GerritChange
+import com.quickgit.app.data.models.GerritProject
 import com.quickgit.app.data.models.GerritReviewInput
 import com.quickgit.app.data.models.PrOpResult
 
@@ -107,6 +108,20 @@ class GerritAccountManager(private val credentialStore: CredentialStore) {
         if (!isConnected(h)) return emptyList<GerritChange>() to PrOpResult.AuthRequired(h)
         val result = api(h).listChanges(query = query, limit = limit)
         return (result.getOrNull() ?: emptyList()) to result.toGerritOpResult(h)
+    }
+
+    fun listProjects(h: String = host, limit: Int = 50): Pair<List<GerritProject>, PrOpResult> {
+        val hostKey = h.ifBlank { primaryHost() ?: host }
+        if (!isConnected(hostKey)) return emptyList<GerritProject>() to PrOpResult.AuthRequired(hostKey)
+        val result = api(hostKey).listProjects(limit = limit)
+        return (result.getOrNull() ?: emptyList()) to result.toGerritOpResult(hostKey)
+    }
+
+    fun searchProjects(query: String, h: String = host, limit: Int = 50): Pair<List<GerritProject>, PrOpResult> {
+        val hostKey = h.ifBlank { primaryHost() ?: host }
+        if (!isConnected(hostKey)) return emptyList<GerritProject>() to PrOpResult.AuthRequired(hostKey)
+        val result = api(hostKey).searchProjects(query, limit = limit)
+        return (result.getOrNull() ?: emptyList()) to result.toGerritOpResult(hostKey)
     }
 
     fun getChange(changeId: String, h: String = host): Pair<GerritChange?, PrOpResult> {

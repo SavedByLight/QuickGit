@@ -74,7 +74,7 @@ fun RepoListScreen(
                     }
                     IconButton(onClick = onSearchPeople) { Icon(Icons.Default.Search, "Search people") }
                     IconButton(onClick = onBrowseGitHub) {
-                        Icon(Icons.Default.CloudDownload, "GitHub repos")
+                        Icon(Icons.Default.CloudDownload, "Browse repos")
                     }
                     IconButton(onClick = onSettings) { Icon(Icons.Default.Settings, "Settings") }
                 }
@@ -100,13 +100,13 @@ fun RepoListScreen(
                         Text("No repositories yet", style = MaterialTheme.typography.titleMedium)
                         Spacer(Modifier.height(8.dp))
                         Text(
-                            "Tap Clone for a URL, or the download icon to browse your GitHub account.",
+                            "Tap Clone for a URL, or the download icon to browse GitHub, GitLab, or Gerrit.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Spacer(Modifier.height(16.dp))
                         OutlinedButton(onClick = onBrowseGitHub) {
-                            Text("Browse GitHub repos")
+                            Text("Browse repos")
                         }
                     }
                 } else {

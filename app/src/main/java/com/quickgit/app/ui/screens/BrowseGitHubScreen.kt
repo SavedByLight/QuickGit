@@ -7,7 +7,6 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.Lock
@@ -20,7 +19,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.quickgit.app.data.models.GerritProject
 import com.quickgit.app.data.models.GitHubRemoteRepo
+import com.quickgit.app.data.models.GitLabProject
 import com.quickgit.app.data.models.GitOpResult
 import com.quickgit.app.ui.components.PullToRefreshBox
 import com.quickgit.app.viewmodel.BrowseGitHubViewModel
@@ -35,21 +36,17 @@ fun BrowseGitHubScreen(
 ) {
     val state by vm.state.collectAsState()
     val snackbarHost = remember { SnackbarHostState() }
-    var repoAwaitingFolder by remember { mutableStateOf<GitHubRemoteRepo?>(null) }
+    var pendingFolderAction by remember { mutableStateOf<(() -> Unit)?>(null) }
     var showCreateDialog by remember { mutableStateOf(false) }
 
     val destinationPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocumentTree()
     ) { uri ->
+        val action = pendingFolderAction
+        pendingFolderAction = null
         if (uri != null) {
-            val pending = repoAwaitingFolder
-            repoAwaitingFolder = null
-            if (pending != null) {
-                vm.cloneRepoAfterPickingFolder(pending)
-            }
+            action?.invoke()
             vm.onDestinationPicked(uri)
-        } else {
-            repoAwaitingFolder = null
         }
     }
 
@@ -99,181 +96,297 @@ fun BrowseGitHubScreen(
         snackbarHost = { SnackbarHost(snackbarHost) },
         topBar = {
             TopAppBar(
-                title = {
-                    Column {
-                        Text("GitHub repositories")
-                        state.accountLogin?.let { login ->
-                            Text(
-                                "@$login",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
+                title = { Text("Browse repos") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
                     }
                 },
-                navigationIcon = {
-                    IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back") }
-                }
-            )
-        },
-        floatingActionButton = {
-            if (state.connected) {
-                ExtendedFloatingActionButton(
-                    onClick = { showCreateDialog = true },
-                    icon = { Icon(Icons.Default.Add, null) },
-                    text = { Text("New repo") }
-                )
-            }
-        }
-    ) { padding ->
-        when {
-            state.authRequired && !state.connected -> {
-                Box(
-                    Modifier.padding(padding).fillMaxSize().padding(32.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(
-                            "Connect your GitHub account",
-                            style = MaterialTheme.typography.titleMedium
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        Text(
-                            "Save a personal access token with the repo scope in Settings, then come back to browse and clone your repositories.",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Spacer(Modifier.height(20.dp))
-                        Button(onClick = onNeedsAuth) { Text("Open Settings") }
+                actions = {
+                    if (state.githubConnected) {
+                        TextButton(onClick = { showCreateDialog = true }) {
+                            Text("New")
+                        }
                     }
                 }
+            )
+        }
+    ) { padding ->
+        if (state.authRequired) {
+            Box(
+                Modifier.fillMaxSize().padding(padding).padding(24.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        "Connect GitHub, GitLab, or Gerrit in Settings to browse remote repos.",
+                        style = MaterialTheme.typography.bodyLarge
+                    )
+                    Spacer(Modifier.height(16.dp))
+                    Button(onClick = onNeedsAuth) { Text("Open Settings") }
+                }
             }
-            else -> {
-                Column(Modifier.padding(padding).fillMaxSize()) {
+            return@Scaffold
+        }
+
+        PullToRefreshBox(
+            refreshing = state.loading,
+            onRefresh = { vm.refresh() },
+            modifier = Modifier.fillMaxSize().padding(padding)
+        ) {
+            LazyColumn(Modifier.fillMaxSize()) {
+                item {
                     OutlinedTextField(
                         value = state.query,
-                        onValueChange = vm::setQuery,
+                        onValueChange = vm::onQueryChange,
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 16.dp, vertical = 8.dp),
-                        placeholder = { Text("Search your repos") },
-                        leadingIcon = { Icon(Icons.Default.Search, null) },
+                        placeholder = { Text("Search repos…") },
+                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
                         singleLine = true
                     )
+                }
 
-                    if (state.cloning) {
-                        Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
-                            LinearProgressIndicator(Modifier.fillMaxWidth())
-                            Spacer(Modifier.height(4.dp))
-                            Text(state.progressText, style = MaterialTheme.typography.bodySmall)
-                        }
-                    }
-
-                    PullToRefreshBox(
-                        isRefreshing = state.loading,
-                        onRefresh = vm::refresh,
-                        modifier = Modifier.weight(1f).fillMaxWidth()
-                    ) {
-                        when {
-                            state.loading && state.repos.isEmpty() -> {
-                                CircularProgressIndicator(Modifier.align(Alignment.Center))
-                            }
-                            state.repos.isEmpty() -> {
-                                Text(
-                                    if (state.query.isBlank()) "No repositories found"
-                                    else "No matches for \"${state.query}\"",
-                                    Modifier.align(Alignment.Center).padding(32.dp),
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                            else -> {
-                                LazyColumn(Modifier.fillMaxSize()) {
-                                    items(state.repos, key = { it.id }) { repo ->
-                                        GitHubRepoRow(
-                                            repo = repo,
-                                            cloning = state.cloningRepoId == repo.id,
-                                            enabled = !state.cloning,
-                                            onClone = { vm.cloneRepo(repo) },
-                                            onCloneToFolder = {
-                                                repoAwaitingFolder = repo
-                                                destinationPicker.launch(null)
-                                            }
-                                        )
-                                        HorizontalDivider()
-                                    }
-                                    item { Spacer(Modifier.height(24.dp)) }
-                                }
-                            }
-                        }
+                if (state.cloning && state.progressText.isNotBlank()) {
+                    item {
+                        LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 16.dp))
+                        Text(
+                            state.progressText,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                        )
                     }
                 }
+
+                // ---- GitHub ----
+                item {
+                    ProviderSectionHeader(
+                        title = "GitHub",
+                        subtitle = when {
+                            !state.githubConnected -> "Not connected"
+                            state.githubLogin != null -> "@${state.githubLogin}"
+                            else -> "Connected"
+                        },
+                        connected = state.githubConnected,
+                        count = state.githubRepos.size
+                    )
+                }
+                if (state.githubConnected) {
+                    if (state.githubRepos.isEmpty() && !state.loading) {
+                        item { EmptySectionHint("No GitHub repositories match.") }
+                    }
+                    items(state.githubRepos, key = { "gh-${it.id}" }) { repo ->
+                        GitHubRepoRow(
+                            repo = repo,
+                            cloning = state.cloningKey == "gh:${repo.id}",
+                            enabled = !state.cloning,
+                            onClone = { vm.cloneGitHubRepo(repo) },
+                            onCloneToFolder = {
+                                pendingFolderAction = { vm.cloneGitHubRepoAfterPickingFolder(repo) }
+                                destinationPicker.launch(null)
+                            }
+                        )
+                        HorizontalDivider(Modifier.padding(start = 50.dp))
+                    }
+                }
+
+                // ---- GitLab ----
+                item {
+                    ProviderSectionHeader(
+                        title = "GitLab",
+                        subtitle = when {
+                            !state.gitlabConnected -> "Not connected"
+                            state.gitlabUsername != null -> "@${state.gitlabUsername}"
+                            else -> "Connected"
+                        },
+                        connected = state.gitlabConnected,
+                        count = state.gitlabProjects.size
+                    )
+                }
+                if (state.gitlabConnected) {
+                    if (state.gitlabProjects.isEmpty() && !state.loading) {
+                        item { EmptySectionHint("No GitLab projects match.") }
+                    }
+                    items(state.gitlabProjects, key = { "gl-${it.id}" }) { project ->
+                        GitLabProjectRow(
+                            project = project,
+                            cloning = state.cloningKey == "gl:${project.id}",
+                            enabled = !state.cloning,
+                            onClone = { vm.cloneGitLabProject(project) },
+                            onCloneToFolder = {
+                                pendingFolderAction = { vm.cloneGitLabProjectAfterPickingFolder(project) }
+                                destinationPicker.launch(null)
+                            }
+                        )
+                        HorizontalDivider(Modifier.padding(start = 50.dp))
+                    }
+                }
+
+                // ---- Gerrit ----
+                item {
+                    ProviderSectionHeader(
+                        title = "Gerrit",
+                        subtitle = when {
+                            !state.gerritConnected -> "Not connected"
+                            state.gerritUsername != null && state.gerritHost != null ->
+                                "${state.gerritUsername} @ ${state.gerritHost}"
+                            state.gerritHost != null -> state.gerritHost!!
+                            else -> "Connected"
+                        },
+                        connected = state.gerritConnected,
+                        count = state.gerritProjects.size
+                    )
+                }
+                if (state.gerritConnected) {
+                    if (state.gerritProjects.isEmpty() && !state.loading) {
+                        item { EmptySectionHint("No Gerrit projects match.") }
+                    }
+                    items(state.gerritProjects, key = { "ge-${it.id}" }) { project ->
+                        GerritProjectRow(
+                            project = project,
+                            cloning = state.cloningKey == "ge:${project.id}",
+                            enabled = !state.cloning,
+                            onClone = { vm.cloneGerritProject(project) },
+                            onCloneToFolder = {
+                                pendingFolderAction = { vm.cloneGerritProjectAfterPickingFolder(project) }
+                                destinationPicker.launch(null)
+                            }
+                        )
+                        HorizontalDivider(Modifier.padding(start = 50.dp))
+                    }
+                }
+
+                item { Spacer(Modifier.height(24.dp)) }
             }
         }
     }
 }
 
 @Composable
-private fun CreateRepoDialog(
-    creating: Boolean,
-    onDismiss: () -> Unit,
-    onCreate: (name: String, description: String, isPrivate: Boolean) -> Unit
+private fun ProviderSectionHeader(
+    title: String,
+    subtitle: String,
+    connected: Boolean,
+    count: Int
 ) {
-    var name by remember { mutableStateOf("") }
-    var description by remember { mutableStateOf("") }
-    var isPrivate by remember { mutableStateOf(false) }
-
-    AlertDialog(
-        onDismissRequest = { if (!creating) onDismiss() },
-        title = { Text("New repository") },
-        text = {
-            Column {
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    label = { Text("Name") },
-                    singleLine = true,
-                    enabled = !creating,
-                    modifier = Modifier.fillMaxWidth()
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 4.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                title,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+            if (connected) {
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    "$count",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary
                 )
-                Spacer(Modifier.height(12.dp))
-                OutlinedTextField(
-                    value = description,
-                    onValueChange = { description = it },
-                    label = { Text("Description (optional)") },
-                    enabled = !creating,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Spacer(Modifier.height(8.dp))
-                Row(
-                    Modifier.fillMaxWidth().clickable(enabled = !creating) { isPrivate = !isPrivate },
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Checkbox(checked = isPrivate, onCheckedChange = { isPrivate = it }, enabled = !creating)
-                    Text("Private repository")
-                }
             }
-        },
-        confirmButton = {
-            TextButton(
-                onClick = { onCreate(name, description, isPrivate) },
-                enabled = !creating && name.isNotBlank()
-            ) {
-                if (creating) {
-                    CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
-                } else {
-                    Text("Create")
-                }
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss, enabled = !creating) { Text("Cancel") }
         }
+        Text(
+            subtitle,
+            style = MaterialTheme.typography.bodySmall,
+            color = if (connected) MaterialTheme.colorScheme.onSurfaceVariant
+            else MaterialTheme.colorScheme.error
+        )
+    }
+}
+
+@Composable
+private fun EmptySectionHint(text: String) {
+    Text(
+        text,
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
     )
 }
 
 @Composable
 private fun GitHubRepoRow(
     repo: GitHubRemoteRepo,
+    cloning: Boolean,
+    enabled: Boolean,
+    onClone: () -> Unit,
+    onCloneToFolder: () -> Unit
+) {
+    RemoteRepoRow(
+        title = repo.fullName,
+        subtitle = buildString {
+            repo.description?.let { append(it) }
+            if (repo.language != null) {
+                if (isNotEmpty()) append(" · ")
+                append(repo.language)
+            }
+            if (repo.isFork) {
+                if (isNotEmpty()) append(" · ")
+                append("fork")
+            }
+        }.ifBlank { null },
+        isPrivate = repo.isPrivate,
+        cloning = cloning,
+        enabled = enabled,
+        onClone = onClone,
+        onCloneToFolder = onCloneToFolder
+    )
+}
+
+@Composable
+private fun GitLabProjectRow(
+    project: GitLabProject,
+    cloning: Boolean,
+    enabled: Boolean,
+    onClone: () -> Unit,
+    onCloneToFolder: () -> Unit
+) {
+    RemoteRepoRow(
+        title = project.pathWithNamespace,
+        subtitle = project.description,
+        isPrivate = project.isPrivate,
+        cloning = cloning,
+        enabled = enabled,
+        onClone = onClone,
+        onCloneToFolder = onCloneToFolder
+    )
+}
+
+@Composable
+private fun GerritProjectRow(
+    project: GerritProject,
+    cloning: Boolean,
+    enabled: Boolean,
+    onClone: () -> Unit,
+    onCloneToFolder: () -> Unit
+) {
+    RemoteRepoRow(
+        title = project.name,
+        subtitle = buildString {
+            project.description?.let { append(it) }
+            if (project.state != "ACTIVE") {
+                if (isNotEmpty()) append(" · ")
+                append(project.state)
+            }
+        }.ifBlank { null },
+        isPrivate = false,
+        cloning = cloning,
+        enabled = enabled,
+        onClone = onClone,
+        onCloneToFolder = onCloneToFolder
+    )
+}
+
+@Composable
+private fun RemoteRepoRow(
+    title: String,
+    subtitle: String?,
+    isPrivate: Boolean,
     cloning: Boolean,
     enabled: Boolean,
     onClone: () -> Unit,
@@ -288,32 +401,21 @@ private fun GitHubRepoRow(
         verticalAlignment = Alignment.CenterVertically
     ) {
         Icon(
-            if (repo.isPrivate) Icons.Default.Lock else Icons.Default.Public,
-            contentDescription = if (repo.isPrivate) "Private" else "Public",
+            if (isPrivate) Icons.Default.Lock else Icons.Default.Public,
+            contentDescription = if (isPrivate) "Private" else "Public",
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.size(22.dp)
         )
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f).clickable(enabled = enabled, onClick = onClone)) {
             Text(
-                repo.fullName,
+                title,
                 style = MaterialTheme.typography.bodyLarge,
                 fontWeight = FontWeight.Medium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
-            val subtitle = buildString {
-                repo.description?.let { append(it) }
-                if (repo.language != null) {
-                    if (isNotEmpty()) append(" · ")
-                    append(repo.language)
-                }
-                if (repo.isFork) {
-                    if (isNotEmpty()) append(" · ")
-                    append("fork")
-                }
-            }
-            if (subtitle.isNotBlank()) {
+            if (!subtitle.isNullOrBlank()) {
                 Text(
                     subtitle,
                     style = MaterialTheme.typography.bodySmall,
@@ -349,4 +451,63 @@ private fun GitHubRepoRow(
             }
         }
     }
+}
+
+@Composable
+private fun CreateRepoDialog(
+    creating: Boolean,
+    onDismiss: () -> Unit,
+    onCreate: (name: String, description: String?, isPrivate: Boolean) -> Unit
+) {
+    var name by remember { mutableStateOf("") }
+    var description by remember { mutableStateOf("") }
+    var isPrivate by remember { mutableStateOf(false) }
+
+    AlertDialog(
+        onDismissRequest = { if (!creating) onDismiss() },
+        title = { Text("New GitHub repository") },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Name") },
+                    singleLine = true,
+                    enabled = !creating,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = description,
+                    onValueChange = { description = it },
+                    label = { Text("Description (optional)") },
+                    enabled = !creating,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    Modifier.fillMaxWidth().clickable(enabled = !creating) { isPrivate = !isPrivate },
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Checkbox(checked = isPrivate, onCheckedChange = { isPrivate = it }, enabled = !creating)
+                    Text("Private repository")
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onCreate(name, description.ifBlank { null }, isPrivate) },
+                enabled = !creating && name.isNotBlank()
+            ) {
+                if (creating) {
+                    CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                } else {
+                    Text("Create")
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, enabled = !creating) { Text("Cancel") }
+        }
+    )
 }

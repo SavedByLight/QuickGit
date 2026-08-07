@@ -2,6 +2,7 @@ package com.quickgit.app.data.gerrit
 
 import com.quickgit.app.data.AppLog
 import com.quickgit.app.data.models.GerritChange
+import com.quickgit.app.data.models.GerritProject
 import com.quickgit.app.data.models.GerritLabelInfo
 import com.quickgit.app.data.models.GerritMessage
 import com.quickgit.app.data.models.GerritReviewInput
@@ -116,6 +117,56 @@ class GerritApi(
         revision,
         GerritReviewInput(message = message, labels = mapOf("Code-Review" to value))
     )
+
+
+    /**
+     * List projects the caller can see.
+     * @param query optional substring match (Gerrit `m=` parameter)
+     * @param limit max results (Gerrit `n=`)
+     */
+    fun listProjects(query: String? = null, limit: Int = 50): Result<List<GerritProject>> = runCatching {
+        val params = mutableListOf("d", "n=$limit")
+        val q = query?.trim().orEmpty()
+        if (q.isNotEmpty()) {
+            params += "m=" + java.net.URLEncoder.encode(q, "UTF-8")
+        }
+        val path = "/projects/?" + params.joinToString("&")
+        val raw = request("GET", path)
+        val obj = when (raw) {
+            is JSONObject -> raw
+            else -> JSONObject()
+        }
+        val scheme = if (useHttps) "https" else "http"
+        val hostClean = host.trim().removePrefix("https://").removePrefix("http://").trimEnd('/')
+        val list = mutableListOf<GerritProject>()
+        val keys = obj.keys()
+        while (keys.hasNext()) {
+            val name = keys.next()
+            val info = obj.optJSONObject(name) ?: continue
+            val state = info.optString("state", "ACTIVE")
+            if (state.equals("HIDDEN", ignoreCase = true)) continue
+            val id = info.optString("id", name)
+            val desc = info.optString("description").takeIf { it.isNotBlank() }
+            // Gerrit HTTP clone: https://host/project  (or /a/ for auth — JGit uses credentials)
+            val clone = "$scheme://$hostClean/$name"
+            val sshUser = username?.takeIf { it.isNotBlank() } ?: "git"
+            val ssh = "ssh://$sshUser@$hostClean:29418/$name"
+            val web = "$scheme://$hostClean/admin/repos/$name"
+            list += GerritProject(
+                id = id,
+                name = name,
+                description = desc,
+                state = state,
+                webUrl = web,
+                cloneUrl = clone,
+                sshUrl = ssh
+            )
+        }
+        list.sortedBy { it.name.lowercase() }
+    }
+
+    fun searchProjects(query: String, limit: Int = 50): Result<List<GerritProject>> =
+        listProjects(query = query, limit = limit)
 
     // ---- Helpers ----
 

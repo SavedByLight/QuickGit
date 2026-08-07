@@ -56,3 +56,14 @@ object GerritVotes {
     const val VERIFIED = "Verified"
     val COMMON_VALUES = listOf(+2, +1, 0, -1, -2)
 }
+
+/** A Gerrit project (git repository) from the Projects API. */
+data class GerritProject(
+    val id: String,              // URL-encoded id from API
+    val name: String,            // project name / path
+    val description: String?,
+    val state: String,           // ACTIVE | READ_ONLY | HIDDEN
+    val webUrl: String,
+    val cloneUrl: String,
+    val sshUrl: String
+)
