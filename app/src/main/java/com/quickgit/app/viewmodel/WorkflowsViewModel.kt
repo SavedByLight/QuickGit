@@ -40,7 +40,11 @@ data class WorkflowsUiState(
     val logJobName: String? = null,
     val logText: String? = null,
     val logAnnotations: List<com.quickgit.app.data.models.WorkflowAnnotation> = emptyList(),
-    val logLoading: Boolean = false
+    val logLoading: Boolean = false,
+    /** True while auto-refreshing the open job log (job still running). */
+    val logWatching: Boolean = false,
+    val logJobStatus: String? = null,
+    val logJobConclusion: String? = null
 )
 
 class WorkflowsViewModel(private val workflowManager: WorkflowManager) : ViewModel() {
@@ -51,6 +55,7 @@ class WorkflowsViewModel(private val workflowManager: WorkflowManager) : ViewMod
     private lateinit var repoPath: String
     private var project: WorkflowManager.ProjectRef? = null
     private var pollJob: Job? = null
+    private var logPollJob: Job? = null
 
     fun init(repoPath: String) {
         this.repoPath = repoPath
@@ -231,6 +236,8 @@ class WorkflowsViewModel(private val workflowManager: WorkflowManager) : ViewMod
             )
             return
         }
+        stopLogWatching()
+        val knownJob = _state.value.jobs.find { it.id == jobId }
         viewModelScope.launch {
             _state.value = _state.value.copy(
                 logJobId = jobId,
@@ -238,29 +245,116 @@ class WorkflowsViewModel(private val workflowManager: WorkflowManager) : ViewMod
                 logText = null,
                 logAnnotations = emptyList(),
                 logLoading = true,
+                logWatching = false,
+                logJobStatus = knownJob?.status,
+                logJobConclusion = knownJob?.conclusion,
                 errorMessage = null
             )
-            val (log, annotations, result) = withContext(Dispatchers.IO) {
-                workflowManager.getJobLog(ref, jobId)
+            fetchAndApplyJobLog(ref, jobId, initial = true)
+            // Keep refreshing while the job is still running so the log streams live.
+            val status = _state.value.logJobStatus
+            if (status != null && isLive(status)) {
+                startLogWatching(jobId)
             }
-            _state.value = applyResult(
-                _state.value.copy(
-                    logLoading = false,
-                    logText = log,
-                    logAnnotations = annotations
-                ),
-                result
-            )
+        }
+    }
+
+    /** Manual refresh of the open job log (also used by the UI refresh button). */
+    fun refreshJobLog() {
+        val ref = project ?: return
+        val jobId = _state.value.logJobId ?: return
+        viewModelScope.launch {
+            _state.value = _state.value.copy(logLoading = true, errorMessage = null)
+            fetchAndApplyJobLog(ref, jobId, initial = false)
+            val status = _state.value.logJobStatus
+            if (status != null && isLive(status) && !_state.value.logWatching) {
+                startLogWatching(jobId)
+            } else if (status != null && !isLive(status)) {
+                stopLogWatching()
+            }
         }
     }
 
     fun closeJobLog() {
+        stopLogWatching()
         _state.value = _state.value.copy(
             logJobId = null,
             logJobName = null,
             logText = null,
             logAnnotations = emptyList(),
-            logLoading = false
+            logLoading = false,
+            logWatching = false,
+            logJobStatus = null,
+            logJobConclusion = null
+        )
+    }
+
+    fun startLogWatching(jobId: Long) {
+        stopLogWatching()
+        val ref = project ?: return
+        _state.value = _state.value.copy(logWatching = true)
+        logPollJob = viewModelScope.launch {
+            while (isActive) {
+                delay(4_000)
+                // Quiet refresh — don't flash the full loading spinner on every poll.
+                val (log, annotations, result) = withContext(Dispatchers.IO) {
+                    workflowManager.getJobLog(ref, jobId)
+                }
+                val jobFromList = _state.value.jobs.find { it.id == jobId }
+                // Also refresh the parent run's jobs so step status stays current.
+                val runId = _state.value.selectedRun?.id
+                val updatedJobs = if (runId != null) {
+                    withContext(Dispatchers.IO) { workflowManager.listJobs(ref, runId).first }
+                } else {
+                    _state.value.jobs
+                }
+                val job = updatedJobs.find { it.id == jobId } ?: jobFromList
+                val newStatus = job?.status
+                val newConclusion = job?.conclusion
+                if (result is PrOpResult.Success || log != null) {
+                    _state.value = _state.value.copy(
+                        logText = log ?: _state.value.logText,
+                        logAnnotations = if (annotations.isNotEmpty()) annotations else _state.value.logAnnotations,
+                        jobs = if (updatedJobs.isNotEmpty()) updatedJobs else _state.value.jobs,
+                        logJobStatus = newStatus ?: _state.value.logJobStatus,
+                        logJobConclusion = newConclusion ?: _state.value.logJobConclusion,
+                        errorMessage = null
+                    )
+                }
+                if (newStatus != null && !isLive(newStatus)) {
+                    _state.value = _state.value.copy(logWatching = false)
+                    break
+                }
+            }
+        }
+    }
+
+    fun stopLogWatching() {
+        logPollJob?.cancel()
+        logPollJob = null
+        if (_state.value.logWatching) {
+            _state.value = _state.value.copy(logWatching = false)
+        }
+    }
+
+    private suspend fun fetchAndApplyJobLog(
+        ref: WorkflowManager.ProjectRef,
+        jobId: Long,
+        initial: Boolean
+    ) {
+        val (log, annotations, result) = withContext(Dispatchers.IO) {
+            workflowManager.getJobLog(ref, jobId)
+        }
+        val job = _state.value.jobs.find { it.id == jobId }
+        _state.value = applyResult(
+            _state.value.copy(
+                logLoading = false,
+                logText = log,
+                logAnnotations = annotations,
+                logJobStatus = job?.status ?: _state.value.logJobStatus,
+                logJobConclusion = job?.conclusion ?: _state.value.logJobConclusion
+            ),
+            result
         )
     }
 
@@ -299,6 +393,7 @@ class WorkflowsViewModel(private val workflowManager: WorkflowManager) : ViewMod
 
     override fun onCleared() {
         stopWatching()
+        stopLogWatching()
         super.onCleared()
     }
 }

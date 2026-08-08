@@ -392,7 +392,9 @@ private fun JobCard(
                 ) {
                     Icon(Icons.Default.Article, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
-                    Text("View full log")
+                    Text(
+                        if (isLiveStatus(job.status)) "Watch live log" else "View full log"
+                    )
                 }
             }
             if (expanded && job.steps.isNotEmpty()) {
@@ -417,6 +419,16 @@ private fun JobLogContent(
     val state by vm.state.collectAsState()
     val scroll = rememberScrollState()
     val hScroll = rememberScrollState()
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+    val scope = rememberCoroutineScope()
+
+    // Auto-scroll to bottom when live log grows so you can follow progress.
+    val logLength = state.logText?.length ?: 0
+    LaunchedEffect(logLength, state.logWatching) {
+        if (state.logWatching && logLength > 0) {
+            scroll.animateScrollTo(scroll.maxValue)
+        }
+    }
 
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHost) },
@@ -429,21 +441,61 @@ private fun JobLogContent(
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
-                        Text(
-                            "Full workflow log",
-                            style = MaterialTheme.typography.bodySmall
-                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                when {
+                                    state.logWatching -> "Live log · updating…"
+                                    state.logJobStatus != null ->
+                                        "Full workflow log · ${state.logJobStatus}"
+                                    else -> "Full workflow log"
+                                },
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            if (state.logWatching) {
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    "● LIVE",
+                                    color = GitAmber,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
                     }
                 },
                 navigationIcon = {
                     IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back") }
                 },
                 actions = {
+                    // Copy entire log to clipboard
+                    IconButton(
+                        onClick = {
+                            val text = state.logText
+                            if (!text.isNullOrBlank()) {
+                                clipboard.setText(androidx.compose.ui.text.AnnotatedString(text))
+                                scope.launch {
+                                    snackbarHost.showSnackbar("Full log copied to clipboard")
+                                }
+                            }
+                        },
+                        enabled = !state.logText.isNullOrBlank()
+                    ) {
+                        Icon(Icons.Default.ContentCopy, "Copy entire log")
+                    }
+                    // Toggle live watching
                     if (state.logJobId != null) {
+                        val status = state.logJobStatus
+                        if (state.logWatching) {
+                            IconButton(onClick = { vm.stopLogWatching() }) {
+                                Icon(Icons.Default.Pause, "Stop live updates")
+                            }
+                        } else if (status != null && isLiveStatus(status)) {
+                            IconButton(onClick = { vm.startLogWatching(state.logJobId!!) }) {
+                                Icon(Icons.Default.PlayArrow, "Watch live")
+                            }
+                        }
                         IconButton(
-                            onClick = {
-                                vm.loadJobLog(state.logJobId!!, state.logJobName ?: "Job")
-                            },
+                            onClick = { vm.refreshJobLog() },
                             enabled = !state.logLoading
                         ) {
                             Icon(Icons.Default.Refresh, "Reload log")
@@ -472,6 +524,9 @@ private fun JobLogContent(
                         .padding(padding)
                         .fillMaxSize()
                 ) {
+                    if (state.logWatching || state.logLoading) {
+                        LinearProgressIndicator(Modifier.fillMaxWidth())
+                    }
                     if (state.logAnnotations.isNotEmpty()) {
                         Text(
                             "Annotations (${state.logAnnotations.size})",
@@ -487,22 +542,29 @@ private fun JobLogContent(
                     val text = state.logText
                     if (text.isNullOrBlank()) {
                         Text(
-                            "No log text available yet. Logs appear after the job has started.",
+                            if (state.logWatching)
+                                "Waiting for log output… the job is still starting."
+                            else
+                                "No log text available yet. Logs appear after the job has started.",
                             Modifier.padding(16.dp),
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     } else {
-                        Column(
-                            Modifier
-                                .weight(1f)
-                                .horizontalScroll(hScroll)
-                                .verticalScroll(scroll)
-                                .padding(12.dp)
-                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
-                                .padding(8.dp)
-                        ) {
-                            text.lineSequence().forEach { line ->
-                                LogLine(line)
+                        Box(Modifier.weight(1f).fillMaxWidth()) {
+                            androidx.compose.foundation.text.selection.SelectionContainer {
+                                Column(
+                                    Modifier
+                                        .fillMaxSize()
+                                        .horizontalScroll(hScroll)
+                                        .verticalScroll(scroll)
+                                        .padding(12.dp)
+                                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
+                                        .padding(8.dp)
+                                ) {
+                                    text.lineSequence().forEach { line ->
+                                        LogLine(line)
+                                    }
+                                }
                             }
                         }
                     }
