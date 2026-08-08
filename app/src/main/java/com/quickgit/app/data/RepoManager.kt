@@ -399,6 +399,7 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     }
 
     private fun infoFor(dir: File): RepoInfo {
+        ensureMobileRepoConfig(dir.absolutePath)
         Git.open(dir).use { git ->
             val repo = git.repository
             val branch = repo.branch ?: "(detached)"
@@ -475,6 +476,7 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                     }
                 }
                 rememberExternalRepoPath(destination)
+                ensureMobileRepoConfig(destination.absolutePath)
                 val lfsMsg = maybeFetchLfs(destination.absolutePath, cloneUrl, onProgress)
                 AppLog.i(TAG, "clone succeeded: ${destination.absolutePath}" + (lfsMsg?.let { " ($it)" } ?: ""))
                 return GitOpResult.Success
@@ -567,9 +569,44 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
 
     fun openGit(path: String): Git = Git.open(File(path))
 
+    /**
+     * Android storage often does not preserve Unix executable bits the way desktop
+     * filesystems do. With the default core.filemode=true, a fresh clone then looks
+     * "dirty" (every executable script shows as modified) even though the user changed
+     * nothing. Disable filemode tracking for local mobile working trees.
+     *
+     * Also force autocrlf=false so checkout does not rewrite line endings and create
+     * spurious diffs on mixed CRLF/LF repos.
+     */
+    fun ensureMobileRepoConfig(path: String) {
+        try {
+            openGit(path).use { git ->
+                val cfg = git.repository.config
+                var dirty = false
+                if (cfg.getBoolean("core", null, "filemode", true)) {
+                    cfg.setBoolean("core", null, "filemode", false)
+                    dirty = true
+                }
+                val acrlf = cfg.getString("core", null, "autocrlf")
+                if (acrlf == null || !acrlf.equals("false", ignoreCase = true)) {
+                    cfg.setString("core", null, "autocrlf", "false")
+                    dirty = true
+                }
+                if (dirty) {
+                    cfg.save()
+                    AppLog.i(TAG, "ensureMobileRepoConfig: core.filemode=false, core.autocrlf=false for $path")
+                }
+            }
+        } catch (e: Exception) {
+            AppLog.w(TAG, "ensureMobileRepoConfig failed for $path: ${e.message}")
+        }
+    }
+
+
     // ---------------- Status / staging ----------------
 
     fun getStatus(path: String): RepoStatus {
+        ensureMobileRepoConfig(path)
         openGit(path).use { git ->
             val s = git.status().call()
             val staged = mutableListOf<FileChange>()
