@@ -567,6 +567,10 @@ class GitHubApi(private val token: String?) {
                 completedAt = s.optString("completed_at").takeIf { it.isNotBlank() }
             )
         }
+        val labelsArr = optJSONArray("labels")
+        val labels = if (labelsArr == null) emptyList() else (0 until labelsArr.length()).mapNotNull { i ->
+            labelsArr.optString(i).takeIf { it.isNotBlank() }
+        }
         return WorkflowJob(
             id = getLong("id"),
             name = optString("name", ""),
@@ -575,7 +579,10 @@ class GitHubApi(private val token: String?) {
             startedAt = optString("started_at").takeIf { it.isNotBlank() },
             completedAt = optString("completed_at").takeIf { it.isNotBlank() },
             htmlUrl = optString("html_url", ""),
-            steps = steps
+            steps = steps,
+            runnerName = optString("runner_name").takeIf { it.isNotBlank() },
+            runnerGroupName = optString("runner_group_name").takeIf { it.isNotBlank() },
+            labels = labels
         )
     }
 

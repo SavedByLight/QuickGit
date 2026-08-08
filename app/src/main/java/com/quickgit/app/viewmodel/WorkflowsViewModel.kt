@@ -156,13 +156,19 @@ class WorkflowsViewModel(private val workflowManager: WorkflowManager) : ViewMod
         _state.value = _state.value.copy(watching = true)
         pollJob = viewModelScope.launch {
             while (isActive) {
-                delay(3_000)
+                delay(2_000)
                 val (run, _) = withContext(Dispatchers.IO) { workflowManager.getRun(ref, runId) }
                 val (jobs, _) = withContext(Dispatchers.IO) { workflowManager.listJobs(ref, runId) }
                 if (run != null) {
                     _state.value = _state.value.copy(selectedRun = run, jobs = jobs)
                     if (!isLive(run.status)) {
                         _state.value = _state.value.copy(watching = false)
+                        // Full log text is only published after the job finishes — fetch it then.
+                        val finishedJob = jobs.firstOrNull { it.conclusion != null }
+                            ?: jobs.firstOrNull()
+                        if (finishedJob != null && _state.value.logJobId == null && !ref.isGitLab) {
+                            loadJobLog(finishedJob.id, finishedJob.name)
+                        }
                         break
                     }
                 }

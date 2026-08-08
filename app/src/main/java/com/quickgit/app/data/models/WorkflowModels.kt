@@ -47,7 +47,11 @@ data class WorkflowJob(
     val startedAt: String?,
     val completedAt: String?,
     val htmlUrl: String,
-    val steps: List<WorkflowStep>
+    val steps: List<WorkflowStep>,
+    /** Runner name once assigned (null while still queued). */
+    val runnerName: String? = null,
+    val runnerGroupName: String? = null,
+    val labels: List<String> = emptyList()
 )
 
 data class WorkflowStep(

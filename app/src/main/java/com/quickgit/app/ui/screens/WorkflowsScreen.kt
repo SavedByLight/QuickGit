@@ -365,6 +365,11 @@ private fun JobCard(
     onViewLog: () -> Unit = {}
 ) {
     var expanded by remember { mutableStateOf(true) }
+    val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
+    val currentStep = job.steps.firstOrNull { isLiveStatus(it.status) }
+        ?: job.steps.lastOrNull { it.status == "completed" }
+    val live = isLiveStatus(job.status)
+
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(12.dp)) {
             Row(
@@ -373,29 +378,87 @@ private fun JobCard(
             ) {
                 StatusDot(status = job.status, conclusion = job.conclusion)
                 Spacer(Modifier.width(10.dp))
-                Text(
-                    job.name,
-                    Modifier.weight(1f),
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Medium
-                )
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        job.name,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Medium
+                    )
+                    if (live && currentStep != null) {
+                        Text(
+                            "→ ${currentStep.name}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = GitAmber,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    } else if (!job.runnerName.isNullOrBlank()) {
+                        Text(
+                            "Runner: ${job.runnerName}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+                if (live) {
+                    Text(
+                        "● LIVE",
+                        color = GitAmber,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(Modifier.width(8.dp))
+                }
                 StatusLabel(status = job.status, conclusion = job.conclusion)
                 Icon(
                     if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
                     contentDescription = null
                 )
             }
+
+            if (live || !job.runnerName.isNullOrBlank() || job.labels.isNotEmpty()) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    buildString {
+                        if (!job.runnerName.isNullOrBlank()) append(job.runnerName)
+                        if (!job.runnerGroupName.isNullOrBlank()) {
+                            if (isNotEmpty()) append(" · ")
+                            append(job.runnerGroupName)
+                        }
+                        if (job.labels.isNotEmpty()) {
+                            if (isNotEmpty()) append(" · ")
+                            append(job.labels.joinToString(", "))
+                        }
+                        if (live && isEmpty()) append("Waiting for runner…")
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
             if (showLogButton) {
                 Spacer(Modifier.height(8.dp))
-                TextButton(
-                    onClick = onViewLog,
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
-                ) {
-                    Icon(Icons.Default.Article, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text(
-                        if (isLiveStatus(job.status)) "Watch live log" else "View full log"
-                    )
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(
+                        onClick = onViewLog,
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                    ) {
+                        Icon(Icons.Default.Article, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text(if (live) "Log (when ready)" else "View full log")
+                    }
+                    if (job.htmlUrl.isNotBlank()) {
+                        TextButton(
+                            onClick = { uriHandler.openUri(job.htmlUrl) },
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                        ) {
+                            Icon(Icons.Default.OpenInBrowser, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("GitHub live")
+                        }
+                    }
                 }
             }
             if (expanded && job.steps.isNotEmpty()) {
@@ -403,7 +466,7 @@ private fun JobCard(
                 HorizontalDivider()
                 Spacer(Modifier.height(4.dp))
                 job.steps.forEach { step ->
-                    StepRow(step)
+                    StepRow(step, highlight = isLiveStatus(step.status))
                 }
             }
         }
@@ -642,11 +705,18 @@ private fun LogLine(line: String) {
 }
 
 @Composable
-private fun StepRow(step: WorkflowStep) {
+private fun StepRow(step: WorkflowStep, highlight: Boolean = false) {
     Row(
         Modifier
             .fillMaxWidth()
-            .padding(vertical = 4.dp, horizontal = 4.dp),
+            .padding(vertical = 4.dp, horizontal = 4.dp)
+            .then(
+                if (highlight) Modifier.background(
+                    GitAmber.copy(alpha = 0.12f),
+                    shape = MaterialTheme.shapes.small
+                ).padding(horizontal = 4.dp, vertical = 2.dp)
+                else Modifier
+            ),
         verticalAlignment = Alignment.CenterVertically
     ) {
         StatusDot(status = step.status, conclusion = step.conclusion, size = 8.dp)
@@ -655,10 +725,21 @@ private fun StepRow(step: WorkflowStep) {
             "${step.number}. ${step.name}",
             Modifier.weight(1f),
             style = MaterialTheme.typography.bodyMedium,
+            fontWeight = if (highlight) FontWeight.SemiBold else FontWeight.Normal,
+            color = if (highlight) GitAmber else MaterialTheme.colorScheme.onSurface,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )
-        StatusLabel(status = step.status, conclusion = step.conclusion, compact = true)
+        if (highlight) {
+            Text(
+                "running",
+                style = MaterialTheme.typography.labelSmall,
+                color = GitAmber,
+                fontWeight = FontWeight.Bold
+            )
+        } else {
+            StatusLabel(status = step.status, conclusion = step.conclusion, compact = true)
+        }
     }
 }
 
