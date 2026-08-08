@@ -542,11 +542,13 @@ private fun JobLogContent(
                     }
                     val text = state.logText
                     if (text.isNullOrBlank()) {
+                        val waiting = state.logWatching ||
+                            (state.logJobStatus != null && isLiveStatus(state.logJobStatus!!))
                         Text(
-                            if (state.logWatching)
-                                "Waiting for log output… the job is still starting."
+                            if (waiting)
+                                "Waiting for log output… GitHub only publishes logs after the runner starts writing them. This will update automatically."
                             else
-                                "No log text available yet. Logs appear after the job has started.",
+                                "No log text available for this job. Logs may still be uploading, may have expired, or the job never produced output.",
                             Modifier.padding(16.dp),
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )

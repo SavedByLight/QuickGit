@@ -181,6 +181,11 @@ class WorkflowManager(
     /**
      * Full job log text + structured check-run annotations (GitHub Actions).
      * GitLab returns [PrOpResult.Error] for logs for now.
+     *
+     * GitHub returns HTTP 404 for `/actions/jobs/{id}/logs` until the runner has
+     * produced log output (common while the job is still queued or just starting).
+     * That case is treated as success with a null log so live watch can keep polling
+     * without surfacing a hard error.
      */
     fun getJobLog(
         ref: ProjectRef,
@@ -196,8 +201,13 @@ class WorkflowManager(
         AppLog.i(TAG, "getJobLog: ${ref.owner}/${ref.repo} job=$jobId")
         val logResult = githubApi().getJobLogs(ref.owner, ref.repo, jobId)
         val log = logResult.getOrNull()
-        val logOp = logResult.toPrOpResult(ref.host)
-        if (logOp !is PrOpResult.Success) {
+        if (log == null) {
+            val ex = logResult.exceptionOrNull()
+            if (ex is com.quickgit.app.data.github.GitHubApi.HttpStatusException && ex.code == 404) {
+                AppLog.i(TAG, "getJobLog: logs not ready yet (HTTP 404) for job=$jobId — will retry while live")
+                return Triple(null, emptyList(), PrOpResult.Success)
+            }
+            val logOp = logResult.toPrOpResult(ref.host)
             return Triple(null, emptyList(), logOp)
         }
         val annotations = githubApi().getJobAnnotations(ref.owner, ref.repo, jobId)
