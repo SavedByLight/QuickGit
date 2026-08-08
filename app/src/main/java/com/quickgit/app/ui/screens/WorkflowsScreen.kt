@@ -15,7 +15,6 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -513,7 +512,6 @@ private fun JobLogContent(
     val hScroll = rememberScrollState()
     val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
     val scope = rememberCoroutineScope()
-    val context = LocalContext.current
 
     // Auto-scroll to bottom when live log grows so you can follow progress.
     val logLength = state.logText?.length ?: 0
@@ -574,13 +572,6 @@ private fun JobLogContent(
                         enabled = !state.logText.isNullOrBlank()
                     ) {
                         Icon(Icons.Default.ContentCopy, "Copy entire log")
-                    }
-                    // Save to /storage/emulated/0/Downloads/QuickGit/
-                    IconButton(
-                        onClick = { vm.saveJobLog(context.applicationContext) },
-                        enabled = !state.logText.isNullOrBlank() && !state.busy
-                    ) {
-                        Icon(Icons.Default.Download, "Save log to Downloads/QuickGit")
                     }
                     // Toggle live watching
                     if (state.logJobId != null) {

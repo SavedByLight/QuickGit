@@ -1,15 +1,5 @@
 package com.quickgit.app.data
 
-import android.content.ContentValues
-import android.content.Context
-import android.os.Build
-import android.os.Environment
-import android.provider.MediaStore
-import java.io.File
-import java.io.FileOutputStream
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 import com.quickgit.app.data.github.GitHubApi
 import com.quickgit.app.data.github.toPrOpResult
 import com.quickgit.app.data.gitlab.GitLabApi
@@ -259,65 +249,6 @@ class WorkflowManager(
             gitlabApi(ref.host).retryPipeline(ref.projectPath, runId).toPrOpResult(ref.host)
         } else {
             githubApi().rerunWorkflowRun(ref.owner, ref.repo, runId).toPrOpResult(ref.host)
-        }
-    }
-
-
-    /**
-     * Save job log text under public Downloads/QuickGit/
-     * (e.g. /storage/emulated/0/Downloads/QuickGit/…).
-     * Uses MediaStore on API 29+ so no extra storage permission is required.
-     */
-    fun saveJobLogToDownloads(
-        context: Context,
-        jobId: Long,
-        jobName: String,
-        logText: String
-    ): Pair<String?, PrOpResult> {
-        if (logText.isBlank()) {
-            return null to PrOpResult.Error("No log text to save")
-        }
-        val safeName = jobName.replace(Regex("[^A-Za-z0-9._-]+"), "_").take(40).ifBlank { "job" }
-        val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
-        val fileName = "actions-${safeName}-${jobId}-$stamp.log"
-        return try {
-            val savedPath = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                val values = ContentValues().apply {
-                    put(MediaStore.Downloads.DISPLAY_NAME, fileName)
-                    put(MediaStore.Downloads.MIME_TYPE, "text/plain")
-                    put(
-                        MediaStore.Downloads.RELATIVE_PATH,
-                        Environment.DIRECTORY_DOWNLOADS + "/QuickGit"
-                    )
-                    put(MediaStore.Downloads.IS_PENDING, 1)
-                }
-                val resolver = context.contentResolver
-                val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-                    ?: return null to PrOpResult.Error("Could not create file in Downloads/QuickGit")
-                resolver.openOutputStream(uri)?.use { out ->
-                    out.write(logText.toByteArray(Charsets.UTF_8))
-                } ?: return null to PrOpResult.Error("Could not write log file")
-                values.clear()
-                values.put(MediaStore.Downloads.IS_PENDING, 0)
-                resolver.update(uri, values, null, null)
-                "/storage/emulated/0/Downloads/QuickGit/$fileName"
-            } else {
-                val dir = File(
-                    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
-                    "QuickGit"
-                )
-                if (!dir.exists() && !dir.mkdirs()) {
-                    return null to PrOpResult.Error("Could not create Downloads/QuickGit")
-                }
-                val file = File(dir, fileName)
-                FileOutputStream(file).use { it.write(logText.toByteArray(Charsets.UTF_8)) }
-                file.absolutePath
-            }
-            AppLog.i(TAG, "saveJobLogToDownloads: $savedPath")
-            savedPath to PrOpResult.Success
-        } catch (e: Exception) {
-            AppLog.e(TAG, "saveJobLogToDownloads failed", e)
-            null to PrOpResult.Error(e.message ?: "Failed to save log", e)
         }
     }
 
