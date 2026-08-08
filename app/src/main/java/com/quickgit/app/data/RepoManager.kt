@@ -76,7 +76,8 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
             // Streaming + concurrent SoftRef GC is a common "Inflater has been closed" source.
             cfg.streamFileThreshold = 20 * 1024 * 1024
             // mmap of pack files is unreliable on many Android devices / filesystems.
-            cfg.packedGitMMAP = false
+            // Use the Java setter — the field itself is private in WindowCacheConfig.
+            cfg.setPackedGitMMAP(false)
             cfg.install()
             AppLog.i(TAG, "JGit WindowCache limits installed for mobile heap")
         } catch (e: Exception) {
