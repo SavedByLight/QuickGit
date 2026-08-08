@@ -127,6 +127,14 @@ class CredentialStore(context: Context) {
         editor.apply()
     }
 
+    fun saveGpgPassphrase(passphrase: String?) {
+        if (passphrase.isNullOrBlank()) {
+            prefs.edit().remove(KEY_GPG_PASSPHRASE).apply()
+        } else {
+            prefs.edit().putString(KEY_GPG_PASSPHRASE, passphrase).apply()
+        }
+    }
+
     fun clearGpgKey() {
         prefs.edit()
             .remove(KEY_GPG_PRIVATE)

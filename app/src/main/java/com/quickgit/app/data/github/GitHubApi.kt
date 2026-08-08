@@ -678,13 +678,18 @@ private fun JSONObject.toPullRequest(): PullRequest {
     }
 }
 
-/** Maps a Result<T> failure from any GitHubApi call onto PrOpResult, distinguishing auth failures. */
+/** Maps a Result<T> failure from GitHub/GitLab API calls onto PrOpResult, distinguishing auth failures. */
 fun <T> Result<T>.toPrOpResult(host: String = "github.com"): PrOpResult {
     val e = exceptionOrNull() ?: return PrOpResult.Success
     AppLog.e("GitHubApi", "request failed", e)
-    return if (e is GitHubApi.HttpStatusException && (e.code == 401 || e.code == 403)) {
+    val code = when (e) {
+        is GitHubApi.HttpStatusException -> e.code
+        is com.quickgit.app.data.gitlab.GitLabApi.HttpStatusException -> e.code
+        else -> null
+    }
+    return if (code == 401 || code == 403) {
         PrOpResult.AuthRequired(host)
     } else {
-        PrOpResult.Error(e.message ?: "GitHub request failed", e)
+        PrOpResult.Error(e.message ?: "API request failed", e)
     }
 }
