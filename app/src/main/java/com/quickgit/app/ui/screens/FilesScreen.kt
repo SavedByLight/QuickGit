@@ -114,53 +114,47 @@ fun FilesScreen(
                     IconButton(onClick = { vm.openDir(state.currentDir) }) {
                         Icon(Icons.Default.Refresh, contentDescription = "Refresh")
                     }
-                    Box {
-                        IconButton(onClick = { createMenuExpanded = true }) {
-                            Icon(Icons.Default.Add, contentDescription = "Create")
-                        }
-                        DropdownMenu(
-                            expanded = createMenuExpanded,
-                            onDismissRequest = { createMenuExpanded = false }
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text("New file") },
-                                onClick = {
-                                    createMenuExpanded = false
-                                    createFolderMode = false
-                                    newName = ""
-                                    showCreateDialog = true
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("New folder") },
-                                onClick = {
-                                    createMenuExpanded = false
-                                    createFolderMode = true
-                                    newName = ""
-                                    showCreateDialog = true
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Add from device") },
-                                leadingIcon = { Icon(Icons.Default.UploadFile, contentDescription = null) },
-                                onClick = {
-                                    createMenuExpanded = false
-                                    importFilesLauncher.launch(arrayOf("*/*"))
-                                }
-                            )
-                        }
-                    }
                 }
             )
         },
         floatingActionButton = {
-            if (state.entries.isNotEmpty()) {
-                FloatingActionButton(onClick = {
-                    createFolderMode = false
-                    newName = ""
-                    showCreateDialog = true
-                }) {
-                    Icon(Icons.Default.Add, contentDescription = "New file")
+            // All create actions live on the bottom-right FAB menu.
+            Box {
+                FloatingActionButton(onClick = { createMenuExpanded = true }) {
+                    Icon(Icons.Default.Add, contentDescription = "Create")
+                }
+                DropdownMenu(
+                    expanded = createMenuExpanded,
+                    onDismissRequest = { createMenuExpanded = false }
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("New file") },
+                        leadingIcon = { Icon(Icons.Default.InsertDriveFile, contentDescription = null) },
+                        onClick = {
+                            createMenuExpanded = false
+                            createFolderMode = false
+                            newName = ""
+                            showCreateDialog = true
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("New folder") },
+                        leadingIcon = { Icon(Icons.Default.Folder, contentDescription = null) },
+                        onClick = {
+                            createMenuExpanded = false
+                            createFolderMode = true
+                            newName = ""
+                            showCreateDialog = true
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Add from device") },
+                        leadingIcon = { Icon(Icons.Default.UploadFile, contentDescription = null) },
+                        onClick = {
+                            createMenuExpanded = false
+                            importFilesLauncher.launch(arrayOf("*/*"))
+                        }
+                    )
                 }
             }
         }
