@@ -171,15 +171,11 @@ fun RepoDetailScreen(
                 }
                 Spacer(Modifier.width(8.dp))
                 OutlinedButton(
-                    onClick = {
-                        forcePushUseLease = true
-                        showForcePushConfirm = true
-                    },
+                    onClick = { showLfsOptions = true },
                     enabled = !state.busy,
-                    modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = GitRed)
+                    modifier = Modifier.weight(1f)
                 ) {
-                    Text("Force push")
+                    Text("LFS")
                 }
             }
 
@@ -214,6 +210,30 @@ fun RepoDetailScreen(
                                 onSelect = { pushForReview = false }
                             )
 
+                            Spacer(Modifier.height(12.dp))
+                            Text(
+                                "Force push",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = GitRed
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            TextButton(
+                                onClick = {
+                                    showPushModeDialog = false
+                                    forcePushUseLease = true
+                                    showForcePushConfirm = true
+                                },
+                                colors = ButtonDefaults.textButtonColors(contentColor = GitRed)
+                            ) { Text("Force with lease…") }
+                            TextButton(
+                                onClick = {
+                                    showPushModeDialog = false
+                                    forcePushUseLease = false
+                                    showForcePushConfirm = true
+                                },
+                                colors = ButtonDefaults.textButtonColors(contentColor = GitRed)
+                            ) { Text("Force (no lease)…") }
+
                             Spacer(Modifier.height(20.dp))
                             Row(
                                 Modifier.fillMaxWidth(),
@@ -237,15 +257,7 @@ fun RepoDetailScreen(
                     }
                 }
             }
-            Row(Modifier.fillMaxWidth().padding(16.dp, 0.dp, 16.dp, 4.dp)) {
-                OutlinedButton(onClick = { vm.lfsInstall() }, enabled = !state.busy, modifier = Modifier.weight(1f)) {
-                    Text("LFS install")
-                }
-                Spacer(Modifier.width(8.dp))
-                OutlinedButton(onClick = { showLfsTrack = true }, enabled = !state.busy, modifier = Modifier.weight(1f)) {
-                    Text("LFS track")
-                }
-            }
+
 
             if (showPullOptions) {
                 androidx.compose.ui.window.Dialog(onDismissRequest = { showPullOptions = false }) {
@@ -301,7 +313,71 @@ fun RepoDetailScreen(
                                 modifier = Modifier.fillMaxWidth()
                             ) { Text("Git push + LFS") }
                             Spacer(Modifier.height(8.dp))
+                            Text(
+                                "Force push",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = GitRed
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            TextButton(
+                                onClick = {
+                                    showPushOptions = false
+                                    forcePushUseLease = true
+                                    showForcePushConfirm = true
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = ButtonDefaults.textButtonColors(contentColor = GitRed)
+                            ) { Text("Force with lease…") }
+                            TextButton(
+                                onClick = {
+                                    showPushOptions = false
+                                    forcePushUseLease = false
+                                    showForcePushConfirm = true
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = ButtonDefaults.textButtonColors(contentColor = GitRed)
+                            ) { Text("Force (no lease)…") }
+                            Spacer(Modifier.height(8.dp))
                             TextButton(onClick = { showPushOptions = false }, modifier = Modifier.align(Alignment.End)) {
+                                Text("Cancel")
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (showLfsOptions) {
+                androidx.compose.ui.window.Dialog(onDismissRequest = { showLfsOptions = false }) {
+                    Surface(
+                        shape = MaterialTheme.shapes.extraLarge,
+                        tonalElevation = 6.dp,
+                        modifier = Modifier.fillMaxWidth().padding(24.dp)
+                    ) {
+                        Column(Modifier.padding(24.dp)) {
+                            Text("Git LFS", style = MaterialTheme.typography.headlineSmall)
+                            Spacer(Modifier.height(12.dp))
+                            TextButton(
+                                onClick = { showLfsOptions = false; vm.lfsInstall() },
+                                modifier = Modifier.fillMaxWidth()
+                            ) { Text("LFS install") }
+                            TextButton(
+                                onClick = { showLfsOptions = false; showLfsTrack = true },
+                                modifier = Modifier.fillMaxWidth()
+                            ) { Text("LFS track…") }
+                            TextButton(
+                                onClick = { showLfsOptions = false; vm.fetchLfs() },
+                                modifier = Modifier.fillMaxWidth()
+                            ) { Text("LFS pull") }
+                            TextButton(
+                                onClick = { showLfsOptions = false; vm.pushLfs() },
+                                modifier = Modifier.fillMaxWidth()
+                            ) { Text("LFS push") }
+                            TextButton(
+                                onClick = { showLfsOptions = false; vm.lfsStatus() },
+                                modifier = Modifier.fillMaxWidth()
+                            ) { Text("LFS status") }
+                            Spacer(Modifier.height(8.dp))
+                            TextButton(onClick = { showLfsOptions = false }, modifier = Modifier.align(Alignment.End)) {
                                 Text("Cancel")
                             }
                         }
