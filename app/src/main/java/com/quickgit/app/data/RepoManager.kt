@@ -57,23 +57,43 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     /**
      * Cap JGit's pack window cache so large clones/fetches are less likely to blow the
      * Android heap (default packed-git limits are desktop-sized).
+     *
+     * "Inflater has been closed" on Android is usually WindowCache eviction / SoftReference
+     * GC recycling a window while pack inflation is still in progress, or mmap issues.
+     * We disable mmap, keep a moderate packed limit, and avoid the pure-streaming path for
+     * mid-size objects.
      */
     private fun installJGitMemoryLimits() {
         try {
             val cfg = WindowCacheConfig()
-            // Keep mobile-safe limits, but high enough that pack delta inflation does not
-            // recycle windows mid-read ("Inflater has been closed").
-            cfg.packedGitLimit = 48L * 1024 * 1024
-            cfg.packedGitWindowSize = 32 * 1024
-            cfg.deltaBaseCacheLimit = 10 * 1024 * 1024
-            // Objects larger than this are streamed; streaming + WindowCache on Android
-            // is a common source of "Inflater has been closed". Prefer buffered windows.
-            cfg.streamFileThreshold = 50 * 1024 * 1024
+            // Cap total packed-git windows. Higher = fewer mid-read evictions on large packs;
+            // still bounded so a single clone cannot exhaust a mid-range phone heap.
+            cfg.packedGitLimit = 64L * 1024 * 1024
+            // Smaller windows = finer-grained caching; pairs better with a higher limit.
+            cfg.packedGitWindowSize = 16 * 1024
+            cfg.deltaBaseCacheLimit = 8 * 1024 * 1024
+            // Prefer loading objects into windows rather than pure streaming where possible.
+            // Streaming + concurrent SoftRef GC is a common "Inflater has been closed" source.
+            cfg.streamFileThreshold = 20 * 1024 * 1024
+            // mmap of pack files is unreliable on many Android devices / filesystems.
+            cfg.packedGitMMAP = false
             cfg.install()
             AppLog.i(TAG, "JGit WindowCache limits installed for mobile heap")
         } catch (e: Exception) {
             AppLog.w(TAG, "Could not install JGit WindowCache config: ${e.message}")
         }
+    }
+
+    /** True when the exception looks like the Android/JGit Inflater + WindowCache race. */
+    private fun isInflaterRace(e: Throwable): Boolean {
+        var t: Throwable? = e
+        while (t != null) {
+            val msg = t.message.orEmpty()
+            if (msg.contains("Inflater has been closed", ignoreCase = true)) return true
+            if (msg.contains("Inflater", ignoreCase = true) && msg.contains("closed", ignoreCase = true)) return true
+            t = t.cause
+        }
+        return false
     }
 
     /** Serializes JGit pack access — concurrent clones can close each other's Inflater. */
@@ -409,12 +429,14 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         AppLog.i(TAG, "clone: $cloneUrl -> ${destination.absolutePath}")
 
         var lastError: Exception? = null
-        // Retry a couple of times for transient JGit pack-window races on Android.
-        val maxAttempts = 3
+        // More attempts for large packs / LFS-heavy repos where Android GC closes Inflater mid-read.
+        val maxAttempts = 5
         for (attempt in 1..maxAttempts) {
             if (attempt > 1) {
                 cleanUpFailedCloneDestination(destination, alreadyExisted)
+                // Give the GC time to release SoftReferences holding stale WindowCache entries.
                 System.gc()
+                try { Thread.sleep(800L * attempt) } catch (_: InterruptedException) {}
                 onProgress("Retrying clone (attempt $attempt/$maxAttempts)…")
                 AppLog.w(TAG, "clone retry $attempt/$maxAttempts for $label after: ${lastError?.message}")
             }
@@ -423,6 +445,11 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                     // Re-install window cache each attempt — soft refs can leave a bad
                     // Inflater in the shared cache after a failed clone.
                     installJGitMemoryLimits()
+
+                    // Two-phase clone reduces peak concurrent inflater use on large packs:
+                    // 1) fetch objects without writing the working tree
+                    // 2) checkout into a fresh cache state
+                    onProgress(if (attempt == 1) "Downloading…" else "Downloading (retry $attempt)…")
                     val cmd = Git.cloneRepository()
                         .setURI(cloneUrl)
                         .setDirectory(destination)
@@ -431,15 +458,32 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                         .setCloneAllBranches(false)
                         .setCloneSubmodules(false)
                         .setDepth(1)
+                        .setNoCheckout(true)
                         .setProgressMonitor(TextProgress(onProgress))
                     applyTransportConfig(cmd, cloneUrl)
-                    cmd.call().close()
+                    val git = cmd.call()
+                    try {
+                        installJGitMemoryLimits()
+                        onProgress("Checking out files…")
+                        git.checkout()
+                            .setAllPaths(true)
+                            .setProgressMonitor(TextProgress(onProgress))
+                            .call()
+                    } finally {
+                        git.close()
+                    }
                 }
                 rememberExternalRepoPath(destination)
                 val lfsMsg = maybeFetchLfs(destination.absolutePath, cloneUrl, onProgress)
                 AppLog.i(TAG, "clone succeeded: ${destination.absolutePath}" + (lfsMsg?.let { " ($it)" } ?: ""))
                 return GitOpResult.Success
             } catch (e: org.eclipse.jgit.api.errors.TransportException) {
+                // TransportException can wrap Inflater races from the pack path; retry those.
+                if (isInflaterRace(e) && attempt < maxAttempts) {
+                    lastError = e
+                    AppLog.w(TAG, "clone inflater race (transport) on $label — will retry")
+                    continue
+                }
                 cleanUpFailedCloneDestination(destination, alreadyExisted)
                 AppLog.e(TAG, "clone failed (transport): $label", e)
                 return if (isAuthFailure(e)) GitOpResult.AuthRequired(cloneUrl)
@@ -454,12 +498,8 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                 )
             } catch (e: Exception) {
                 lastError = e
-                val msg = e.message.orEmpty()
-                val inflaterRace = msg.contains("Inflater has been closed", ignoreCase = true) ||
-                    msg.contains("Inflater", ignoreCase = true) && msg.contains("closed", ignoreCase = true)
-                if (inflaterRace && attempt < maxAttempts) {
+                if (isInflaterRace(e) && attempt < maxAttempts) {
                     AppLog.w(TAG, "clone inflater race on $label — will retry")
-                    try { Thread.sleep(500L * attempt) } catch (_: InterruptedException) {}
                     continue
                 }
                 cleanUpFailedCloneDestination(destination, alreadyExisted)
@@ -468,7 +508,11 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
             }
         }
         cleanUpFailedCloneDestination(destination, alreadyExisted)
-        return GitOpResult.Error(lastError?.message ?: "Clone failed", lastError)
+        return GitOpResult.Error(
+            lastError?.message
+                ?: "Clone failed after $maxAttempts attempts (often memory pressure on large repos)",
+            lastError
+        )
     }
 
     /**

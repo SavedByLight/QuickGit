@@ -134,60 +134,67 @@ object LfsSupport {
             ?: return FetchResult(0, already, missing.size, "Unsupported remote for LFS (need https github-style URL)")
 
         val byOid = missing.associateBy { it.oid }
-        val objects = try {
-            batchRequest(
-                batchUrl = batchUrl,
-                operation = "download",
-                oids = missing.map { it.oid to it.size },
-                username = username,
-                token = token
-            )
-        } catch (e: Exception) {
-            AppLog.e(TAG, "LFS batch download failed", e)
-            return FetchResult(0, already, missing.size, e.message ?: "LFS batch failed")
-        }
-
+        // Chunk large batches — hosts reject or time out on multi-thousand-object payloads.
+        val batchSize = 100
+        val allOids = missing.map { it.oid to it.size }
         var downloaded = 0
         var failed = 0
-        for (obj in objects) {
-            val oid = obj.optString("oid").lowercase()
-            val pointer = byOid[oid]
-            if (pointer == null) continue
-            val err = obj.optJSONObject("error")
-            if (err != null) {
-                AppLog.w(TAG, "LFS object $oid error: ${err.optString("message")}")
-                failed++
-                continue
-            }
-            val actions = obj.optJSONObject("actions")
-            if (actions == null) {
-                failed++
-                continue
-            }
-            val download = actions.optJSONObject("download")
-            if (download == null) {
-                failed++
-                continue
-            }
-            val href = download.optString("href")
-            if (href.isBlank()) {
-                failed++
-                continue
-            }
-            val headerJson = download.optJSONObject("header")
-            try {
-                val dest = lfsObjectFile(repoRoot, oid)
-                dest.parentFile?.mkdirs()
-                downloadToFile(href, headerJson, dest)
-                if (dest.length() != pointer.size) {
-                    AppLog.w(TAG, "size mismatch for $oid: got ${dest.length()} expected ${pointer.size}")
-                }
-                smudgeIfNeeded(repoRoot, pointer, dest)
-                downloaded++
-                onProgress("LFS $downloaded/${missing.size}: ${pointer.relativePath}")
+        for (chunkStart in allOids.indices step batchSize) {
+            val chunk = allOids.subList(chunkStart, minOf(chunkStart + batchSize, allOids.size))
+            val objects = try {
+                batchRequest(
+                    batchUrl = batchUrl,
+                    operation = "download",
+                    oids = chunk,
+                    username = username,
+                    token = token
+                )
             } catch (e: Exception) {
-                AppLog.e(TAG, "download failed for $oid", e)
-                failed++
+                AppLog.e(TAG, "LFS batch download failed at offset $chunkStart", e)
+                failed += chunk.size
+                continue
+            }
+
+            for (obj in objects) {
+                val oid = obj.optString("oid").lowercase()
+                val pointer = byOid[oid]
+                if (pointer == null) continue
+                val err = obj.optJSONObject("error")
+                if (err != null) {
+                    AppLog.w(TAG, "LFS object $oid error: ${err.optString("message")}")
+                    failed++
+                    continue
+                }
+                val actions = obj.optJSONObject("actions")
+                if (actions == null) {
+                    failed++
+                    continue
+                }
+                val download = actions.optJSONObject("download")
+                if (download == null) {
+                    failed++
+                    continue
+                }
+                val href = download.optString("href")
+                if (href.isBlank()) {
+                    failed++
+                    continue
+                }
+                val headerJson = download.optJSONObject("header")
+                try {
+                    val dest = lfsObjectFile(repoRoot, oid)
+                    dest.parentFile?.mkdirs()
+                    downloadToFile(href, headerJson, dest)
+                    if (dest.length() != pointer.size) {
+                        AppLog.w(TAG, "size mismatch for $oid: got ${dest.length()} expected ${pointer.size}")
+                    }
+                    smudgeIfNeeded(repoRoot, pointer, dest)
+                    downloaded++
+                    onProgress("LFS $downloaded/${missing.size}: ${pointer.relativePath}")
+                } catch (e: Exception) {
+                    AppLog.e(TAG, "download failed for $oid", e)
+                    failed++
+                }
             }
         }
 
@@ -220,24 +227,28 @@ object LfsSupport {
             ?: return FetchResult(0, 0, local.size, "Unsupported remote for LFS upload")
 
         onProgress("Uploading ${local.size} LFS object(s)…")
-        val objects = try {
-            batchRequest(
-                batchUrl = batchUrl,
-                operation = "upload",
-                oids = local.map { it.oid to it.size },
-                username = username,
-                token = token
-            )
-        } catch (e: Exception) {
-            AppLog.e(TAG, "LFS batch upload failed", e)
-            return FetchResult(0, 0, local.size, e.message ?: "LFS upload batch failed")
-        }
-
         var uploaded = 0
         var skipped = 0
         var failed = 0
         val byOid = local.associateBy { it.oid }
-        for (obj in objects) {
+        val allOids = local.map { it.oid to it.size }
+        val batchSize = 100
+        for (chunkStart in allOids.indices step batchSize) {
+            val chunk = allOids.subList(chunkStart, minOf(chunkStart + batchSize, allOids.size))
+            val objects = try {
+                batchRequest(
+                    batchUrl = batchUrl,
+                    operation = "upload",
+                    oids = chunk,
+                    username = username,
+                    token = token
+                )
+            } catch (e: Exception) {
+                AppLog.e(TAG, "LFS batch upload failed at offset $chunkStart", e)
+                failed += chunk.size
+                continue
+            }
+            for (obj in objects) {
             val oid = obj.optString("oid").lowercase()
             val pointer = byOid[oid] ?: continue
             val err = obj.optJSONObject("error")
@@ -266,7 +277,8 @@ object LfsSupport {
                 AppLog.e(TAG, "upload failed for $oid", e)
                 failed++
             }
-        }
+            } // end for (obj in objects)
+        } // end chunk loop
         val msg = "LFS: uploaded $uploaded, skipped $skipped, failed $failed"
         return FetchResult(uploaded, skipped, failed, msg)
     }
@@ -347,8 +359,9 @@ object LfsSupport {
         val tmp = File(dest.parentFile, dest.name + ".tmp")
         val conn = (URL(href).openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"
-            connectTimeout = 30_000
-            readTimeout = 300_000
+            connectTimeout = 60_000
+            // Large firmware/blob dumps can take many minutes on mobile networks.
+            readTimeout = 30 * 60_000
             instanceFollowRedirects = true
             headers?.keys()?.forEach { key ->
                 val k = key as String
