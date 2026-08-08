@@ -42,7 +42,12 @@ fun RepoDetailScreen(
     val state by vm.state.collectAsState()
     val snackbarHost = remember { SnackbarHostState() }
 
-    LaunchedEffect(state.lastResult) {
+    LaunchedEffect(state.lastResult, state.statusMessage) {
+        state.statusMessage?.let {
+            snackbarHost.showSnackbar(it)
+            vm.consumeResult()
+            return@LaunchedEffect
+        }
         when (val r = state.lastResult) {
             is GitOpResult.Success -> { snackbarHost.showSnackbar("Done"); vm.consumeResult() }
             is GitOpResult.UpToDate -> { snackbarHost.showSnackbar(r.message); vm.consumeResult() }
@@ -216,7 +221,25 @@ fun RepoDetailScreen(
                 }
                 Spacer(Modifier.width(8.dp))
                 OutlinedButton(onClick = { vm.fetchLfs() }, enabled = !state.busy, modifier = Modifier.weight(1f)) {
-                    Text("Fetch LFS")
+                    Text("LFS pull")
+                }
+            }
+            Row(Modifier.fillMaxWidth().padding(16.dp, 0.dp, 16.dp, 4.dp)) {
+                OutlinedButton(onClick = { vm.pushLfs() }, enabled = !state.busy, modifier = Modifier.weight(1f)) {
+                    Text("LFS push")
+                }
+                Spacer(Modifier.width(8.dp))
+                OutlinedButton(onClick = { vm.lfsInstall() }, enabled = !state.busy, modifier = Modifier.weight(1f)) {
+                    Text("LFS install")
+                }
+            }
+            Row(Modifier.fillMaxWidth().padding(16.dp, 0.dp, 16.dp, 4.dp)) {
+                OutlinedButton(onClick = { showLfsTrack = true }, enabled = !state.busy, modifier = Modifier.weight(1f)) {
+                    Text("LFS track")
+                }
+                Spacer(Modifier.width(8.dp))
+                OutlinedButton(onClick = { vm.lfsStatus() }, enabled = !state.busy, modifier = Modifier.weight(1f)) {
+                    Text("LFS status")
                 }
             }
 

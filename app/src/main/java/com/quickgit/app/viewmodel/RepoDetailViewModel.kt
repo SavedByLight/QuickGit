@@ -21,6 +21,7 @@ data class RepoDetailUiState(
     val refreshing: Boolean = false,
     val commitMessage: String = "",
     val lastResult: GitOpResult? = null,
+    val statusMessage: String? = null,
     val authorName: String = "",
     val authorEmail: String = "",
     /** Append Signed-off-by trailer on commit (git commit -s). */
@@ -194,7 +195,58 @@ class RepoDetailViewModel(private val repoManager: RepoManager) : ViewModel() {
         }
     }
 
-    fun consumeResult() { _state.value = _state.value.copy(lastResult = null) }
+    fun pushLfs() {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(busy = true)
+            val result = withContext(Dispatchers.IO) { repoManager.pushLfs(repoPath) }
+            _state.value = _state.value.copy(busy = false, lastResult = result)
+        }
+    }
+
+    fun lfsInstall() {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(busy = true)
+            val result = withContext(Dispatchers.IO) { repoManager.lfsInstall(repoPath) }
+            _state.value = _state.value.copy(busy = false, lastResult = result)
+            if (result is GitOpResult.Success) loadStatus(showRefreshing = false)
+        }
+    }
+
+    fun lfsTrack(pattern: String) {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(busy = true)
+            val result = withContext(Dispatchers.IO) { repoManager.lfsTrack(repoPath, pattern) }
+            _state.value = _state.value.copy(busy = false, lastResult = result)
+            if (result is GitOpResult.Success) loadStatus(showRefreshing = false)
+        }
+    }
+
+    fun lfsUntrack(pattern: String) {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(busy = true)
+            val result = withContext(Dispatchers.IO) { repoManager.lfsUntrack(repoPath, pattern) }
+            _state.value = _state.value.copy(busy = false, lastResult = result)
+            if (result is GitOpResult.Success) loadStatus(showRefreshing = false)
+        }
+    }
+
+    fun lfsStatus() {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(busy = true)
+            val (st, result) = withContext(Dispatchers.IO) { repoManager.lfsStatus(repoPath) }
+            val msg = st?.message
+            _state.value = _state.value.copy(
+                busy = false,
+                lastResult = if (msg != null && result is GitOpResult.Success) {
+                    // Surface summary via Success path — UI shows lastResult
+                    result
+                } else result,
+                statusMessage = msg
+            )
+        }
+    }
+
+    fun consumeResult() { _state.value = _state.value.copy(lastResult = null, statusMessage = null) }
 
     private fun isGerritRemoteUrl(url: String?): Boolean {
         if (url.isNullOrBlank()) return false

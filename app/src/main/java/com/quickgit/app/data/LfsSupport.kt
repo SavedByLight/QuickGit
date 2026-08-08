@@ -472,4 +472,198 @@ object LfsSupport {
         }
         return md.digest().joinToString("") { "%02x".format(it) }
     }
+
+
+    data class LfsStatus(
+        val installed: Boolean,
+        val trackedPatterns: List<String>,
+        val pointerCount: Int,
+        val localObjectCount: Int,
+        val missingObjectCount: Int,
+        val smudgedEstimate: Int,
+        val message: String
+    )
+
+    /** True when remote is GitHub or GitLab (including self-hosted gitlab.* hosts). */
+    fun isSupportedRemote(remoteUrl: String): Boolean {
+        val u = remoteUrl.lowercase()
+        if ("github.com" in u) return true
+        if ("gitlab.com" in u) return true
+        if ("gitlab." in u) return true // self-hosted e.g. gitlab.example.com
+        // ssh form git@gitlab...
+        if (u.startsWith("git@") && "gitlab" in u.substringBefore(":")) return true
+        if (u.startsWith("git@") && "github.com" in u) return true
+        return false
+    }
+
+    /**
+     * Equivalent of `git lfs install` for this repo (local only — no global hooks binary).
+     * Creates `.git/lfs`, records local config flags used by QuickGit.
+     */
+    fun install(repoRoot: File): String {
+        val lfsDir = File(repoRoot, ".git/lfs")
+        File(lfsDir, "objects").mkdirs()
+        File(lfsDir, "tmp").mkdirs()
+        // Local config markers (JGit-readable)
+        val cfgFile = File(repoRoot, ".git/config")
+        val text = if (cfgFile.isFile) cfgFile.readText() else ""
+        if ("[lfs]" !in text) {
+            cfgFile.appendText("\n[lfs]\n\trepositoryformatversion = 0\n")
+        }
+        // Ensure a .gitattributes exists so track can append
+        val ga = File(repoRoot, ".gitattributes")
+        if (!ga.exists()) ga.writeText("")
+        AppLog.i(TAG, "lfs install: ${repoRoot.absolutePath}")
+        return "Git LFS enabled for this repository"
+    }
+
+    fun isInstalled(repoRoot: File): Boolean =
+        File(repoRoot, ".git/lfs").isDirectory
+
+    /** Patterns from .gitattributes that use filter=lfs (like `git lfs track` list). */
+    fun trackedPatterns(repoRoot: File): List<String> {
+        val ga = File(repoRoot, ".gitattributes")
+        if (!ga.isFile) return emptyList()
+        return ga.readLines()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() && !it.startsWith("#") }
+            .filter { "filter=lfs" in it }
+            .map { it.split(Regex("\\s+")).first() }
+            .distinct()
+    }
+
+    /**
+     * `git lfs track <pattern>` — appends to .gitattributes.
+     * Example pattern: `*.psd` or `path/to/large.bin`
+     */
+    fun track(repoRoot: File, pattern: String): String {
+        val p = pattern.trim()
+        if (p.isEmpty()) throw IllegalArgumentException("Pattern is empty")
+        install(repoRoot)
+        val existing = trackedPatterns(repoRoot)
+        if (p in existing) return "Already tracking $p"
+        val line = "$p filter=lfs diff=lfs merge=lfs -text\n"
+        File(repoRoot, ".gitattributes").appendText(line)
+        AppLog.i(TAG, "lfs track: $p")
+        return "Tracking $p"
+    }
+
+    /** `git lfs untrack <pattern>` — removes matching filter=lfs lines from .gitattributes. */
+    fun untrack(repoRoot: File, pattern: String): String {
+        val p = pattern.trim()
+        val ga = File(repoRoot, ".gitattributes")
+        if (!ga.isFile) return "No .gitattributes"
+        val lines = ga.readLines()
+        val kept = lines.filterNot { line ->
+            val t = line.trim()
+            t.isNotEmpty() && !t.startsWith("#") && "filter=lfs" in t &&
+                t.split(Regex("\\s+")).first() == p
+        }
+        if (kept.size == lines.size) return "Pattern not tracked: $p"
+        ga.writeText(kept.joinToString("\n").let { if (it.endsWith("\n") || it.isEmpty()) it else "$it\n" })
+        AppLog.i(TAG, "lfs untrack: $p")
+        return "Untracked $p"
+    }
+
+    /** `git lfs status` / `git lfs ls-files` summary. */
+    fun status(repoRoot: File): LfsStatus {
+        val installed = isInstalled(repoRoot)
+        val patterns = trackedPatterns(repoRoot)
+        val pointers = findPointerFiles(repoRoot)
+        var local = 0
+        var missing = 0
+        var smudged = 0
+        for (p in pointers) {
+            val obj = lfsObjectFile(repoRoot, p.oid)
+            if (obj.isFile) local++ else missing++
+            val work = File(repoRoot, p.relativePath)
+            if (work.isFile && !isPointerFile(work) && work.length() == p.size) smudged++
+        }
+        // Also count objects on disk not referenced by current pointers
+        val objRoot = File(repoRoot, ".git/lfs/objects")
+        val diskObjects = if (objRoot.isDirectory) {
+            objRoot.walkTopDown().filter { it.isFile && it.name.length == 64 }.count()
+        } else 0
+        val msg = buildString {
+            append(if (installed) "LFS installed" else "LFS not installed")
+            append(" · tracked ${patterns.size} pattern(s)")
+            append(" · ${pointers.size} pointer(s)")
+            append(" · $local object(s) present")
+            if (missing > 0) append(" · $missing missing")
+            if (diskObjects > local) append(" · $diskObjects object file(s) on disk")
+        }
+        return LfsStatus(installed, patterns, pointers.size, local, missing, smudged, msg)
+    }
+
+    /**
+     * Clean filter: if [relativePath] matches a tracked LFS pattern and the working file
+     * is not already a pointer, store the blob under `.git/lfs/objects` and rewrite the
+     * working file as an LFS pointer (so `git add` stores the pointer in the index).
+     * Returns true if the file was converted.
+     */
+    fun cleanIfNeeded(repoRoot: File, relativePath: String): Boolean {
+        val patterns = trackedPatterns(repoRoot)
+        if (patterns.isEmpty()) return false
+        if (!pathMatchesAny(relativePath, patterns)) return false
+        val work = File(repoRoot, relativePath)
+        if (!work.isFile) return false
+        if (isPointerFile(work)) return false
+        install(repoRoot)
+        val oid = sha256(work)
+        val size = work.length()
+        val dest = lfsObjectFile(repoRoot, oid)
+        dest.parentFile?.mkdirs()
+        if (!dest.exists()) {
+            work.copyTo(dest, overwrite = false)
+        }
+        work.writeText(pointerFileContent(oid, size))
+        AppLog.i(TAG, "lfs clean: $relativePath -> $oid ($size bytes)")
+        return true
+    }
+
+    /** Simple gitignore-style match for LFS track patterns (`*.psd`, `dir/**`, exact paths). */
+    fun pathMatchesAny(relativePath: String, patterns: List<String>): Boolean {
+        val path = relativePath.replace('\\', '/').removePrefix("./")
+        return patterns.any { patternMatches(path, it) }
+    }
+
+    private fun patternMatches(path: String, pattern: String): Boolean {
+        val p = pattern.replace('\\', '/').removePrefix("./")
+        if (p == path) return true
+        // *.ext
+        if (p.startsWith("*.") && !p.contains('/')) {
+            return path.substringAfterLast('/').endsWith(p.removePrefix("*"))
+        }
+        // ** / or simple contains glob — convert * to regex
+        val regex = buildString {
+            append('^')
+            var i = 0
+            while (i < p.length) {
+                when (val c = p[i]) {
+                    '*' -> {
+                        if (i + 1 < p.length && p[i + 1] == '*') {
+                            append(".*")
+                            i += 2
+                            if (i < p.length && p[i] == '/') i++
+                        } else {
+                            append("[^/]*")
+                            i++
+                        }
+                    }
+                    '?' -> { append("[^/]"); i++ }
+                    '.', '(', ')', '+', '|', '^', '$', '{', '}', '[', ']' -> {
+                        append('\\'); append(c); i++
+                    }
+                    else -> { append(c); i++ }
+                }
+            }
+            append('$')
+        }
+        return try {
+            path.matches(Regex(regex))
+        } catch (_: Exception) {
+            false
+        }
+    }
+
 }

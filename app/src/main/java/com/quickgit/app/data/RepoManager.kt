@@ -744,6 +744,14 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
             val present = files - missing.toSet()
 
             if (present.isNotEmpty()) {
+                // LFS clean: convert tracked large files to pointers before indexing
+                present.forEach { rel ->
+                    try {
+                        LfsSupport.cleanIfNeeded(File(path), rel)
+                    } catch (e: Exception) {
+                        AppLog.w(TAG, "lfs clean skipped for $rel: ${e.message}")
+                    }
+                }
                 val cmd = git.add()
                 present.forEach { cmd.addFilepattern(it) }
                 cmd.call()
@@ -770,6 +778,20 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     fun stageAll(path: String): GitOpResult = withRepoLock(path) {
         AppLog.i(TAG, "stageAll: $path")
         openGit(path).use { git ->
+            // LFS clean for any path that matches track patterns before indexing
+            try {
+                val s = git.status().call()
+                val candidates = (s.untracked + s.modified + s.untrackedFolders).distinct()
+                candidates.forEach { rel ->
+                    try {
+                        LfsSupport.cleanIfNeeded(File(path), rel)
+                    } catch (e: Exception) {
+                        AppLog.w(TAG, "lfs clean skipped for $rel: ${e.message}")
+                    }
+                }
+            } catch (e: Exception) {
+                AppLog.w(TAG, "lfs clean pre-scan failed: ${e.message}")
+            }
             git.add().addFilepattern(".").call()
             // Same deletion gap as stage() above — catch any remaining missing paths.
             val missing = git.status().call().missing
@@ -1629,21 +1651,73 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     // ---------------- Transport / auth helpers ----------------
 
 
+    private fun originUrlOrError(path: String): Pair<String?, GitOpResult?> {
+        val url = openGit(path).use {
+            it.repository.config.getString("remote", "origin", "url")
+        }
+        if (url.isNullOrBlank()) return null to GitOpResult.Error("No origin remote configured")
+        if (!LfsSupport.isSupportedRemote(url)) {
+            return null to GitOpResult.Error("Git LFS is only supported for GitHub and GitLab remotes")
+        }
+        return url to null
+    }
+
+    private fun lfsAuth(remoteUrl: String): Triple<String?, String?, GitOpResult?> {
+        val host = CredentialStore.hostOf(remoteUrl)
+        val user = credentialStore.getHttpsUsername(host)
+        val token = credentialStore.getHttpsToken(host)
+        if (token.isNullOrBlank() && (remoteUrl.startsWith("https://") || remoteUrl.startsWith("http://"))) {
+            return Triple(user, token, GitOpResult.AuthRequired(remoteUrl))
+        }
+        return Triple(user, token, null)
+    }
+
+    /** `git lfs install` (repo-local). */
+    fun lfsInstall(path: String): GitOpResult = try {
+        val msg = LfsSupport.install(File(path))
+        AppLog.i(TAG, msg)
+        GitOpResult.Success
+    } catch (e: Exception) {
+        GitOpResult.Error(e.message ?: "LFS install failed", e)
+    }
+
+    /** `git lfs track <pattern>`. */
+    fun lfsTrack(path: String, pattern: String): GitOpResult = try {
+        val msg = LfsSupport.track(File(path), pattern)
+        AppLog.i(TAG, msg)
+        GitOpResult.Success
+    } catch (e: Exception) {
+        GitOpResult.Error(e.message ?: "LFS track failed", e)
+    }
+
+    /** `git lfs untrack <pattern>`. */
+    fun lfsUntrack(path: String, pattern: String): GitOpResult = try {
+        val msg = LfsSupport.untrack(File(path), pattern)
+        AppLog.i(TAG, msg)
+        GitOpResult.Success
+    } catch (e: Exception) {
+        GitOpResult.Error(e.message ?: "LFS untrack failed", e)
+    }
+
+    /** `git lfs status` summary text. */
+    fun lfsStatus(path: String): Pair<LfsSupport.LfsStatus?, GitOpResult> = try {
+        val st = LfsSupport.status(File(path))
+        AppLog.i(TAG, st.message)
+        st to GitOpResult.Success
+    } catch (e: Exception) {
+        null to GitOpResult.Error(e.message ?: "LFS status failed", e)
+    }
+
     /**
-     * Download Git LFS objects for pointer files in the working tree and replace pointers
-     * with real content. Uses the HTTPS token for the remote host.
+     * Download Git LFS objects for pointer files (`git lfs pull` / fetch).
+     * GitHub and GitLab only.
      */
     fun fetchLfs(path: String, onProgress: (String) -> Unit = {}): GitOpResult {
         return try {
-            val remoteUrl = openGit(path).use {
-                it.repository.config.getString("remote", "origin", "url")
-            } ?: return GitOpResult.Error("No origin remote configured")
-            val host = CredentialStore.hostOf(remoteUrl)
-            val user = credentialStore.getHttpsUsername(host)
-            val token = credentialStore.getHttpsToken(host)
-            if (token.isNullOrBlank() && (remoteUrl.startsWith("https://") || remoteUrl.startsWith("http://"))) {
-                return GitOpResult.AuthRequired(remoteUrl)
-            }
+            val (remoteUrl, err) = originUrlOrError(path)
+            if (err != null) return err
+            val (user, token, authErr) = lfsAuth(remoteUrl!!)
+            if (authErr != null) return authErr
             onProgress("Scanning for LFS pointers…")
             val result = LfsSupport.fetchAndSmudge(
                 repoRoot = File(path),
@@ -1652,20 +1726,49 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                 token = token,
                 onProgress = onProgress
             )
+            if (result.smudgedPaths.isNotEmpty()) markAssumeValid(path, result.smudgedPaths)
             AppLog.i(TAG, "fetchLfs: ${result.message}")
             if (result.failed > 0 && result.downloaded == 0 && result.alreadyPresent == 0) {
                 GitOpResult.Error(result.message)
-            } else {
-                GitOpResult.Success
-            }
+            } else GitOpResult.Success
         } catch (e: Exception) {
             AppLog.e(TAG, "fetchLfs failed", e)
             GitOpResult.Error(e.message ?: "LFS fetch failed", e)
         }
     }
 
+    /**
+     * Upload local LFS objects to the remote (`git lfs push`).
+     * GitHub and GitLab only. Called automatically before git push; also available manually.
+     */
+    fun pushLfs(path: String, onProgress: (String) -> Unit = {}): GitOpResult {
+        return try {
+            val (remoteUrl, err) = originUrlOrError(path)
+            if (err != null) return err
+            val (user, token, authErr) = lfsAuth(remoteUrl!!)
+            if (authErr != null) return authErr
+            onProgress("Uploading LFS objects…")
+            val result = LfsSupport.uploadLocalObjects(
+                repoRoot = File(path),
+                remoteUrl = remoteUrl,
+                username = user,
+                token = token,
+                onProgress = onProgress
+            )
+            AppLog.i(TAG, "pushLfs: ${result.message}")
+            if (result.failed > 0 && result.downloaded == 0) {
+                GitOpResult.Error(result.message)
+            } else GitOpResult.Success
+        } catch (e: Exception) {
+            AppLog.e(TAG, "pushLfs failed", e)
+            GitOpResult.Error(e.message ?: "LFS push failed", e)
+        }
+    }
+
+
     private fun maybeFetchLfs(path: String, remoteUrl: String, onProgress: (String) -> Unit = {}): String? {
         return try {
+            if (!LfsSupport.isSupportedRemote(remoteUrl)) return null
             val host = CredentialStore.hostOf(remoteUrl)
             val result = LfsSupport.fetchAndSmudge(
                 repoRoot = File(path),
@@ -1687,6 +1790,7 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
 
     private fun maybeUploadLfs(path: String, remoteUrl: String): String? {
         return try {
+            if (!LfsSupport.isSupportedRemote(remoteUrl)) return null
             val host = CredentialStore.hostOf(remoteUrl)
             val result = LfsSupport.uploadLocalObjects(
                 repoRoot = File(path),
