@@ -621,7 +621,7 @@ object LfsSupport {
         return true
     }
 
-    /** Simple gitignore-style match for LFS track patterns (`*.psd`, `dir/**`, exact paths). */
+    /** Simple gitignore-style match for LFS track patterns (e.g. *.psd, path globs, exact paths). */
     fun pathMatchesAny(relativePath: String, patterns: List<String>): Boolean {
         val path = relativePath.replace('\\', '/').removePrefix("./")
         return patterns.any { patternMatches(path, it) }

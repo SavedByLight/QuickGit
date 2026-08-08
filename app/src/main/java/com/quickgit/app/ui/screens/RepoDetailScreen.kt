@@ -125,7 +125,9 @@ fun RepoDetailScreen(
                 }
             }
 
-            var showForcePushConfirm by remember { mutableStateOf(false) }
+            var showLfsTrack by remember { mutableStateOf(false) }
+    var lfsTrackPattern by remember { mutableStateOf("*.psd") }
+    var showForcePushConfirm by remember { mutableStateOf(false) }
             // true = force-with-lease (safer default), false = unconditional force
             var forcePushUseLease by remember { mutableStateOf(true) }
             var showPushModeDialog by remember { mutableStateOf(false) }
@@ -241,6 +243,42 @@ fun RepoDetailScreen(
                 OutlinedButton(onClick = { vm.lfsStatus() }, enabled = !state.busy, modifier = Modifier.weight(1f)) {
                     Text("LFS status")
                 }
+            }
+
+
+            if (showLfsTrack) {
+                AlertDialog(
+                    onDismissRequest = { showLfsTrack = false },
+                    title = { Text("Track with Git LFS") },
+                    text = {
+                        Column {
+                            Text(
+                                "Files matching this pattern will be stored in LFS on GitHub/GitLab when staged.",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            OutlinedTextField(
+                                value = lfsTrackPattern,
+                                onValueChange = { lfsTrackPattern = it },
+                                label = { Text("Pattern") },
+                                placeholder = { Text("*.psd") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(
+                            onClick = {
+                                showLfsTrack = false
+                                vm.lfsTrack(lfsTrackPattern)
+                            }
+                        ) { Text("Track") }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showLfsTrack = false }) { Text("Cancel") }
+                    }
+                )
             }
 
             if (showForcePushConfirm) {
