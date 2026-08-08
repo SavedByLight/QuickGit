@@ -469,19 +469,34 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                         // Apply mobile config BEFORE checkout so the index/working tree
                         // are not compared using desktop filemode/symlink rules.
                         applyMobileRepoConfig(git)
-                        onProgress("Checking out files…")
-                        git.checkout()
-                            .setAllPaths(true)
-                            .setForce(true)
-                            .setProgressMonitor(TextProgress(onProgress))
-                            .call()
-                        // Force working tree + index to match HEAD exactly. On Android this
-                        // clears false "modified" noise from modes, symlinks, and partial checkout.
-                        onProgress("Syncing working tree…")
-                        git.reset()
-                            .setMode(org.eclipse.jgit.api.ResetCommand.ResetType.HARD)
-                            .setRef("HEAD")
-                            .call()
+
+                        // Empty remote (no commits yet): HEAD is unborn / unresolvable.
+                        // JGit has already configured the remote; skip checkout + hard-reset
+                        // so we don't hit "Invalid ref name: HEAD". Non-empty repos are
+                        // unchanged — they still get the full checkout + hard reset.
+                        val headId = try {
+                            git.repository.resolve(org.eclipse.jgit.lib.Constants.HEAD)
+                        } catch (_: Exception) {
+                            null
+                        }
+                        if (headId == null) {
+                            onProgress("Empty repository — ready for first commit")
+                            AppLog.i(TAG, "clone of empty repo: ${destination.absolutePath}")
+                        } else {
+                            onProgress("Checking out files…")
+                            git.checkout()
+                                .setAllPaths(true)
+                                .setForce(true)
+                                .setProgressMonitor(TextProgress(onProgress))
+                                .call()
+                            // Force working tree + index to match HEAD exactly. On Android this
+                            // clears false "modified" noise from modes, symlinks, and partial checkout.
+                            onProgress("Syncing working tree…")
+                            git.reset()
+                                .setMode(org.eclipse.jgit.api.ResetCommand.ResetType.HARD)
+                                .setRef("HEAD")
+                                .call()
+                        }
                     } finally {
                         git.close()
                     }
@@ -516,6 +531,15 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                 if (isInflaterRace(e) && attempt < maxAttempts) {
                     AppLog.w(TAG, "clone inflater race on $label — will retry")
                     continue
+                }
+                // Fallback: some JGit paths throw "Invalid ref name: HEAD" on truly empty
+                // remotes. If a .git directory was created, treat it as a successful empty clone
+                // instead of wiping the destination.
+                if (isEmptyRepoCloneError(e) && isValidGitDir(destination)) {
+                    rememberExternalRepoPath(destination)
+                    ensureMobileRepoConfig(destination.absolutePath)
+                    AppLog.i(TAG, "clone of empty repo (via exception fallback): ${destination.absolutePath}")
+                    return GitOpResult.Success
                 }
                 cleanUpFailedCloneDestination(destination, alreadyExisted)
                 AppLog.e(TAG, "clone failed: $label", e)
@@ -563,6 +587,33 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
             java.net.URI(uri.scheme, uri.authority, newPath, uri.query, uri.fragment).toString()
         } catch (_: Exception) {
             url
+        }
+    }
+
+    /** True when the exception is the classic empty-repo "Invalid ref name: HEAD" (or close variants). */
+    private fun isEmptyRepoCloneError(e: Throwable): Boolean {
+        var t: Throwable? = e
+        while (t != null) {
+            val msg = t.message ?: ""
+            if (msg.contains("Invalid ref name: HEAD", ignoreCase = true) ||
+                msg.contains("Invalid ref name HEAD", ignoreCase = true) ||
+                (msg.contains("HEAD", ignoreCase = true) && msg.contains("invalid ref", ignoreCase = true))
+            ) {
+                return true
+            }
+            t = t.cause
+        }
+        return false
+    }
+
+    /** Quick check that a directory looks like a usable git repo (has .git or is a bare repo). */
+    private fun isValidGitDir(dir: File): Boolean {
+        if (!dir.isDirectory) return false
+        val dotGit = File(dir, ".git")
+        return when {
+            dotGit.isDirectory -> File(dotGit, "config").isFile || File(dotGit, "HEAD").exists()
+            File(dir, "HEAD").exists() && File(dir, "config").isFile -> true // bare
+            else -> false
         }
     }
 
