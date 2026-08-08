@@ -136,6 +136,7 @@ fun RepoDetailScreen(
             var showPullOptions by remember { mutableStateOf(false) }
             var showPushOptions by remember { mutableStateOf(false) }
             var showStatusOptions by remember { mutableStateOf(false) }
+            var showLfsOptions by remember { mutableStateOf(false) }
 
             Row(Modifier.fillMaxWidth().padding(16.dp, 4.dp)) {
                 OutlinedButton(
