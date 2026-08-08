@@ -595,35 +595,43 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
      * - filemode=false: storage often cannot preserve +x bits
      * - autocrlf=false: avoid rewriting line endings on checkout
      * - symlinks=false: Android usually cannot create real symlinks in app storage
-     * - checkstat=minimum: avoid false dirty from coarse filesystem timestamps
      */
     private fun applyMobileRepoConfig(git: Git) {
-        val cfg = git.repository.config
-        var changed = false
-        if (cfg.getBoolean("core", null, "filemode", true)) {
-            cfg.setBoolean("core", null, "filemode", false)
-            changed = true
-        }
-        val acrlf = cfg.getString("core", null, "autocrlf")
-        if (acrlf == null || !acrlf.equals("false", ignoreCase = true)) {
-            cfg.setString("core", null, "autocrlf", "false")
-            changed = true
-        }
-        if (cfg.getBoolean("core", null, "symlinks", true)) {
-            cfg.setBoolean("core", null, "symlinks", false)
-            changed = true
-        }
-        val checkstat = cfg.getString("core", null, "checkstat")
-        if (checkstat == null || !checkstat.equals("minimum", ignoreCase = true)) {
-            cfg.setString("core", null, "checkstat", "minimum")
-            changed = true
-        }
-        if (changed) {
-            cfg.save()
-            AppLog.i(
-                TAG,
-                "mobile git config: filemode=false autocrlf=false symlinks=false checkstat=minimum"
-            )
+        try {
+            val cfg = git.repository.config
+            var changed = false
+            try {
+                if (cfg.getBoolean("core", null, "filemode", true)) {
+                    cfg.setBoolean("core", null, "filemode", false)
+                    changed = true
+                }
+            } catch (e: Exception) {
+                AppLog.w(TAG, "set core.filemode failed: ${e.message}")
+            }
+            try {
+                val acrlf = cfg.getString("core", null, "autocrlf")
+                if (acrlf == null || !acrlf.equals("false", ignoreCase = true)) {
+                    cfg.setString("core", null, "autocrlf", "false")
+                    changed = true
+                }
+            } catch (e: Exception) {
+                AppLog.w(TAG, "set core.autocrlf failed: ${e.message}")
+            }
+            try {
+                if (cfg.getBoolean("core", null, "symlinks", true)) {
+                    cfg.setBoolean("core", null, "symlinks", false)
+                    changed = true
+                }
+            } catch (e: Exception) {
+                AppLog.w(TAG, "set core.symlinks failed: ${e.message}")
+            }
+            // Do not set core.checkstat — JGit rejects "minimum" with Invalid value.
+            if (changed) {
+                cfg.save()
+                AppLog.i(TAG, "mobile git config: filemode=false autocrlf=false symlinks=false")
+            }
+        } catch (e: Exception) {
+            AppLog.w(TAG, "applyMobileRepoConfig failed: ${e.message}")
         }
     }
 
