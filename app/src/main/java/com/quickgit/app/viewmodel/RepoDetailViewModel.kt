@@ -186,6 +186,92 @@ class RepoDetailViewModel(private val repoManager: RepoManager) : ViewModel() {
         }
     }
 
+    /** Git pull then LFS pull (when supported). */
+    fun pullWithLfs() {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(busy = true)
+            val pullResult = withContext(Dispatchers.IO) { repoManager.pull(repoPath) }
+            if (pullResult is GitOpResult.Error || pullResult is GitOpResult.AuthRequired || pullResult is GitOpResult.Conflict) {
+                _state.value = _state.value.copy(busy = false, lastResult = pullResult)
+                loadStatus(showRefreshing = false)
+                return@launch
+            }
+            val lfsResult = withContext(Dispatchers.IO) { repoManager.fetchLfs(repoPath) }
+            _state.value = _state.value.copy(
+                busy = false,
+                lastResult = lfsResult,
+                statusMessage = when {
+                    lfsResult is GitOpResult.Success -> "Pull done · LFS pulled"
+                    lfsResult is GitOpResult.Error -> "Pull done · LFS: ${lfsResult.message}"
+                    else -> null
+                }
+            )
+            loadStatus(showRefreshing = false)
+        }
+    }
+
+    /** Git push then LFS push (LFS upload already runs inside push; this also covers LFS-only leftovers). */
+    fun pushWithLfs(force: Boolean = false, forceWithLease: Boolean = false) {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(busy = true)
+            val pushResult = withContext(Dispatchers.IO) {
+                repoManager.push(repoPath, force = force, forceWithLease = forceWithLease)
+            }
+            if (pushResult is GitOpResult.Error || pushResult is GitOpResult.AuthRequired) {
+                _state.value = _state.value.copy(busy = false, lastResult = pushResult)
+                return@launch
+            }
+            val lfsResult = withContext(Dispatchers.IO) { repoManager.pushLfs(repoPath) }
+            _state.value = _state.value.copy(
+                busy = false,
+                lastResult = if (lfsResult is GitOpResult.Error) lfsResult else pushResult,
+                statusMessage = when {
+                    lfsResult is GitOpResult.Success -> "Push done · LFS pushed"
+                    lfsResult is GitOpResult.Error -> "Push done · LFS: ${lfsResult.message}"
+                    else -> null
+                }
+            )
+        }
+    }
+
+    fun gitStatus() {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(busy = true)
+            val msg = withContext(Dispatchers.IO) {
+                try {
+                    repoManager.gitStatusSummary(repoPath)
+                } catch (e: Exception) {
+                    e.message ?: "Status failed"
+                }
+            }
+            _state.value = _state.value.copy(busy = false, statusMessage = msg, lastResult = null)
+        }
+    }
+
+    /** Combined git + LFS status text. */
+    fun fullStatus() {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(busy = true)
+            val msg = withContext(Dispatchers.IO) {
+                try {
+                    val git = repoManager.gitStatusSummary(repoPath)
+                    val (lfs, _) = repoManager.lfsStatus(repoPath)
+                    buildString {
+                        append(git)
+                        append("\n\n— LFS —\n")
+                        append(lfs?.message ?: "LFS status unavailable")
+                        lfs?.trackedPatterns?.takeIf { it.isNotEmpty() }?.let {
+                            append("\nPatterns: ${it.joinToString()}")
+                        }
+                    }
+                } catch (e: Exception) {
+                    e.message ?: "Status failed"
+                }
+            }
+            _state.value = _state.value.copy(busy = false, statusMessage = msg, lastResult = null)
+        }
+    }
+
     fun fetchLfs() {
         viewModelScope.launch {
             _state.value = _state.value.copy(busy = true)

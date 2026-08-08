@@ -713,6 +713,44 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
 
     // ---------------- Status / staging ----------------
 
+
+    /** Human-readable `git status` style summary for snackbars / status dialog. */
+    fun gitStatusSummary(path: String): String {
+        ensureMobileRepoConfig(path)
+        openGit(path).use { git ->
+            val s = git.status().call()
+            val branch = git.repository.branch ?: "(detached)"
+            return buildString {
+                append("On branch $branch")
+                if (s.isClean) {
+                    append("\nNothing to commit, working tree clean")
+                    return@buildString
+                }
+                if (s.conflicting.isNotEmpty()) {
+                    append("\nUnmerged paths (${s.conflicting.size}):")
+                    s.conflicting.sorted().take(12).forEach { append("\n  both modified: $it") }
+                }
+                val staged = s.added.size + s.changed.size + s.removed.size
+                if (staged > 0) {
+                    append("\nChanges to be committed ($staged):")
+                    s.added.sorted().take(8).forEach { append("\n  new file: $it") }
+                    s.changed.sorted().take(8).forEach { append("\n  modified: $it") }
+                    s.removed.sorted().take(8).forEach { append("\n  deleted: $it") }
+                }
+                val unstaged = s.modified.size + s.missing.size
+                if (unstaged > 0) {
+                    append("\nChanges not staged ($unstaged):")
+                    s.modified.sorted().take(8).forEach { append("\n  modified: $it") }
+                    s.missing.sorted().take(8).forEach { append("\n  deleted: $it") }
+                }
+                if (s.untracked.isNotEmpty()) {
+                    append("\nUntracked files (${s.untracked.size}):")
+                    s.untracked.sorted().take(8).forEach { append("\n  $it") }
+                }
+            }
+        }
+    }
+
     fun getStatus(path: String): RepoStatus {
         ensureMobileRepoConfig(path)
         openGit(path).use { git ->
