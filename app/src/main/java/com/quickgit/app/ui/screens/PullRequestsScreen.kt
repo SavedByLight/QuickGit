@@ -56,15 +56,15 @@ fun PullRequestsScreen(
         Scaffold(
             topBar = {
                 TopAppBar(
-                    title = { Text("Pull requests") },
+                    title = { Text(if (state.isGitLab) "Merge requests" else "Pull requests") },
                     navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back") } }
                 )
             }
         ) { padding ->
             Box(Modifier.padding(padding).fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
                 Text(
-                    "Pull request management currently supports GitHub repositories only. " +
-                        "This repo's origin doesn't point at github.com.",
+                    "Pull / merge request management supports GitHub and GitLab. " +
+                        "This repo's origin isn't recognized as either.",
                     textAlign = TextAlign.Center,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -77,7 +77,7 @@ fun PullRequestsScreen(
         snackbarHost = { SnackbarHost(snackbarHost) },
         topBar = {
             TopAppBar(
-                title = { Text("Pull requests") },
+                title = { Text(if (state.isGitLab) "Merge requests" else "Pull requests") },
                 navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back") } }
             )
         },

@@ -189,6 +189,99 @@ class GitLabApi(
         (request("POST", "/projects/$encoded/issues/$iid/notes", payload) as JSONObject).toNote()
     }
 
+    fun createIssue(projectId: String, title: String, description: String): Result<GitLabIssue> = runCatching {
+        val encoded = java.net.URLEncoder.encode(projectId, "UTF-8")
+        val payload = JSONObject().put("title", title).put("description", description)
+        (request("POST", "/projects/$encoded/issues", payload) as JSONObject).toIssue()
+    }
+
+    fun setIssueState(projectId: String, iid: Int, open: Boolean): Result<GitLabIssue> = runCatching {
+        val encoded = java.net.URLEncoder.encode(projectId, "UTF-8")
+        val payload = JSONObject().put("state_event", if (open) "reopen" else "close")
+        (request("PUT", "/projects/$encoded/issues/$iid", payload) as JSONObject).toIssue()
+    }
+
+    fun createMergeRequest(
+        projectId: String,
+        title: String,
+        description: String,
+        sourceBranch: String,
+        targetBranch: String,
+        draft: Boolean
+    ): Result<MergeRequest> = runCatching {
+        val encoded = java.net.URLEncoder.encode(projectId, "UTF-8")
+        val payload = JSONObject()
+            .put("title", if (draft && !title.startsWith("Draft:")) "Draft: $title" else title)
+            .put("description", description)
+            .put("source_branch", sourceBranch)
+            .put("target_branch", targetBranch)
+        (request("POST", "/projects/$encoded/merge_requests", payload) as JSONObject).toMergeRequest()
+    }
+
+    fun mergeMergeRequest(projectId: String, iid: Int, squash: Boolean = false): Result<MergeRequest> = runCatching {
+        val encoded = java.net.URLEncoder.encode(projectId, "UTF-8")
+        val payload = JSONObject().put("squash", squash)
+        (request("PUT", "/projects/$encoded/merge_requests/$iid/merge", payload) as JSONObject).toMergeRequest()
+    }
+
+    fun setMergeRequestState(projectId: String, iid: Int, open: Boolean): Result<MergeRequest> = runCatching {
+        val encoded = java.net.URLEncoder.encode(projectId, "UTF-8")
+        val payload = JSONObject().put("state_event", if (open) "reopen" else "close")
+        (request("PUT", "/projects/$encoded/merge_requests/$iid", payload) as JSONObject).toMergeRequest()
+    }
+
+    // ---- CI Pipelines (GitLab "Build") ----
+
+    data class Pipeline(
+        val id: Long,
+        val iid: Int,
+        val status: String,
+        val ref: String?,
+        val sha: String?,
+        val webUrl: String,
+        val createdAt: String,
+        val updatedAt: String,
+        val source: String?
+    )
+
+    data class PipelineJob(
+        val id: Long,
+        val name: String,
+        val status: String,
+        val stage: String?,
+        val webUrl: String,
+        val startedAt: String?,
+        val finishedAt: String?
+    )
+
+    fun listPipelines(projectId: String, status: String? = null, perPage: Int = 30): Result<List<Pipeline>> = runCatching {
+        val encoded = java.net.URLEncoder.encode(projectId, "UTF-8")
+        val statusQ = status?.takeIf { it.isNotBlank() }?.let { "&status=$it" } ?: ""
+        val arr = request("GET", "/projects/$encoded/pipelines?per_page=$perPage&order_by=id&sort=desc$statusQ") as JSONArray
+        (0 until arr.length()).map { i -> arr.getJSONObject(i).toPipeline() }
+    }
+
+    fun getPipeline(projectId: String, pipelineId: Long): Result<Pipeline> = runCatching {
+        val encoded = java.net.URLEncoder.encode(projectId, "UTF-8")
+        (request("GET", "/projects/$encoded/pipelines/$pipelineId") as JSONObject).toPipeline()
+    }
+
+    fun listPipelineJobs(projectId: String, pipelineId: Long): Result<List<PipelineJob>> = runCatching {
+        val encoded = java.net.URLEncoder.encode(projectId, "UTF-8")
+        val arr = request("GET", "/projects/$encoded/pipelines/$pipelineId/jobs?per_page=100") as JSONArray
+        (0 until arr.length()).map { i -> arr.getJSONObject(i).toPipelineJob() }
+    }
+
+    fun cancelPipeline(projectId: String, pipelineId: Long): Result<Pipeline> = runCatching {
+        val encoded = java.net.URLEncoder.encode(projectId, "UTF-8")
+        (request("POST", "/projects/$encoded/pipelines/$pipelineId/cancel", JSONObject()) as JSONObject).toPipeline()
+    }
+
+    fun retryPipeline(projectId: String, pipelineId: Long): Result<Pipeline> = runCatching {
+        val encoded = java.net.URLEncoder.encode(projectId, "UTF-8")
+        (request("POST", "/projects/$encoded/pipelines/$pipelineId/retry", JSONObject()) as JSONObject).toPipeline()
+    }
+
     // ---- Remote file browsing (Repository Tree + Files API) ----
 
     data class RemoteEntry(
@@ -305,6 +398,28 @@ class GitLabApi(
         authorUsername = optJSONObject("author")?.optString("username") ?: "",
         createdAt = optString("created_at", ""),
         system = optBoolean("system", false)
+    )
+
+    private fun JSONObject.toPipeline() = Pipeline(
+        id = getLong("id"),
+        iid = optInt("iid", 0),
+        status = optString("status", ""),
+        ref = optString("ref").takeIf { it.isNotBlank() },
+        sha = optString("sha").takeIf { it.isNotBlank() },
+        webUrl = optString("web_url", ""),
+        createdAt = optString("created_at", ""),
+        updatedAt = optString("updated_at", ""),
+        source = optString("source").takeIf { it.isNotBlank() }
+    )
+
+    private fun JSONObject.toPipelineJob() = PipelineJob(
+        id = getLong("id"),
+        name = optString("name", ""),
+        status = optString("status", ""),
+        stage = optString("stage").takeIf { it.isNotBlank() },
+        webUrl = optString("web_url", ""),
+        startedAt = optString("started_at").takeIf { it.isNotBlank() },
+        finishedAt = optString("finished_at").takeIf { it.isNotBlank() }
     )
 
     private fun request(method: String, path: String, body: JSONObject? = null): Any {

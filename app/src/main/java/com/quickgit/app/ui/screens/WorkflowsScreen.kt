@@ -63,14 +63,15 @@ fun WorkflowsScreen(
         Scaffold(
             topBar = {
                 TopAppBar(
-                    title = { Text("Actions") },
+                    title = { Text(if (state.isGitLab) "Build" else "Actions") },
                     navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back") } }
                 )
             }
         ) { padding ->
             Box(Modifier.padding(padding).fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
                 Text(
-                    "GitHub Actions is only available for repositories whose origin points at github.com.",
+                    "CI is available for GitHub Actions and GitLab pipelines. " +
+                        "This repo's origin isn't recognized as either.",
                     textAlign = TextAlign.Center,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -83,7 +84,7 @@ fun WorkflowsScreen(
         snackbarHost = { SnackbarHost(snackbarHost) },
         topBar = {
             TopAppBar(
-                title = { Text("Actions") },
+                title = { Text(if (state.isGitLab) "Build" else "Actions") },
                 navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back") } },
                 actions = {
                     IconButton(onClick = { vm.refresh() }, enabled = !state.loading) {

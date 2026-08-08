@@ -19,7 +19,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 data class PullRequestsUiState(
-    val supported: Boolean = true,          // false if origin isn't a github.com remote
+    val supported: Boolean = true,
+    val isGitLab: Boolean = false,
     val filter: PrStateFilter = PrStateFilter.OPEN,
     val pullRequests: List<PullRequest> = emptyList(),
     val localBranches: List<BranchInfo> = emptyList(),
@@ -28,7 +29,6 @@ data class PullRequestsUiState(
     val errorMessage: String? = null,
     val authRequiredHost: String? = null,
     val statusMessage: String? = null,
-    // detail
     val selected: PullRequest? = null,
     val comments: List<PrComment> = emptyList(),
     val detailLoading: Boolean = false
@@ -43,19 +43,18 @@ class PullRequestsViewModel(
     val state: StateFlow<PullRequestsUiState> = _state.asStateFlow()
 
     private lateinit var repoPath: String
-    private var owner: String? = null
-    private var repo: String? = null
+    private var project: PullRequestManager.ProjectRef? = null
 
     fun init(repoPath: String) {
         this.repoPath = repoPath
         viewModelScope.launch {
-            val ownerRepo = withContext(Dispatchers.IO) { prManager.ownerRepoFor(repoPath) }
-            if (ownerRepo == null) {
+            val ref = withContext(Dispatchers.IO) { prManager.projectFor(repoPath) }
+            if (ref == null) {
                 _state.value = _state.value.copy(supported = false)
                 return@launch
             }
-            owner = ownerRepo.owner
-            repo = ownerRepo.repo
+            project = ref
+            _state.value = _state.value.copy(supported = true, isGitLab = ref.isGitLab)
             refresh()
             val branches = withContext(Dispatchers.IO) { repoManager.listBranches(repoPath) }
             _state.value = _state.value.copy(localBranches = branches)
@@ -68,24 +67,22 @@ class PullRequestsViewModel(
     }
 
     fun refresh() {
-        val o = owner ?: return
-        val r = repo ?: return
+        val ref = project ?: return
         viewModelScope.launch {
             _state.value = _state.value.copy(loading = true)
             val (prs, result) = withContext(Dispatchers.IO) {
-                prManager.listPullRequests(o, r, _state.value.filter.apiValue)
+                prManager.listPullRequests(ref, _state.value.filter.apiValue)
             }
             _state.value = applyResult(_state.value.copy(loading = false, pullRequests = prs), result)
         }
     }
 
     fun openDetail(number: Int) {
-        val o = owner ?: return
-        val r = repo ?: return
+        val ref = project ?: return
         viewModelScope.launch {
             _state.value = _state.value.copy(detailLoading = true, selected = null, comments = emptyList())
-            val (pr, result) = withContext(Dispatchers.IO) { prManager.getPullRequest(o, r, number) }
-            val (comments, commentsResult) = withContext(Dispatchers.IO) { prManager.listComments(o, r, number) }
+            val (pr, result) = withContext(Dispatchers.IO) { prManager.getPullRequest(ref, number) }
+            val (comments, commentsResult) = withContext(Dispatchers.IO) { prManager.listComments(ref, number) }
             _state.value = applyResult(
                 _state.value.copy(detailLoading = false, selected = pr, comments = comments),
                 result.takeIf { it !is PrOpResult.Success } ?: commentsResult
@@ -98,37 +95,35 @@ class PullRequestsViewModel(
     }
 
     fun createPullRequest(title: String, body: String, head: String, base: String, draft: Boolean) {
-        val o = owner ?: return
-        val r = repo ?: return
+        val ref = project ?: return
         viewModelScope.launch {
             _state.value = _state.value.copy(busy = true)
             val (_, result) = withContext(Dispatchers.IO) {
-                prManager.createPullRequest(o, r, title, body, head, base, draft)
+                prManager.createPullRequest(ref, title, body, head, base, draft)
             }
-            _state.value = applyResult(_state.value.copy(busy = false), result, successMessage = "Pull request created")
+            val msg = if (ref.isGitLab) "Merge request created" else "Pull request created"
+            _state.value = applyResult(_state.value.copy(busy = false), result, successMessage = msg)
             if (result is PrOpResult.Success) refresh()
         }
     }
 
     fun merge(method: MergeMethod, commitTitle: String?) {
-        val o = owner ?: return
-        val r = repo ?: return
+        val ref = project ?: return
         val number = _state.value.selected?.number ?: return
         viewModelScope.launch {
             _state.value = _state.value.copy(busy = true)
-            val result = withContext(Dispatchers.IO) { prManager.mergePullRequest(o, r, number, method, commitTitle) }
+            val result = withContext(Dispatchers.IO) { prManager.mergePullRequest(ref, number, method, commitTitle) }
             _state.value = applyResult(_state.value.copy(busy = false), result, successMessage = "Merged")
             if (result is PrOpResult.Success) openDetail(number)
         }
     }
 
     fun setOpen(open: Boolean) {
-        val o = owner ?: return
-        val r = repo ?: return
+        val ref = project ?: return
         val number = _state.value.selected?.number ?: return
         viewModelScope.launch {
             _state.value = _state.value.copy(busy = true)
-            val result = withContext(Dispatchers.IO) { prManager.setPullRequestState(o, r, number, open) }
+            val result = withContext(Dispatchers.IO) { prManager.setPullRequestState(ref, number, open) }
             _state.value = applyResult(
                 _state.value.copy(busy = false), result,
                 successMessage = if (open) "Reopened" else "Closed"
@@ -138,23 +133,25 @@ class PullRequestsViewModel(
     }
 
     fun addComment(body: String) {
-        val o = owner ?: return
-        val r = repo ?: return
+        val ref = project ?: return
         val number = _state.value.selected?.number ?: return
         if (body.isBlank()) return
         viewModelScope.launch {
             _state.value = _state.value.copy(busy = true)
-            val result = withContext(Dispatchers.IO) { prManager.addComment(o, r, number, body) }
+            val result = withContext(Dispatchers.IO) { prManager.addComment(ref, number, body) }
             _state.value = applyResult(_state.value.copy(busy = false), result)
             if (result is PrOpResult.Success) openDetail(number)
         }
     }
 
     fun checkoutLocally(onDone: (GitOpResult) -> Unit) {
+        val ref = project ?: return
         val number = _state.value.selected?.number ?: return
         viewModelScope.launch {
             _state.value = _state.value.copy(busy = true)
-            val result = withContext(Dispatchers.IO) { prManager.checkoutPullRequestLocally(repoPath, number) }
+            val result = withContext(Dispatchers.IO) {
+                prManager.checkoutPullRequestLocally(repoPath, number, isGitLab = ref.isGitLab)
+            }
             _state.value = _state.value.copy(busy = false)
             onDone(result)
         }

@@ -2,55 +2,233 @@ package com.quickgit.app.data
 
 import com.quickgit.app.data.github.GitHubApi
 import com.quickgit.app.data.github.toPrOpResult
+import com.quickgit.app.data.gitlab.GitLabApi
 import com.quickgit.app.data.models.PrOpResult
 import com.quickgit.app.data.models.Workflow
 import com.quickgit.app.data.models.WorkflowJob
 import com.quickgit.app.data.models.WorkflowRun
+import com.quickgit.app.data.models.WorkflowStep
 
 /**
- * GitHub Actions (workflows + runs) for github.com remotes, using the same HTTPS token
- * as the rest of the GitHub API surface.
+ * GitHub Actions and GitLab CI pipelines, using the same HTTPS token as other API surfaces.
+ * GitLab pipelines are mapped into the Workflow / WorkflowRun models so the existing UI works.
  */
 class WorkflowManager(
     private val repoManager: RepoManager,
     private val credentialStore: CredentialStore
 ) {
     private val TAG = "WorkflowManager"
-    private val host = "github.com"
 
-    private val api: GitHubApi get() = GitHubApi(credentialStore.getHttpsToken(host))
+    data class ProjectRef(
+        val host: String,
+        val isGitLab: Boolean,
+        val owner: String,
+        val repo: String
+    ) {
+        val projectPath: String get() = "$owner/$repo"
+    }
 
-    fun ownerRepoFor(path: String): GitHubApi.OwnerRepo? {
+    fun projectFor(path: String): ProjectRef? {
         val remoteUrl = repoManager.openGit(path).use {
             it.repository.config.getString("remote", "origin", "url")
+        } ?: return null
+        val host = CredentialStore.hostOf(remoteUrl)
+        val hostLower = host.lowercase()
+        if (hostLower.contains("gitlab")) {
+            val parsed = GitLabApi(host, null).parseOwnerProject(remoteUrl) ?: return null
+            return ProjectRef(host, true, parsed.owner, parsed.project)
         }
-        return GitHubApi(null).parseOwnerRepo(remoteUrl)
+        if (hostLower.contains("github.com")) {
+            val parsed = GitHubApi(null).parseOwnerRepo(remoteUrl) ?: return null
+            return ProjectRef(host, false, parsed.owner, parsed.repo)
+        }
+        return null
     }
 
-    fun listWorkflows(owner: String, repo: String): Pair<List<Workflow>, PrOpResult> {
-        val result = api.listWorkflows(owner, repo)
-        return (result.getOrNull() ?: emptyList()) to result.toPrOpResult(host)
+    fun ownerRepoFor(path: String): GitHubApi.OwnerRepo? {
+        val p = projectFor(path) ?: return null
+        return GitHubApi.OwnerRepo(p.owner, p.repo)
     }
+
+    private fun githubApi(): GitHubApi = GitHubApi(credentialStore.getHttpsToken("github.com"))
+
+    private fun gitlabApi(host: String): GitLabApi =
+        GitLabApi(host, credentialStore.getHttpsToken(host))
+
+    /** Map GitHub Actions status filter → GitLab pipeline status where possible. */
+    private fun mapStatusToGitLab(status: String?): String? = when (status?.lowercase()) {
+        "completed" -> null // GitLab has no single "completed"; omit filter
+        "in_progress" -> "running"
+        "queued" -> "pending"
+        else -> status
+    }
+
+    private fun GitLabApi.Pipeline.toRun(): WorkflowRun {
+        val conclusion = when (status) {
+            "success" -> "success"
+            "failed", "canceled", "cancelled" -> if (status.startsWith("cancel")) "cancelled" else "failure"
+            "skipped" -> "skipped"
+            else -> null
+        }
+        val mappedStatus = when (status) {
+            "pending", "created", "waiting_for_resource", "preparing", "scheduled" -> "queued"
+            "running" -> "in_progress"
+            "success", "failed", "canceled", "cancelled", "skipped", "manual" -> "completed"
+            else -> status
+        }
+        return WorkflowRun(
+            id = id,
+            name = "Pipeline #$iid",
+            displayTitle = "Pipeline #$iid" + (ref?.let { " ($it)" } ?: ""),
+            workflowId = 0L,
+            workflowName = "CI",
+            status = mappedStatus,
+            conclusion = conclusion,
+            event = source ?: "pipeline",
+            headBranch = ref,
+            headSha = sha,
+            actorLogin = null,
+            runNumber = iid,
+            runAttempt = 1,
+            htmlUrl = webUrl,
+            createdAt = createdAt,
+            updatedAt = updatedAt,
+            runStartedAt = createdAt
+        )
+    }
+
+    private fun GitLabApi.PipelineJob.toJob(): WorkflowJob {
+        val conclusion = when (status) {
+            "success" -> "success"
+            "failed" -> "failure"
+            "canceled", "cancelled" -> "cancelled"
+            "skipped" -> "skipped"
+            else -> null
+        }
+        val mappedStatus = when (status) {
+            "pending", "created" -> "queued"
+            "running" -> "in_progress"
+            else -> "completed"
+        }
+        return WorkflowJob(
+            id = id,
+            name = name + (stage?.let { " ($it)" } ?: ""),
+            status = mappedStatus,
+            conclusion = conclusion,
+            startedAt = startedAt,
+            completedAt = finishedAt,
+            htmlUrl = webUrl,
+            steps = emptyList()
+        )
+    }
+
+    fun listWorkflows(ref: ProjectRef): Pair<List<Workflow>, PrOpResult> {
+        return if (ref.isGitLab) {
+            // GitLab has no workflow definitions list like Actions; present a single synthetic "CI"
+            val synthetic = listOf(
+                Workflow(
+                    id = 0L,
+                    name = "CI Pipelines",
+                    path = ".gitlab-ci.yml",
+                    state = "active",
+                    badgeUrl = null,
+                    htmlUrl = "https://${ref.host}/${ref.projectPath}/-/pipelines",
+                    createdAt = "",
+                    updatedAt = ""
+                )
+            )
+            synthetic to PrOpResult.Success
+        } else {
+            val result = githubApi().listWorkflows(ref.owner, ref.repo)
+            (result.getOrNull() ?: emptyList()) to result.toPrOpResult(ref.host)
+        }
+    }
+
+    fun listRuns(
+        ref: ProjectRef,
+        workflowId: Long? = null,
+        status: String? = null
+    ): Pair<List<WorkflowRun>, PrOpResult> {
+        return if (ref.isGitLab) {
+            val result = gitlabApi(ref.host).listPipelines(ref.projectPath, mapStatusToGitLab(status))
+            (result.getOrNull()?.map { it.toRun() } ?: emptyList()) to result.toPrOpResult(ref.host)
+        } else {
+            val result = githubApi().listWorkflowRuns(ref.owner, ref.repo, workflowId, status)
+            (result.getOrNull() ?: emptyList()) to result.toPrOpResult(ref.host)
+        }
+    }
+
+    fun getRun(ref: ProjectRef, runId: Long): Pair<WorkflowRun?, PrOpResult> {
+        return if (ref.isGitLab) {
+            val result = gitlabApi(ref.host).getPipeline(ref.projectPath, runId)
+            result.getOrNull()?.toRun() to result.toPrOpResult(ref.host)
+        } else {
+            val result = githubApi().getWorkflowRun(ref.owner, ref.repo, runId)
+            result.getOrNull() to result.toPrOpResult(ref.host)
+        }
+    }
+
+    fun listJobs(ref: ProjectRef, runId: Long): Pair<List<WorkflowJob>, PrOpResult> {
+        return if (ref.isGitLab) {
+            val result = gitlabApi(ref.host).listPipelineJobs(ref.projectPath, runId)
+            (result.getOrNull()?.map { it.toJob() } ?: emptyList()) to result.toPrOpResult(ref.host)
+        } else {
+            val result = githubApi().listJobsForRun(ref.owner, ref.repo, runId)
+            (result.getOrNull() ?: emptyList()) to result.toPrOpResult(ref.host)
+        }
+    }
+
+    fun dispatch(
+        ref: ProjectRef,
+        workflowId: Long,
+        refName: String,
+        inputs: Map<String, String> = emptyMap()
+    ): PrOpResult {
+        AppLog.i(TAG, "dispatch: ${ref.projectPath} workflow=$workflowId ref=$refName")
+        return if (ref.isGitLab) {
+            // Triggering a new pipeline requires POST /projects/:id/pipeline — optional later
+            PrOpResult.Error("Manual pipeline trigger is not supported yet on GitLab from QuickGit")
+        } else {
+            githubApi().dispatchWorkflow(ref.owner, ref.repo, workflowId, refName, inputs).toPrOpResult(ref.host)
+        }
+    }
+
+    fun cancelRun(ref: ProjectRef, runId: Long): PrOpResult {
+        AppLog.i(TAG, "cancelRun: ${ref.projectPath} run=$runId")
+        return if (ref.isGitLab) {
+            gitlabApi(ref.host).cancelPipeline(ref.projectPath, runId).toPrOpResult(ref.host)
+        } else {
+            githubApi().cancelWorkflowRun(ref.owner, ref.repo, runId).toPrOpResult(ref.host)
+        }
+    }
+
+    fun rerun(ref: ProjectRef, runId: Long): PrOpResult {
+        AppLog.i(TAG, "rerun: ${ref.projectPath} run=$runId")
+        return if (ref.isGitLab) {
+            gitlabApi(ref.host).retryPipeline(ref.projectPath, runId).toPrOpResult(ref.host)
+        } else {
+            githubApi().rerunWorkflowRun(ref.owner, ref.repo, runId).toPrOpResult(ref.host)
+        }
+    }
+
+    // ---- Legacy overloads ----
+
+    fun listWorkflows(owner: String, repo: String): Pair<List<Workflow>, PrOpResult> =
+        listWorkflows(ProjectRef("github.com", false, owner, repo))
 
     fun listRuns(
         owner: String,
         repo: String,
         workflowId: Long? = null,
         status: String? = null
-    ): Pair<List<WorkflowRun>, PrOpResult> {
-        val result = api.listWorkflowRuns(owner, repo, workflowId, status)
-        return (result.getOrNull() ?: emptyList()) to result.toPrOpResult(host)
-    }
+    ): Pair<List<WorkflowRun>, PrOpResult> =
+        listRuns(ProjectRef("github.com", false, owner, repo), workflowId, status)
 
-    fun getRun(owner: String, repo: String, runId: Long): Pair<WorkflowRun?, PrOpResult> {
-        val result = api.getWorkflowRun(owner, repo, runId)
-        return result.getOrNull() to result.toPrOpResult(host)
-    }
+    fun getRun(owner: String, repo: String, runId: Long): Pair<WorkflowRun?, PrOpResult> =
+        getRun(ProjectRef("github.com", false, owner, repo), runId)
 
-    fun listJobs(owner: String, repo: String, runId: Long): Pair<List<WorkflowJob>, PrOpResult> {
-        val result = api.listJobsForRun(owner, repo, runId)
-        return (result.getOrNull() ?: emptyList()) to result.toPrOpResult(host)
-    }
+    fun listJobs(owner: String, repo: String, runId: Long): Pair<List<WorkflowJob>, PrOpResult> =
+        listJobs(ProjectRef("github.com", false, owner, repo), runId)
 
     fun dispatch(
         owner: String,
@@ -58,18 +236,11 @@ class WorkflowManager(
         workflowId: Long,
         ref: String,
         inputs: Map<String, String> = emptyMap()
-    ): PrOpResult {
-        AppLog.i(TAG, "dispatch: $owner/$repo workflow=$workflowId ref=$ref inputs=$inputs")
-        return api.dispatchWorkflow(owner, repo, workflowId, ref, inputs).toPrOpResult(host)
-    }
+    ): PrOpResult = dispatch(ProjectRef("github.com", false, owner, repo), workflowId, ref, inputs)
 
-    fun cancelRun(owner: String, repo: String, runId: Long): PrOpResult {
-        AppLog.i(TAG, "cancelRun: $owner/$repo run=$runId")
-        return api.cancelWorkflowRun(owner, repo, runId).toPrOpResult(host)
-    }
+    fun cancelRun(owner: String, repo: String, runId: Long): PrOpResult =
+        cancelRun(ProjectRef("github.com", false, owner, repo), runId)
 
-    fun rerun(owner: String, repo: String, runId: Long): PrOpResult {
-        AppLog.i(TAG, "rerun: $owner/$repo run=$runId")
-        return api.rerunWorkflowRun(owner, repo, runId).toPrOpResult(host)
-    }
+    fun rerun(owner: String, repo: String, runId: Long): PrOpResult =
+        rerun(ProjectRef("github.com", false, owner, repo), runId)
 }
