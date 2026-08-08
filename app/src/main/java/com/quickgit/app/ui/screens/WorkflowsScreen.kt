@@ -34,6 +34,15 @@ import com.quickgit.app.data.models.WorkflowStep
 import com.quickgit.app.ui.theme.GitAmber
 import com.quickgit.app.ui.theme.GitGreen
 import com.quickgit.app.ui.theme.GitRed
+import android.annotation.SuppressLint
+import android.view.ViewGroup
+import android.webkit.CookieManager
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
+import android.webkit.WebSettings
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import androidx.compose.ui.viewinterop.AndroidView
 import com.quickgit.app.viewmodel.WorkflowsViewModel
 import kotlinx.coroutines.launch
 
@@ -52,6 +61,17 @@ fun WorkflowsScreen(
         state.errorMessage?.let { snackbarHost.showSnackbar(it); vm.consumeMessages() }
         state.statusMessage?.let { snackbarHost.showSnackbar(it); vm.consumeMessages() }
         state.authRequiredHost?.let { onNeedsAuth("https://$it/"); vm.consumeMessages() }
+    }
+
+    if (state.livePageUrl != null) {
+        BackHandler { vm.closeLivePage() }
+        LiveJobWebContent(
+            url = state.livePageUrl!!,
+            title = state.livePageTitle ?: "Live job",
+            snackbarHost = snackbarHost,
+            onBack = { vm.closeLivePage() }
+        )
+        return
     }
 
     if (state.logJobId != null) {
@@ -349,7 +369,8 @@ private fun RunDetailContent(
                     JobCard(
                         job = job,
                         showLogButton = !state.isGitLab,
-                        onViewLog = { vm.loadJobLog(job.id, job.name) }
+                        onViewLog = { vm.loadJobLog(job.id, job.name) },
+                        onOpenLive = { url, title -> vm.openLivePage(url, title) }
                     )
                     Spacer(Modifier.height(8.dp))
                 }
@@ -362,10 +383,10 @@ private fun RunDetailContent(
 private fun JobCard(
     job: WorkflowJob,
     showLogButton: Boolean = false,
-    onViewLog: () -> Unit = {}
+    onViewLog: () -> Unit = {},
+    onOpenLive: (url: String, title: String) -> Unit = { _, _ -> }
 ) {
     var expanded by remember { mutableStateOf(true) }
-    val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
     val currentStep = job.steps.firstOrNull { isLiveStatus(it.status) }
         ?: job.steps.lastOrNull { it.status == "completed" }
     val live = isLiveStatus(job.status)
@@ -451,12 +472,12 @@ private fun JobCard(
                     }
                     if (job.htmlUrl.isNotBlank()) {
                         TextButton(
-                            onClick = { uriHandler.openUri(job.htmlUrl) },
+                            onClick = { onOpenLive(job.htmlUrl, job.name) },
                             contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
                         ) {
                             Icon(Icons.Default.OpenInBrowser, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(6.dp))
-                            Text("GitHub live")
+                            Text("Live feed")
                         }
                     }
                 }
@@ -853,4 +874,107 @@ private fun DispatchDialog(
             TextButton(onClick = onDismiss) { Text("Cancel") }
         }
     )
+}
+
+
+@SuppressLint("SetJavaScriptEnabled")
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun LiveJobWebContent(
+    url: String,
+    title: String,
+    snackbarHost: SnackbarHostState,
+    onBack: () -> Unit
+) {
+    var loading by remember { mutableStateOf(true) }
+    var pageTitle by remember { mutableStateOf(title) }
+    var canGoBack by remember { mutableStateOf(false) }
+    var webView by remember { mutableStateOf<WebView?>(null) }
+
+    BackHandler {
+        val wv = webView
+        if (wv != null && wv.canGoBack()) wv.goBack() else onBack()
+    }
+
+    Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHost) },
+        topBar = {
+            TopAppBar(
+                title = {
+                    Column {
+                        Text(pageTitle, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(
+                            "GitHub live feed",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                },
+                navigationIcon = {
+                    IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back") }
+                },
+                actions = {
+                    IconButton(
+                        onClick = { webView?.reload() },
+                        enabled = !loading
+                    ) {
+                        Icon(Icons.Default.Refresh, "Reload")
+                    }
+                }
+            )
+        }
+    ) { padding ->
+        Box(Modifier.padding(padding).fillMaxSize()) {
+            AndroidView(
+                factory = { context ->
+                    WebView(context).apply {
+                        layoutParams = ViewGroup.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT
+                        )
+                        settings.javaScriptEnabled = true
+                        settings.domStorageEnabled = true
+                        settings.cacheMode = WebSettings.LOAD_DEFAULT
+                        settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+                        settings.userAgentString = settings.userAgentString
+                        CookieManager.getInstance().setAcceptCookie(true)
+                        CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
+                        webChromeClient = object : WebChromeClient() {
+                            override fun onProgressChanged(view: WebView?, newProgress: Int) {
+                                loading = newProgress < 100
+                            }
+                            override fun onReceivedTitle(view: WebView?, t: String?) {
+                                if (!t.isNullOrBlank()) pageTitle = t
+                            }
+                        }
+                        webViewClient = object : WebViewClient() {
+                            override fun shouldOverrideUrlLoading(
+                                view: WebView?,
+                                request: WebResourceRequest?
+                            ): Boolean {
+                                // Keep github.com navigation inside the WebView.
+                                val host = request?.url?.host.orEmpty()
+                                return if (host.endsWith("github.com") || host.endsWith("githubusercontent.com")) {
+                                    false
+                                } else {
+                                    // External links: let the system handle (or stay put).
+                                    false
+                                }
+                            }
+                            override fun onPageFinished(view: WebView?, url: String?) {
+                                loading = false
+                                canGoBack = view?.canGoBack() == true
+                            }
+                        }
+                        loadUrl(url)
+                        webView = this
+                    }
+                },
+                modifier = Modifier.fillMaxSize(),
+                update = { /* keep existing WebView instance */ }
+            )
+            if (loading) {
+                LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter))
+            }
+        }
+    }
 }

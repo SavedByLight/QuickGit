@@ -44,7 +44,10 @@ data class WorkflowsUiState(
     /** True while auto-refreshing the open job log (job still running). */
     val logWatching: Boolean = false,
     val logJobStatus: String? = null,
-    val logJobConclusion: String? = null
+    val logJobConclusion: String? = null,
+    /** In-app WebView of the GitHub Actions job page (true live stream). */
+    val livePageUrl: String? = null,
+    val livePageTitle: String? = null
 )
 
 class WorkflowsViewModel(private val workflowManager: WorkflowManager) : ViewModel() {
@@ -362,6 +365,15 @@ class WorkflowsViewModel(private val workflowManager: WorkflowManager) : ViewMod
             ),
             result
         )
+    }
+
+    fun openLivePage(url: String, title: String) {
+        if (url.isBlank()) return
+        _state.value = _state.value.copy(livePageUrl = url, livePageTitle = title)
+    }
+
+    fun closeLivePage() {
+        _state.value = _state.value.copy(livePageUrl = null, livePageTitle = null)
     }
 
     fun consumeMessages() {
