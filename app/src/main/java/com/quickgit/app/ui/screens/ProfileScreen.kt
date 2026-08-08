@@ -21,6 +21,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.quickgit.app.data.models.GitHubRemoteRepo
 import com.quickgit.app.ui.components.UserAvatar
+import com.quickgit.app.viewmodel.ProfileProvider
 import com.quickgit.app.viewmodel.ProfileViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -56,7 +57,10 @@ fun ProfileScreen(
                 title = {
                     Text(
                         when {
-                            state.isSelf -> "Your profile"
+                            state.isSelf -> when (state.selectedProvider) {
+                                ProfileProvider.GITLAB -> "GitLab profile"
+                                ProfileProvider.GITHUB -> "GitHub profile"
+                            }
                             state.user != null -> state.user!!.login
                             else -> "Profile"
                         }
@@ -77,21 +81,23 @@ fun ProfileScreen(
             state.user == null && state.connectedProviders.isEmpty() -> {
                 Box(Modifier.padding(padding).fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
                     Text(
-                        state.errorMessage ?: "Connect GitHub, GitLab, or Gerrit in Settings.",
+                        state.errorMessage ?: "Connect GitHub or GitLab in Settings.",
                         textAlign = TextAlign.Center,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
             state.user == null -> {
-                // Self profile with GitLab/Gerrit only (no GitHub user object)
                 LazyColumn(
                     Modifier.padding(padding).fillMaxSize(),
                     contentPadding = PaddingValues(bottom = 24.dp)
                 ) {
+                    if (state.isSelf && state.availableProviders.size > 1) {
+                        item { ProviderSwitcher(state.selectedProvider, state.availableProviders, vm::selectProvider) }
+                    }
                     item {
                         Text(
-                            "Connected accounts",
+                            state.errorMessage ?: "Connected accounts",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.SemiBold,
                             modifier = Modifier.padding(20.dp, 20.dp, 20.dp, 8.dp)
@@ -110,6 +116,12 @@ fun ProfileScreen(
                                         }
                                     }
                                 )
+                            },
+                            modifier = Modifier.clickable {
+                                when (p.provider) {
+                                    "GitHub" -> vm.selectProvider(ProfileProvider.GITHUB)
+                                    "GitLab" -> vm.selectProvider(ProfileProvider.GITLAB)
+                                }
                             }
                         )
                         HorizontalDivider()
@@ -122,6 +134,9 @@ fun ProfileScreen(
                     Modifier.padding(padding).fillMaxSize(),
                     contentPadding = PaddingValues(bottom = 24.dp)
                 ) {
+                    if (state.isSelf && state.availableProviders.size > 1) {
+                        item { ProviderSwitcher(state.selectedProvider, state.availableProviders, vm::selectProvider) }
+                    }
                     item {
                         Column(Modifier.padding(20.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -141,6 +156,14 @@ fun ProfileScreen(
                                         style = MaterialTheme.typography.bodyLarge,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
+                                    Text(
+                                        when (state.selectedProvider) {
+                                            ProfileProvider.GITLAB -> "GitLab"
+                                            ProfileProvider.GITHUB -> "GitHub"
+                                        },
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
                                 }
                             }
 
@@ -152,8 +175,10 @@ fun ProfileScreen(
                             Spacer(Modifier.height(12.dp))
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
                                 StatChip(user.publicRepos.toString(), "Repos")
-                                StatChip(user.followers.toString(), "Followers")
-                                StatChip(user.following.toString(), "Following")
+                                if (state.selectedProvider == ProfileProvider.GITHUB) {
+                                    StatChip(user.followers.toString(), "Followers")
+                                    StatChip(user.following.toString(), "Following")
+                                }
                             }
 
                             val meta = listOfNotNull(
@@ -176,42 +201,26 @@ fun ProfileScreen(
                             }
                         }
                         HorizontalDivider()
-                        if (state.connectedProviders.isNotEmpty()) {
-                            Text(
-                                "Connected accounts",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.SemiBold,
-                                modifier = Modifier.padding(16.dp, 12.dp, 16.dp, 4.dp)
-                            )
-                            state.connectedProviders.forEach { p ->
-                                ListItem(
-                                    headlineContent = { Text(p.provider) },
-                                    supportingContent = {
-                                        Text(
-                                            buildString {
-                                                append(p.username)
-                                                if (!p.detail.isNullOrBlank()) {
-                                                    append(" · ")
-                                                    append(p.detail)
-                                                }
-                                            }
-                                        )
-                                    }
-                                )
-                                HorizontalDivider()
-                            }
-                        }
                         Text(
-                            "Repositories",
+                            if (state.selectedProvider == ProfileProvider.GITLAB) "Projects" else "Repositories",
                             style = MaterialTheme.typography.titleMedium,
                             modifier = Modifier.padding(16.dp, 12.dp, 16.dp, 4.dp)
                         )
                     }
 
-                    if (state.repos.isEmpty()) {
+                    if (state.loading) {
+                        item {
+                            Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
+                                CircularProgressIndicator()
+                            }
+                        }
+                    } else if (state.repos.isEmpty()) {
                         item {
                             Text(
-                                "No public repositories",
+                                if (state.selectedProvider == ProfileProvider.GITLAB)
+                                    "No projects found"
+                                else
+                                    "No public repositories",
                                 Modifier.padding(16.dp),
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -220,7 +229,7 @@ fun ProfileScreen(
                         items(state.repos, key = { it.id }) { repo ->
                             ProfileRepoRow(
                                 repo,
-                                showFork = !state.isSelf,
+                                showFork = !state.isSelf && state.selectedProvider == ProfileProvider.GITHUB,
                                 forking = state.forkingRepoId == repo.id,
                                 onClick = { onOpenRepo(repo) },
                                 onClone = { onCloneRepo(repo) },
@@ -231,6 +240,36 @@ fun ProfileScreen(
                     }
                 }
             }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ProviderSwitcher(
+    selected: ProfileProvider,
+    available: List<ProfileProvider>,
+    onSelect: (ProfileProvider) -> Unit
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        available.forEach { provider ->
+            FilterChip(
+                selected = selected == provider,
+                onClick = { onSelect(provider) },
+                label = {
+                    Text(
+                        when (provider) {
+                            ProfileProvider.GITHUB -> "GitHub"
+                            ProfileProvider.GITLAB -> "GitLab"
+                        }
+                    )
+                }
+            )
         }
     }
 }
@@ -284,6 +323,7 @@ private fun ProfileRepoRow(
                 Spacer(Modifier.height(4.dp))
                 Text(
                     listOfNotNull(
+                        repo.fullName.takeIf { it != repo.name },
                         repo.language,
                         if (repo.isPrivate) "Private" else "Public",
                         if (repo.isFork) "Fork" else null
