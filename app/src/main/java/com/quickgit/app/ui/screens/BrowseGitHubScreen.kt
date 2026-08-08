@@ -85,9 +85,12 @@ fun BrowseGitHubScreen(
     if (showCreateDialog) {
         CreateRepoDialog(
             creating = state.creating,
+            defaultGitLab = state.selectedTab == BrowseProviderTab.GITLAB,
+            githubConnected = state.githubConnected,
+            gitlabConnected = state.gitlabConnected,
             onDismiss = { showCreateDialog = false },
-            onCreate = { name, description, isPrivate ->
-                vm.createRepo(name, description, isPrivate)
+            onCreate = { name, description, isPrivate, onGitLab ->
+                vm.createRepo(name, description, isPrivate, onGitLab = onGitLab)
                 showCreateDialog = false
             }
         )
@@ -111,7 +114,10 @@ fun BrowseGitHubScreen(
                     }
                 },
                 actions = {
-                    if (state.selectedTab == BrowseProviderTab.GITHUB && state.githubConnected) {
+                    val canCreate =
+                        (state.selectedTab == BrowseProviderTab.GITHUB && state.githubConnected) ||
+                            (state.selectedTab == BrowseProviderTab.GITLAB && state.gitlabConnected)
+                    if (canCreate) {
                         TextButton(onClick = { showCreateDialog = true }) { Text("New") }
                     }
                 }
@@ -432,21 +438,63 @@ private fun RemoteRepoRow(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun CreateRepoDialog(
     creating: Boolean,
+    defaultGitLab: Boolean,
+    githubConnected: Boolean,
+    gitlabConnected: Boolean,
     onDismiss: () -> Unit,
-    onCreate: (name: String, description: String?, isPrivate: Boolean) -> Unit
+    onCreate: (name: String, description: String?, isPrivate: Boolean, onGitLab: Boolean) -> Unit
 ) {
     var name by remember { mutableStateOf("") }
     var description by remember { mutableStateOf("") }
     var isPrivate by remember { mutableStateOf(false) }
+    var onGitLab by remember {
+        mutableStateOf(
+            when {
+                defaultGitLab && gitlabConnected -> true
+                githubConnected -> false
+                gitlabConnected -> true
+                else -> false
+            }
+        )
+    }
+    val both = githubConnected && gitlabConnected
 
     AlertDialog(
         onDismissRequest = { if (!creating) onDismiss() },
-        title = { Text("New GitHub repository") },
+        title = { Text("New repository") },
         text = {
             Column {
+                if (both) {
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        FilterChip(
+                            selected = !onGitLab,
+                            onClick = { onGitLab = false },
+                            enabled = !creating,
+                            label = { Text("GitHub") }
+                        )
+                        FilterChip(
+                            selected = onGitLab,
+                            onClick = { onGitLab = true },
+                            enabled = !creating,
+                            label = { Text("GitLab") }
+                        )
+                    }
+                    Spacer(Modifier.height(12.dp))
+                } else {
+                    Text(
+                        if (onGitLab) "Creating on GitLab" else "Creating on GitHub",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(8.dp))
+                }
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
@@ -469,14 +517,14 @@ private fun CreateRepoDialog(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Checkbox(checked = isPrivate, onCheckedChange = { isPrivate = it }, enabled = !creating)
-                    Text("Private repository")
+                    Text(if (onGitLab) "Private project" else "Private repository")
                 }
             }
         },
         confirmButton = {
             TextButton(
-                onClick = { onCreate(name, description.ifBlank { null }, isPrivate) },
-                enabled = !creating && name.isNotBlank()
+                onClick = { onCreate(name, description.ifBlank { null }, isPrivate, onGitLab) },
+                enabled = !creating && name.isNotBlank() && (githubConnected || gitlabConnected)
             ) {
                 if (creating) {
                     CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)

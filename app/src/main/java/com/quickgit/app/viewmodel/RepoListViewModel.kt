@@ -3,6 +3,7 @@ package com.quickgit.app.viewmodel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.quickgit.app.data.GitHubAccountManager
+import com.quickgit.app.data.GitLabAccountManager
 import com.quickgit.app.data.RepoManager
 import com.quickgit.app.data.models.PrOpResult
 import com.quickgit.app.data.models.RepoInfo
@@ -13,9 +14,15 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+enum class CreateRepoProvider {
+    GITHUB,
+    GITLAB
+}
+
 class RepoListViewModel(
     private val repoManager: RepoManager,
-    private val accountManager: GitHubAccountManager
+    private val accountManager: GitHubAccountManager,
+    private val gitLabAccountManager: GitLabAccountManager
 ) : ViewModel() {
 
     private val _repos = MutableStateFlow<List<RepoInfo>>(emptyList())
@@ -53,7 +60,6 @@ class RepoListViewModel(
         }
     }
 
-    /** Loads the connected account (for the profile avatar in the top bar). No-op if signed out. */
     private fun loadAccount() {
         if (!accountManager.isConnected()) {
             _account.value = null
@@ -67,7 +73,31 @@ class RepoListViewModel(
 
     fun isGitHubConnected(): Boolean = accountManager.isConnected()
 
-    fun createRepo(name: String, description: String?, isPrivate: Boolean) {
+    fun isGitLabConnected(): Boolean {
+        val h = gitLabAccountManager.host
+        return gitLabAccountManager.isConnected(h) || gitLabAccountManager.isConnected("gitlab.com")
+    }
+
+    fun availableCreateProviders(): List<CreateRepoProvider> = buildList {
+        if (isGitHubConnected()) add(CreateRepoProvider.GITHUB)
+        if (isGitLabConnected()) add(CreateRepoProvider.GITLAB)
+    }
+
+    fun canCreateRemoteRepo(): Boolean = availableCreateProviders().isNotEmpty()
+
+    fun createRepo(
+        name: String,
+        description: String?,
+        isPrivate: Boolean,
+        provider: CreateRepoProvider
+    ) {
+        when (provider) {
+            CreateRepoProvider.GITHUB -> createOnGitHub(name, description, isPrivate)
+            CreateRepoProvider.GITLAB -> createOnGitLab(name, description, isPrivate)
+        }
+    }
+
+    private fun createOnGitHub(name: String, description: String?, isPrivate: Boolean) {
         if (!accountManager.isConnected()) {
             _authRequired.value = true
             _errorMessage.value = "Connect a GitHub account in Settings to create a repository"
@@ -87,6 +117,40 @@ class RepoListViewModel(
                 is PrOpResult.AuthRequired -> {
                     _authRequired.value = true
                     _errorMessage.value = "GitHub authentication required"
+                }
+                is PrOpResult.Error -> {
+                    _errorMessage.value = result.message
+                }
+            }
+        }
+    }
+
+    private fun createOnGitLab(name: String, description: String?, isPrivate: Boolean) {
+        val h = when {
+            gitLabAccountManager.isConnected(gitLabAccountManager.host) -> gitLabAccountManager.host
+            gitLabAccountManager.isConnected("gitlab.com") -> "gitlab.com"
+            else -> null
+        }
+        if (h == null) {
+            _authRequired.value = true
+            _errorMessage.value = "Connect a GitLab account in Settings to create a project"
+            return
+        }
+        viewModelScope.launch {
+            _creating.value = true
+            _errorMessage.value = null
+            val (project, result) = withContext(Dispatchers.IO) {
+                gitLabAccountManager.createProject(name, description, isPrivate, h)
+            }
+            _creating.value = false
+            when (result) {
+                is PrOpResult.Success -> {
+                    _statusMessage.value =
+                        "Created ${project?.pathWithNamespace ?: name.trim()} on GitLab"
+                }
+                is PrOpResult.AuthRequired -> {
+                    _authRequired.value = true
+                    _errorMessage.value = "GitLab authentication required"
                 }
                 is PrOpResult.Error -> {
                     _errorMessage.value = result.message

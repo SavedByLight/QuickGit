@@ -131,6 +131,20 @@ class GitLabApi(
         (request("GET", "/projects/$encoded") as JSONObject).toProject()
     }
 
+    /** Creates a new project owned by the authenticated user. */
+    fun createProject(
+        name: String,
+        description: String?,
+        isPrivate: Boolean
+    ): Result<GitLabProject> = runCatching {
+        val payload = JSONObject()
+            .put("name", name.trim())
+            .put("description", description ?: "")
+            .put("visibility", if (isPrivate) "private" else "public")
+            .put("initialize_with_readme", false)
+        (request("POST", "/projects", payload) as JSONObject).toProject()
+    }
+
     // ---- Merge Requests ----
 
     fun listMergeRequests(

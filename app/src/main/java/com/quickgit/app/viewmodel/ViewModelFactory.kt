@@ -18,7 +18,11 @@ class ViewModelFactory(private val app: Application) : ViewModelProvider.Factory
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         val vm: ViewModel = when {
             modelClass.isAssignableFrom(RepoListViewModel::class.java) ->
-                RepoListViewModel(gitApp.repoManager, gitApp.gitHubAccountManager)
+                RepoListViewModel(
+                    gitApp.repoManager,
+                    gitApp.gitHubAccountManager,
+                    gitApp.gitLabAccountManager
+                )
             modelClass.isAssignableFrom(CloneViewModel::class.java) ->
                 CloneViewModel(gitApp.repoManager)
             modelClass.isAssignableFrom(RepoDetailViewModel::class.java) ->

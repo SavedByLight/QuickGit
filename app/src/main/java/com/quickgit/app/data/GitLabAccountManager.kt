@@ -94,6 +94,19 @@ class GitLabAccountManager(private val credentialStore: CredentialStore) {
         }
     }
 
+    /** Creates a new project under the authenticated user on [h]. */
+    fun createProject(
+        name: String,
+        description: String?,
+        isPrivate: Boolean,
+        h: String = host
+    ): Pair<GitLabProject?, PrOpResult> {
+        if (!isConnected(h)) return null to PrOpResult.AuthRequired(h)
+        AppLog.i(TAG, "createProject: $name on $h private=$isPrivate")
+        val result = api(h).createProject(name, description, isPrivate)
+        return result.getOrNull() to result.toPrOpResult(h)
+    }
+
     fun listProjects(h: String = host): Pair<List<GitLabProject>, PrOpResult> {
         if (!isConnected(h)) return emptyList<GitLabProject>() to PrOpResult.AuthRequired(h)
         val perPage = 50

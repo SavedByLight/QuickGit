@@ -160,7 +160,7 @@ fun RepoListScreen(
                             icon = Icons.Default.Create,
                             onClick = {
                                 fabExpanded = false
-                                if (vm.isGitHubConnected()) {
+                                if (vm.canCreateRemoteRepo()) {
                                     showCreateRepoDialog = true
                                 } else {
                                     onNeedsAuth()
@@ -257,30 +257,77 @@ fun RepoListScreen(
     if (showCreateRepoDialog) {
         CreateRepoFromListDialog(
             creating = creating,
+            availableProviders = vm.availableCreateProviders(),
             onDismiss = { if (!creating) showCreateRepoDialog = false },
-            onCreate = { name, description, isPrivate ->
-                vm.createRepo(name, description, isPrivate)
+            onCreate = { name, description, isPrivate, provider ->
+                vm.createRepo(name, description, isPrivate, provider)
                 showCreateRepoDialog = false
             }
         )
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun CreateRepoFromListDialog(
     creating: Boolean,
+    availableProviders: List<com.quickgit.app.viewmodel.CreateRepoProvider>,
     onDismiss: () -> Unit,
-    onCreate: (name: String, description: String?, isPrivate: Boolean) -> Unit
+    onCreate: (name: String, description: String?, isPrivate: Boolean, provider: com.quickgit.app.viewmodel.CreateRepoProvider) -> Unit
 ) {
     var name by remember { mutableStateOf("") }
     var description by remember { mutableStateOf("") }
     var isPrivate by remember { mutableStateOf(false) }
+    var provider by remember {
+        mutableStateOf(
+            availableProviders.firstOrNull()
+                ?: com.quickgit.app.viewmodel.CreateRepoProvider.GITHUB
+        )
+    }
 
     AlertDialog(
         onDismissRequest = { if (!creating) onDismiss() },
-        title = { Text("New GitHub repository") },
+        title = { Text("New repository") },
         text = {
             Column {
+                if (availableProviders.size > 1) {
+                    Text(
+                        "Host",
+                        style = MaterialTheme.typography.labelLarge,
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        availableProviders.forEach { p ->
+                            FilterChip(
+                                selected = provider == p,
+                                onClick = { provider = p },
+                                enabled = !creating,
+                                label = {
+                                    Text(
+                                        when (p) {
+                                            com.quickgit.app.viewmodel.CreateRepoProvider.GITHUB -> "GitHub"
+                                            com.quickgit.app.viewmodel.CreateRepoProvider.GITLAB -> "GitLab"
+                                        }
+                                    )
+                                }
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(12.dp))
+                } else if (availableProviders.size == 1) {
+                    Text(
+                        when (availableProviders.first()) {
+                            com.quickgit.app.viewmodel.CreateRepoProvider.GITHUB -> "Creating on GitHub"
+                            com.quickgit.app.viewmodel.CreateRepoProvider.GITLAB -> "Creating on GitLab"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(8.dp))
+                }
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
@@ -303,14 +350,19 @@ private fun CreateRepoFromListDialog(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Checkbox(checked = isPrivate, onCheckedChange = { isPrivate = it }, enabled = !creating)
-                    Text("Private repository")
+                    Text(
+                        if (provider == com.quickgit.app.viewmodel.CreateRepoProvider.GITLAB)
+                            "Private project"
+                        else
+                            "Private repository"
+                    )
                 }
             }
         },
         confirmButton = {
             TextButton(
-                onClick = { onCreate(name, description.ifBlank { null }, isPrivate) },
-                enabled = !creating && name.isNotBlank()
+                onClick = { onCreate(name, description.ifBlank { null }, isPrivate, provider) },
+                enabled = !creating && name.isNotBlank() && availableProviders.isNotEmpty()
             ) {
                 if (creating) {
                     CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
