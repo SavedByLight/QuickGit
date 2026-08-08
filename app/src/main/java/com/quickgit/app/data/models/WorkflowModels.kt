@@ -67,3 +67,15 @@ data class WorkflowInput(
     val default: String?,
     val type: String = "string"     // string | boolean | choice | environment
 )
+
+/** GitHub check-run annotation (error/warning/notice) for a workflow job. */
+data class WorkflowAnnotation(
+    val path: String?,
+    val startLine: Int?,
+    val endLine: Int?,
+    val startColumn: Int?,
+    val endColumn: Int?,
+    val annotationLevel: String, // failure | warning | notice
+    val message: String,
+    val title: String?
+)

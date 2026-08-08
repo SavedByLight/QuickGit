@@ -34,7 +34,13 @@ data class WorkflowsUiState(
     val jobs: List<WorkflowJob> = emptyList(),
     val detailLoading: Boolean = false,
     val watching: Boolean = false,
-    val defaultBranch: String = "main"
+    val defaultBranch: String = "main",
+    /** Job whose full Actions log is open. */
+    val logJobId: Long? = null,
+    val logJobName: String? = null,
+    val logText: String? = null,
+    val logAnnotations: List<com.quickgit.app.data.models.WorkflowAnnotation> = emptyList(),
+    val logLoading: Boolean = false
 )
 
 class WorkflowsViewModel(private val workflowManager: WorkflowManager) : ViewModel() {
@@ -215,6 +221,47 @@ class WorkflowsViewModel(private val workflowManager: WorkflowManager) : ViewMod
                 refreshRuns()
             }
         }
+    }
+
+    fun loadJobLog(jobId: Long, jobName: String) {
+        val ref = project ?: return
+        if (ref.isGitLab) {
+            _state.value = _state.value.copy(
+                errorMessage = "Job logs are only available for GitHub Actions"
+            )
+            return
+        }
+        viewModelScope.launch {
+            _state.value = _state.value.copy(
+                logJobId = jobId,
+                logJobName = jobName,
+                logText = null,
+                logAnnotations = emptyList(),
+                logLoading = true,
+                errorMessage = null
+            )
+            val (log, annotations, result) = withContext(Dispatchers.IO) {
+                workflowManager.getJobLog(ref, jobId)
+            }
+            _state.value = applyResult(
+                _state.value.copy(
+                    logLoading = false,
+                    logText = log,
+                    logAnnotations = annotations
+                ),
+                result
+            )
+        }
+    }
+
+    fun closeJobLog() {
+        _state.value = _state.value.copy(
+            logJobId = null,
+            logJobName = null,
+            logText = null,
+            logAnnotations = emptyList(),
+            logLoading = false
+        )
     }
 
     fun consumeMessages() {

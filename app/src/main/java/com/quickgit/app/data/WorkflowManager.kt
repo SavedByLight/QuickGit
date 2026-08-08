@@ -178,6 +178,34 @@ class WorkflowManager(
         }
     }
 
+    /**
+     * Full job log text + structured check-run annotations (GitHub Actions).
+     * GitLab returns [PrOpResult.Error] for logs for now.
+     */
+    fun getJobLog(
+        ref: ProjectRef,
+        jobId: Long
+    ): Triple<String?, List<com.quickgit.app.data.models.WorkflowAnnotation>, PrOpResult> {
+        if (ref.isGitLab) {
+            return Triple(
+                null,
+                emptyList(),
+                PrOpResult.Error("Job log viewing is only available for GitHub Actions")
+            )
+        }
+        AppLog.i(TAG, "getJobLog: ${ref.owner}/${ref.repo} job=$jobId")
+        val logResult = githubApi().getJobLogs(ref.owner, ref.repo, jobId)
+        val log = logResult.getOrNull()
+        val logOp = logResult.toPrOpResult(ref.host)
+        if (logOp !is PrOpResult.Success) {
+            return Triple(null, emptyList(), logOp)
+        }
+        val annotations = githubApi().getJobAnnotations(ref.owner, ref.repo, jobId)
+            .getOrNull()
+            .orEmpty()
+        return Triple(log, annotations, PrOpResult.Success)
+    }
+
     fun dispatch(
         ref: ProjectRef,
         workflowId: Long,
