@@ -108,9 +108,14 @@ fun RepoDetailScreen(
                 item { SubPageButton(Icons.Default.FolderOpen, "Files", onOpenFiles) }
                 item { SubPageButton(Icons.Default.AccountTree, "Branches", onOpenBranches) }
                 if (!state.isGerritRemote) {
-                    item { SubPageButton(Icons.Default.CallMerge, "PRs", onOpenPullRequests) }
-                    item { SubPageButton(Icons.Default.BugReport, "Issues", onOpenIssues) }
-                    item { SubPageButton(Icons.Default.PlayCircle, "Actions", onOpenWorkflows) }
+                    // GitLab: MRs / Issues board / Build. GitHub: PRs / Issues / Actions.
+                    // Gerrit hides this row entirely.
+                    val prLabel = if (state.isGitLabRemote) "MRs" else "PRs"
+                    val issuesLabel = if (state.isGitLabRemote) "Board" else "Issues"
+                    val ciLabel = if (state.isGitLabRemote) "Build" else "Actions"
+                    item { SubPageButton(Icons.Default.CallMerge, prLabel, onOpenPullRequests) }
+                    item { SubPageButton(Icons.Default.BugReport, issuesLabel, onOpenIssues) }
+                    item { SubPageButton(Icons.Default.PlayCircle, ciLabel, onOpenWorkflows) }
                     item { SubPageButton(Icons.Default.NewReleases, "Releases", onOpenReleases) }
                 }
             }

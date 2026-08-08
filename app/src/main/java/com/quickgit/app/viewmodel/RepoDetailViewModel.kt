@@ -27,7 +27,9 @@ data class RepoDetailUiState(
     val signOff: Boolean = false,
     val remoteUrl: String? = null,
     /** True when origin looks like a Gerrit host — hides GH Actions/PRs/etc., shows push-for-review. */
-    val isGerritRemote: Boolean = false
+    val isGerritRemote: Boolean = false,
+    /** True when origin is GitLab (gitlab.com or self-hosted) — use MR/CI/Issues labels. */
+    val isGitLabRemote: Boolean = false
 )
 
 class RepoDetailViewModel(private val repoManager: RepoManager) : ViewModel() {
@@ -61,11 +63,13 @@ class RepoDetailViewModel(private val repoManager: RepoManager) : ViewModel() {
                 }
             }
             val isGerrit = isGerritRemoteUrl(remoteUrl)
+            val isGitLab = isGitLabRemoteUrl(remoteUrl)
             _state.value = _state.value.copy(
                 status = status,
                 branch = branch ?: "",
                 remoteUrl = remoteUrl,
                 isGerritRemote = isGerrit,
+                isGitLabRemote = isGitLab,
                 refreshing = if (showRefreshing) false else _state.value.refreshing
             )
         }
@@ -200,5 +204,12 @@ class RepoDetailViewModel(private val repoManager: RepoManager) : ViewModel() {
         // Authenticated Gerrit HTTP clone path
         if ("/a/" in u) return true
         return false
+    }
+
+    private fun isGitLabRemoteUrl(url: String?): Boolean {
+        if (url.isNullOrBlank()) return false
+        val u = url.lowercase()
+        // gitlab.com and typical self-hosted hosts (gitlab.example.com)
+        return u.contains("gitlab.com") || u.contains("gitlab.")
     }
 }
