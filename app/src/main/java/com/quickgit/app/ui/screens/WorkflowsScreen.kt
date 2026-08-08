@@ -43,6 +43,11 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.ui.viewinterop.AndroidView
+import android.webkit.WebResourceResponse
+import java.io.ByteArrayInputStream
+import java.net.HttpURLConnection
+import java.net.URL
+import java.nio.charset.StandardCharsets
 import com.quickgit.app.viewmodel.WorkflowsViewModel
 import kotlinx.coroutines.launch
 
@@ -68,6 +73,7 @@ fun WorkflowsScreen(
         LiveJobWebContent(
             url = state.livePageUrl!!,
             title = state.livePageTitle ?: "Live job",
+            token = state.livePageToken,
             snackbarHost = snackbarHost,
             onBack = { vm.closeLivePage() }
         )
@@ -883,13 +889,17 @@ private fun DispatchDialog(
 private fun LiveJobWebContent(
     url: String,
     title: String,
+    token: String?,
     snackbarHost: SnackbarHostState,
     onBack: () -> Unit
 ) {
     var loading by remember { mutableStateOf(true) }
     var pageTitle by remember { mutableStateOf(title) }
-    var canGoBack by remember { mutableStateOf(false) }
     var webView by remember { mutableStateOf<WebView?>(null) }
+    val authHeaders = remember(token) {
+        if (token.isNullOrBlank()) emptyMap()
+        else mapOf("Authorization" to "Bearer $token")
+    }
 
     BackHandler {
         val wv = webView
@@ -904,7 +914,8 @@ private fun LiveJobWebContent(
                     Column {
                         Text(pageTitle, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text(
-                            "GitHub live feed",
+                            if (!token.isNullOrBlank()) "Live feed · signed in with app token"
+                            else "Live feed · connect GitHub in Settings for auth",
                             style = MaterialTheme.typography.bodySmall
                         )
                     }
@@ -914,7 +925,13 @@ private fun LiveJobWebContent(
                 },
                 actions = {
                     IconButton(
-                        onClick = { webView?.reload() },
+                        onClick = {
+                            val wv = webView
+                            if (wv != null) {
+                                if (authHeaders.isNotEmpty()) wv.loadUrl(url, authHeaders)
+                                else wv.reload()
+                            }
+                        },
                         enabled = !loading
                     ) {
                         Icon(Icons.Default.Refresh, "Reload")
@@ -923,57 +940,157 @@ private fun LiveJobWebContent(
             )
         }
     ) { padding ->
-        Box(Modifier.padding(padding).fillMaxSize()) {
-            AndroidView(
-                factory = { context ->
-                    WebView(context).apply {
-                        layoutParams = ViewGroup.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT,
-                            ViewGroup.LayoutParams.MATCH_PARENT
-                        )
-                        settings.javaScriptEnabled = true
-                        settings.domStorageEnabled = true
-                        settings.cacheMode = WebSettings.LOAD_DEFAULT
-                        settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
-                        settings.userAgentString = settings.userAgentString
-                        CookieManager.getInstance().setAcceptCookie(true)
-                        CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
-                        webChromeClient = object : WebChromeClient() {
-                            override fun onProgressChanged(view: WebView?, newProgress: Int) {
-                                loading = newProgress < 100
-                            }
-                            override fun onReceivedTitle(view: WebView?, t: String?) {
-                                if (!t.isNullOrBlank()) pageTitle = t
-                            }
-                        }
-                        webViewClient = object : WebViewClient() {
-                            override fun shouldOverrideUrlLoading(
-                                view: WebView?,
-                                request: WebResourceRequest?
-                            ): Boolean {
-                                // Keep github.com navigation inside the WebView.
-                                val host = request?.url?.host.orEmpty()
-                                return if (host.endsWith("github.com") || host.endsWith("githubusercontent.com")) {
-                                    false
-                                } else {
-                                    // External links: let the system handle (or stay put).
-                                    false
+        Column(Modifier.padding(padding).fillMaxSize()) {
+            if (token.isNullOrBlank()) {
+                Text(
+                    "No GitHub token in the app. Open Settings → connect GitHub, or sign in inside this page once (session is saved).",
+                    Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Box(Modifier.fillMaxSize()) {
+                AndroidView(
+                    factory = { context ->
+                        WebView(context).apply {
+                            layoutParams = ViewGroup.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                                ViewGroup.LayoutParams.MATCH_PARENT
+                            )
+                            settings.javaScriptEnabled = true
+                            settings.domStorageEnabled = true
+                            settings.cacheMode = WebSettings.LOAD_DEFAULT
+                            settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+                            // Prefer a desktop-ish UA so Actions UI is fully featured.
+                            settings.userAgentString =
+                                "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 " +
+                                    "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+                            val cm = CookieManager.getInstance()
+                            cm.setAcceptCookie(true)
+                            cm.setAcceptThirdPartyCookies(this, true)
+                            webChromeClient = object : WebChromeClient() {
+                                override fun onProgressChanged(view: WebView?, newProgress: Int) {
+                                    loading = newProgress < 100
+                                }
+                                override fun onReceivedTitle(view: WebView?, t: String?) {
+                                    if (!t.isNullOrBlank()) pageTitle = t
                                 }
                             }
-                            override fun onPageFinished(view: WebView?, url: String?) {
-                                loading = false
-                                canGoBack = view?.canGoBack() == true
+                            webViewClient = object : WebViewClient() {
+                                override fun shouldOverrideUrlLoading(
+                                    view: WebView?,
+                                    request: WebResourceRequest?
+                                ): Boolean {
+                                    val next = request?.url?.toString() ?: return false
+                                    if (authHeaders.isNotEmpty()) {
+                                        view?.loadUrl(next, authHeaders)
+                                        return true
+                                    }
+                                    return false
+                                }
+
+                                /**
+                                 * Attach the app's GitHub PAT to same-site requests so API calls
+                                 * from the Actions page can authenticate. Session cookies from a
+                                 * one-time web login (if needed) are kept by CookieManager.
+                                 */
+                                override fun shouldInterceptRequest(
+                                    view: WebView?,
+                                    request: WebResourceRequest?
+                                ): WebResourceResponse? {
+                                    if (request == null || token.isNullOrBlank()) {
+                                        return super.shouldInterceptRequest(view, request)
+                                    }
+                                    val host = request.url.host.orEmpty()
+                                    val path = request.url.path.orEmpty()
+                                    // Only proxy API-style requests. Static assets and the HTML
+                                    // document stay on WebView's stack so streaming/WebSocket work.
+                                    val isApi =
+                                        host == "api.github.com" ||
+                                            (host == "github.com" && (
+                                                path.startsWith("/api/") ||
+                                                    path.startsWith("/graphql") ||
+                                                    path.contains("/_graphql")
+                                            ))
+                                    if (!isApi || request.method != "GET") {
+                                        return super.shouldInterceptRequest(view, request)
+                                    }
+                                    // Skip non-http schemes and blob/data
+                                    val scheme = request.url.scheme.orEmpty()
+                                    if (scheme != "https" && scheme != "http") {
+                                        return super.shouldInterceptRequest(view, request)
+                                    }
+                                    return try {
+                                        val conn = (URL(request.url.toString()).openConnection() as HttpURLConnection).apply {
+                                            instanceFollowRedirects = false
+                                            requestMethod = "GET"
+                                            connectTimeout = 20_000
+                                            readTimeout = 60_000
+                                            setRequestProperty("Authorization", "Bearer $token")
+                                            // Forward Accept / common headers from the WebView request.
+                                            request.requestHeaders.forEach { (k, v) ->
+                                                if (!k.equals("Authorization", ignoreCase = true)) {
+                                                    setRequestProperty(k, v)
+                                                }
+                                            }
+                                            if (getRequestProperty("Accept").isNullOrBlank()) {
+                                                setRequestProperty(
+                                                    "Accept",
+                                                    "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+                                                )
+                                            }
+                                        }
+                                        val code = conn.responseCode
+                                        // Let the WebView handle redirects itself with auth headers.
+                                        if (code in 300..399) {
+                                            conn.disconnect()
+                                            return super.shouldInterceptRequest(view, request)
+                                        }
+                                        val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+                                        val mime = conn.contentType
+                                            ?.substringBefore(';')
+                                            ?.trim()
+                                            ?.ifBlank { null }
+                                            ?: "text/html"
+                                        val encoding = conn.contentEncoding ?: "utf-8"
+                                        val headers = conn.headerFields
+                                            ?.filterKeys { it != null }
+                                            ?.mapKeys { it.key!! }
+                                            ?.mapValues { it.value.joinToString(",") }
+                                            ?: emptyMap()
+                                        // Propagate Set-Cookie into CookieManager for session continuity.
+                                        conn.headerFields?.get("Set-Cookie")?.forEach { cookie ->
+                                            CookieManager.getInstance().setCookie(request.url.toString(), cookie)
+                                        }
+                                        WebResourceResponse(
+                                            mime,
+                                            encoding,
+                                            code,
+                                            conn.responseMessage ?: "OK",
+                                            headers,
+                                            stream ?: ByteArrayInputStream(ByteArray(0))
+                                        )
+                                    } catch (_: Exception) {
+                                        super.shouldInterceptRequest(view, request)
+                                    }
+                                }
+
+                                override fun onPageFinished(view: WebView?, finishedUrl: String?) {
+                                    loading = false
+                                    CookieManager.getInstance().flush()
+                                }
                             }
+                            if (authHeaders.isNotEmpty()) loadUrl(url, authHeaders)
+                            else loadUrl(url)
+                            webView = this
                         }
-                        loadUrl(url)
-                        webView = this
-                    }
-                },
-                modifier = Modifier.fillMaxSize(),
-                update = { /* keep existing WebView instance */ }
-            )
-            if (loading) {
-                LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter))
+                    },
+                    modifier = Modifier.fillMaxSize(),
+                    update = { /* retain WebView instance */ }
+                )
+                if (loading) {
+                    LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter))
+                }
             }
         }
     }

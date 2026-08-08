@@ -52,6 +52,9 @@ class WorkflowManager(
 
     private fun githubApi(): GitHubApi = GitHubApi(credentialStore.getHttpsToken("github.com"))
 
+    /** PAT stored for github.com, if the user connected a GitHub account in Settings. */
+    fun githubHttpsToken(): String? = credentialStore.getHttpsToken("github.com")
+
     private fun gitlabApi(host: String): GitLabApi =
         GitLabApi(host, credentialStore.getHttpsToken(host))
 

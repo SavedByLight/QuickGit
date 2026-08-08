@@ -47,7 +47,9 @@ data class WorkflowsUiState(
     val logJobConclusion: String? = null,
     /** In-app WebView of the GitHub Actions job page (true live stream). */
     val livePageUrl: String? = null,
-    val livePageTitle: String? = null
+    val livePageTitle: String? = null,
+    /** Connected GitHub PAT injected into the WebView for authenticated requests. */
+    val livePageToken: String? = null
 )
 
 class WorkflowsViewModel(private val workflowManager: WorkflowManager) : ViewModel() {
@@ -369,11 +371,20 @@ class WorkflowsViewModel(private val workflowManager: WorkflowManager) : ViewMod
 
     fun openLivePage(url: String, title: String) {
         if (url.isBlank()) return
-        _state.value = _state.value.copy(livePageUrl = url, livePageTitle = title)
+        val token = workflowManager.githubHttpsToken()
+        _state.value = _state.value.copy(
+            livePageUrl = url,
+            livePageTitle = title,
+            livePageToken = token
+        )
     }
 
     fun closeLivePage() {
-        _state.value = _state.value.copy(livePageUrl = null, livePageTitle = null)
+        _state.value = _state.value.copy(
+            livePageUrl = null,
+            livePageTitle = null,
+            livePageToken = null
+        )
     }
 
     fun consumeMessages() {
