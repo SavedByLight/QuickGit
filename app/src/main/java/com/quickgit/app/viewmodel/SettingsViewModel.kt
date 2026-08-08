@@ -628,6 +628,8 @@ class SettingsViewModel(
                         statusMessage = "GitLab connected as @${account.username} on ${account.host}",
                         isError = false
                     )
+                    // Also ensure the general HTTPS credential slot for this host is consistent
+                    // (username + token already written by GitLabAccountManager.connect)
                 }
                 result is PrOpResult.AuthRequired -> {
                     _state.value = _state.value.copy(

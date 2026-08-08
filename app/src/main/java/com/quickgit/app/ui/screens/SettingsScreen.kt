@@ -247,8 +247,9 @@ fun SettingsScreen(
             Text("GitLab account", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(4.dp))
             Text(
-                "Connect gitlab.com or a self-hosted instance. Token needs api + read_repository " +
-                    "(and write_repository for push). Enables MRs, issues, and remote file browsing.",
+                "Connect gitlab.com or a self-hosted instance. Paste a personal access token with " +
+                    "api + read_repository scopes (add write_repository for push). Username is optional — " +
+                    "it will be filled from the token when you connect. Enables MRs, issues, and remote browsing.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -266,12 +267,33 @@ fun SettingsScreen(
             }
             Spacer(Modifier.height(12.dp))
             var gitlabHost by remember { mutableStateOf(state.gitlabHost.ifBlank { "gitlab.com" }) }
+            var gitlabUser by remember { mutableStateOf(state.gitlabUsername.orEmpty()) }
             var gitlabToken by remember { mutableStateOf("") }
+            // Keep fields in sync when verifyGitLabIfConnected restores values from disk.
+            LaunchedEffect(state.gitlabHost) {
+                if (state.gitlabHost.isNotBlank() && gitlabHost != state.gitlabHost) {
+                    gitlabHost = state.gitlabHost
+                }
+            }
+            LaunchedEffect(state.gitlabUsername) {
+                if (!state.gitlabUsername.isNullOrBlank() && gitlabUser.isBlank()) {
+                    gitlabUser = state.gitlabUsername.orEmpty()
+                }
+            }
             OutlinedTextField(
                 value = gitlabHost,
                 onValueChange = { gitlabHost = it },
                 label = { Text("Host") },
                 placeholder = { Text("gitlab.com or gitlab.example.com") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = gitlabUser,
+                onValueChange = { gitlabUser = it },
+                label = { Text("Username") },
+                placeholder = { Text("Optional — filled from token if left blank") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true
             )
@@ -287,7 +309,13 @@ fun SettingsScreen(
             Spacer(Modifier.height(12.dp))
             Row {
                 Button(
-                    onClick = { vm.connectGitLab(gitlabHost, gitlabToken) },
+                    onClick = {
+                        vm.connectGitLab(
+                            gitlabHost,
+                            gitlabToken,
+                            gitlabUser.takeIf { it.isNotBlank() }
+                        )
+                    },
                     enabled = gitlabToken.isNotBlank() && !state.connecting
                 ) {
                     if (state.connecting) {
