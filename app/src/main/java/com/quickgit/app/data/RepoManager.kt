@@ -475,6 +475,13 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                             .setForce(true)
                             .setProgressMonitor(TextProgress(onProgress))
                             .call()
+                        // Force working tree + index to match HEAD exactly. On Android this
+                        // clears false "modified" noise from modes, symlinks, and partial checkout.
+                        onProgress("Syncing working tree…")
+                        git.reset()
+                            .setMode(org.eclipse.jgit.api.ResetCommand.ResetType.HARD)
+                            .setRef("HEAD")
+                            .call()
                     } finally {
                         git.close()
                     }
@@ -482,6 +489,7 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                 rememberExternalRepoPath(destination)
                 ensureMobileRepoConfig(destination.absolutePath)
                 val lfsMsg = maybeFetchLfs(destination.absolutePath, cloneUrl, onProgress)
+                logIfDirtyAfterClone(destination.absolutePath)
                 AppLog.i(TAG, "clone succeeded: ${destination.absolutePath}" + (lfsMsg?.let { " ($it)" } ?: ""))
                 return GitOpResult.Success
             } catch (e: org.eclipse.jgit.api.errors.TransportException) {
@@ -582,6 +590,35 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
      * Also force autocrlf=false so checkout does not rewrite line endings and create
      * spurious diffs on mixed CRLF/LF repos.
      */
+
+    /** Log the first few dirty paths after clone so we can diagnose residual false positives. */
+    private fun logIfDirtyAfterClone(path: String) {
+        try {
+            openGit(path).use { git ->
+                val s = git.status().call()
+                if (s.isClean) {
+                    AppLog.i(TAG, "post-clone status: clean")
+                    return
+                }
+                val samples = (
+                    s.modified.take(8).map { "M $it" } +
+                        s.untracked.take(8).map { "? $it" } +
+                        s.missing.take(8).map { "D $it" } +
+                        s.changed.take(8).map { "C $it" } +
+                        s.added.take(8).map { "A $it" }
+                    ).take(12)
+                AppLog.w(
+                    TAG,
+                    "post-clone status NOT clean: modified=${s.modified.size} untracked=${s.untracked.size} " +
+                        "missing=${s.missing.size} changed=${s.changed.size} added=${s.added.size} " +
+                        "sample=${samples.joinToString()}"
+                )
+            }
+        } catch (e: Exception) {
+            AppLog.w(TAG, "post-clone status check failed: ${e.message}")
+        }
+    }
+
     fun ensureMobileRepoConfig(path: String) {
         try {
             openGit(path).use { git -> applyMobileRepoConfig(git) }
