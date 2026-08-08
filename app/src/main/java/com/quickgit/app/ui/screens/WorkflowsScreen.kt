@@ -22,7 +22,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.unit.sp
 import com.quickgit.app.data.models.Workflow
+import com.quickgit.app.data.models.WorkflowAnnotation
 import com.quickgit.app.data.models.WorkflowJob
 import com.quickgit.app.data.models.WorkflowRun
 import com.quickgit.app.data.models.WorkflowRunFilter
@@ -49,6 +53,16 @@ fun WorkflowsScreen(
         state.authRequiredHost?.let { onNeedsAuth("https://$it/"); vm.consumeMessages() }
     }
 
+    if (state.logJobId != null) {
+        BackHandler { vm.closeJobLog() }
+        JobLogContent(
+            vm = vm,
+            snackbarHost = snackbarHost,
+            onBack = { vm.closeJobLog() }
+        )
+        return
+    }
+
     if (state.selectedRun != null) {
         BackHandler { vm.closeDetail() }
         RunDetailContent(
@@ -63,14 +77,15 @@ fun WorkflowsScreen(
         Scaffold(
             topBar = {
                 TopAppBar(
-                    title = { Text("Actions") },
+                    title = { Text(if (state.isGitLab) "Build" else "Actions") },
                     navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back") } }
                 )
             }
         ) { padding ->
             Box(Modifier.padding(padding).fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
                 Text(
-                    "GitHub Actions is only available for repositories whose origin points at github.com.",
+                    "CI is available for GitHub Actions and GitLab pipelines. " +
+                        "This repo's origin isn't recognized as either.",
                     textAlign = TextAlign.Center,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -83,7 +98,7 @@ fun WorkflowsScreen(
         snackbarHost = { SnackbarHost(snackbarHost) },
         topBar = {
             TopAppBar(
-                title = { Text("Actions") },
+                title = { Text(if (state.isGitLab) "Build" else "Actions") },
                 navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back") } },
                 actions = {
                     IconButton(onClick = { vm.refresh() }, enabled = !state.loading) {
@@ -330,7 +345,11 @@ private fun RunDetailContent(
                 )
             } else {
                 state.jobs.forEach { job ->
-                    JobCard(job)
+                    JobCard(
+                        job = job,
+                        showLogButton = !state.isGitLab,
+                        onViewLog = { vm.loadJobLog(job.id, job.name) }
+                    )
                     Spacer(Modifier.height(8.dp))
                 }
             }
@@ -339,7 +358,11 @@ private fun RunDetailContent(
 }
 
 @Composable
-private fun JobCard(job: WorkflowJob) {
+private fun JobCard(
+    job: WorkflowJob,
+    showLogButton: Boolean = false,
+    onViewLog: () -> Unit = {}
+) {
     var expanded by remember { mutableStateOf(true) }
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(12.dp)) {
@@ -361,6 +384,17 @@ private fun JobCard(job: WorkflowJob) {
                     contentDescription = null
                 )
             }
+            if (showLogButton) {
+                Spacer(Modifier.height(8.dp))
+                TextButton(
+                    onClick = onViewLog,
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                ) {
+                    Icon(Icons.Default.Article, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("View full log")
+                }
+            }
             if (expanded && job.steps.isNotEmpty()) {
                 Spacer(Modifier.height(8.dp))
                 HorizontalDivider()
@@ -371,6 +405,175 @@ private fun JobCard(job: WorkflowJob) {
             }
         }
     }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun JobLogContent(
+    vm: WorkflowsViewModel,
+    snackbarHost: SnackbarHostState,
+    onBack: () -> Unit
+) {
+    val state by vm.state.collectAsState()
+    val scroll = rememberScrollState()
+    val hScroll = rememberScrollState()
+
+    Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHost) },
+        topBar = {
+            TopAppBar(
+                title = {
+                    Column {
+                        Text(
+                            state.logJobName ?: "Job log",
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            "Full workflow log",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                },
+                navigationIcon = {
+                    IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back") }
+                },
+                actions = {
+                    if (state.logJobId != null) {
+                        IconButton(
+                            onClick = {
+                                vm.loadJobLog(state.logJobId!!, state.logJobName ?: "Job")
+                            },
+                            enabled = !state.logLoading
+                        ) {
+                            Icon(Icons.Default.Refresh, "Reload log")
+                        }
+                    }
+                }
+            )
+        }
+    ) { padding ->
+        when {
+            state.logLoading && state.logText == null -> {
+                Box(Modifier.padding(padding).fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        CircularProgressIndicator()
+                        Spacer(Modifier.height(12.dp))
+                        Text(
+                            "Downloading log…",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+            else -> {
+                Column(
+                    Modifier
+                        .padding(padding)
+                        .fillMaxSize()
+                ) {
+                    if (state.logAnnotations.isNotEmpty()) {
+                        Text(
+                            "Annotations (${state.logAnnotations.size})",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                        )
+                        state.logAnnotations.forEach { ann ->
+                            AnnotationCard(ann)
+                        }
+                        HorizontalDivider(Modifier.padding(vertical = 8.dp))
+                    }
+                    val text = state.logText
+                    if (text.isNullOrBlank()) {
+                        Text(
+                            "No log text available yet. Logs appear after the job has started.",
+                            Modifier.padding(16.dp),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else {
+                        Column(
+                            Modifier
+                                .weight(1f)
+                                .horizontalScroll(hScroll)
+                                .verticalScroll(scroll)
+                                .padding(12.dp)
+                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
+                                .padding(8.dp)
+                        ) {
+                            text.lineSequence().forEach { line ->
+                                LogLine(line)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AnnotationCard(ann: WorkflowAnnotation) {
+    val levelColor = when (ann.annotationLevel.lowercase()) {
+        "failure", "error" -> GitRed
+        "warning" -> GitAmber
+        else -> MaterialTheme.colorScheme.primary
+    }
+    Card(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp)
+    ) {
+        Column(Modifier.padding(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    ann.annotationLevel.uppercase(),
+                    color = levelColor,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                if (!ann.title.isNullOrBlank()) {
+                    Spacer(Modifier.width(8.dp))
+                    Text(ann.title, style = MaterialTheme.typography.labelMedium)
+                }
+            }
+            if (!ann.path.isNullOrBlank()) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    buildString {
+                        append(ann.path)
+                        ann.startLine?.let { append(":$it") }
+                        ann.endLine?.takeIf { it != ann.startLine }?.let { append("–$it") }
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Spacer(Modifier.height(4.dp))
+            Text(ann.message, style = MaterialTheme.typography.bodyMedium)
+        }
+    }
+}
+
+@Composable
+private fun LogLine(line: String) {
+    val lower = line.lowercase()
+    val color = when {
+        "##[error]" in lower || line.contains("\u001b[31m") ||
+            lower.contains("error:") || lower.startsWith("error ") -> GitRed
+        "##[warning]" in lower || lower.contains("warning:") -> GitAmber
+        "##[notice]" in lower || "##[group]" in lower -> MaterialTheme.colorScheme.primary
+        else -> MaterialTheme.colorScheme.onSurface
+    }
+    Text(
+        line.ifEmpty { " " },
+        color = color,
+        fontFamily = FontFamily.Monospace,
+        fontSize = 11.sp,
+        lineHeight = 14.sp,
+        maxLines = 1,
+        softWrap = false
+    )
 }
 
 @Composable

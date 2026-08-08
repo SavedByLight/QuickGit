@@ -10,6 +10,7 @@ import com.quickgit.app.data.models.PullRequest
 import com.quickgit.app.data.models.Release
 import com.quickgit.app.data.models.ReleaseAsset
 import com.quickgit.app.data.models.Workflow
+import com.quickgit.app.data.models.WorkflowAnnotation
 import com.quickgit.app.data.models.WorkflowJob
 import com.quickgit.app.data.models.WorkflowRun
 import com.quickgit.app.data.models.WorkflowStep
@@ -27,10 +28,18 @@ import java.nio.charset.StandardCharsets
  * Minimal GitHub REST v3 client for account identity, repository listing, and pull-request management. Deliberately dependency-free
  * (HttpURLConnection + org.json, both already on the platform) rather than pulling in
  * Retrofit/OkHttp for a handful of endpoints.
+ *
+ * Security notes:
+ * - Token is only ever sent as Authorization: Bearer over HTTPS.
+ * - Token value is never logged.
+ * - Prefer short-lived / fine-grained tokens from the caller (CredentialStore).
  */
 class GitHubApi(private val token: String?) {
 
     private val TAG = "GitHubApi"
+
+    /** True when a non-blank token was supplied. Useful for UI to know auth is present. */
+    val isAuthenticated: Boolean get() = !token.isNullOrBlank()
 
     /** owner/repo parsed out of an https/ssh/git remote URL, or null if it isn't a github.com remote. */
     data class OwnerRepo(val owner: String, val repo: String)
@@ -387,6 +396,95 @@ class GitHubApi(private val token: String?) {
         Unit
     }
 
+    /**
+     * Downloads the full plain-text log for a workflow job.
+     * GitHub responds with a 302 to a short-lived signed URL; redirects are followed.
+     */
+    fun getJobLogs(owner: String, repo: String, jobId: Long): Result<String> = runCatching {
+        downloadTextFollowingRedirects("/repos/$owner/$repo/actions/jobs/$jobId/logs")
+    }
+
+    /**
+     * Check-run annotations for a job (errors/warnings with file:line).
+     * Job IDs from Actions are check-run IDs for this endpoint.
+     */
+    fun getJobAnnotations(
+        owner: String,
+        repo: String,
+        jobId: Long
+    ): Result<List<WorkflowAnnotation>> = runCatching {
+        val arr = request(
+            "GET",
+            "/repos/$owner/$repo/check-runs/$jobId/annotations?per_page=100"
+        ) as JSONArray
+        (0 until arr.length()).map { i ->
+            val o = arr.getJSONObject(i)
+            WorkflowAnnotation(
+                path = o.optString("path").takeIf { it.isNotBlank() },
+                startLine = o.optInt("start_line").takeIf { o.has("start_line") },
+                endLine = o.optInt("end_line").takeIf { o.has("end_line") },
+                startColumn = o.optInt("start_column").takeIf { o.has("start_column") },
+                endColumn = o.optInt("end_column").takeIf { o.has("end_column") },
+                annotationLevel = o.optString("annotation_level", "notice"),
+                message = o.optString("message", ""),
+                title = o.optString("title").takeIf { it.isNotBlank() }
+            )
+        }
+    }
+
+    /**
+     * Follow redirects (GitHub job logs → blob storage) and return response body as text.
+     * Caps extremely large logs to avoid OOM on mobile.
+     */
+    private fun downloadTextFollowingRedirects(path: String, maxBytes: Int = 2_000_000): String {
+        AppLog.i(TAG, "GET $path (log download)")
+        var currentUrl = URL("https://api.github.com$path")
+        var redirects = 0
+        while (redirects < 8) {
+            val conn = currentUrl.openConnection() as HttpURLConnection
+            try {
+                conn.instanceFollowRedirects = false
+                conn.requestMethod = "GET"
+                conn.connectTimeout = 20_000
+                conn.readTimeout = 60_000
+                conn.setRequestProperty("Accept", "application/vnd.github+json")
+                conn.setRequestProperty("X-GitHub-Api-Version", "2022-11-28")
+                // Auth only needed for api.github.com hops; blob storage URLs are pre-signed.
+                // Never attach the token to non-GitHub hosts.
+                if (currentUrl.host.equals("api.github.com", ignoreCase = true) && !token.isNullOrBlank()) {
+                    conn.setRequestProperty("Authorization", "Bearer $token")
+                }
+                val status = conn.responseCode
+                if (status in 300..399) {
+                    val location = conn.getHeaderField("Location")
+                        ?: throw HttpStatusException(status, "Redirect without Location")
+                    currentUrl = URL(currentUrl, location)
+                    redirects++
+                    continue
+                }
+                val stream = if (status in 200..299) conn.inputStream else conn.errorStream
+                if (status !in 200..299) {
+                    val err = stream?.let { s ->
+                        BufferedReader(InputStreamReader(s, StandardCharsets.UTF_8)).use { it.readText() }
+                    } ?: ""
+                    val msg = runCatching { JSONObject(err).optString("message") }.getOrNull()
+                        ?.takeIf { it.isNotBlank() } ?: "GitHub returned HTTP $status"
+                    throw HttpStatusException(status, msg)
+                }
+                val bytes = stream?.readBytes() ?: ByteArray(0)
+                val truncated = bytes.size > maxBytes
+                val slice = if (truncated) bytes.copyOfRange(bytes.size - maxBytes, bytes.size) else bytes
+                val text = String(slice, StandardCharsets.UTF_8)
+                return if (truncated) {
+                    "… [log truncated to last ${maxBytes / 1000}KB] …\n\n$text"
+                } else text
+            } finally {
+                conn.disconnect()
+            }
+        }
+        throw IOException("Too many redirects fetching job logs")
+    }
+
     // ── Releases ────────────────────────────────────────────────────────────
 
     fun listReleases(owner: String, repo: String, perPage: Int = 30): Result<List<Release>> = runCatching {
@@ -541,6 +639,7 @@ private fun JSONObject.toPullRequest(): PullRequest {
     class HttpStatusException(val code: Int, message: String) : IOException(message)
 
     private fun request(method: String, path: String, body: JSONObject? = null): Any {
+        // Never log the token or Authorization header.
         AppLog.i(TAG, "$method $path")
         val url = URL("https://api.github.com$path")
         val conn = url.openConnection() as HttpURLConnection
@@ -550,7 +649,10 @@ private fun JSONObject.toPullRequest(): PullRequest {
             conn.readTimeout = 20_000
             conn.setRequestProperty("Accept", "application/vnd.github+json")
             conn.setRequestProperty("X-GitHub-Api-Version", "2022-11-28")
-            if (!token.isNullOrBlank()) conn.setRequestProperty("Authorization", "Bearer $token")
+            // Token is sent only over HTTPS and never written to logs.
+            if (!token.isNullOrBlank()) {
+                conn.setRequestProperty("Authorization", "Bearer $token")
+            }
             if (body != null) {
                 conn.doOutput = true
                 conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
@@ -564,6 +666,7 @@ private fun JSONObject.toPullRequest(): PullRequest {
             if (status !in 200..299) {
                 val msg = runCatching { JSONObject(text).optString("message") }.getOrNull()
                     ?.takeIf { it.isNotBlank() } ?: "GitHub returned HTTP $status"
+                // Log status + path only; never the token or full error body that might contain secrets.
                 AppLog.w(TAG, "HTTP $status for $method $path: $msg")
                 throw HttpStatusException(status, msg)
             }
