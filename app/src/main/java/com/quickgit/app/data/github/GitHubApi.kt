@@ -34,9 +34,23 @@ import java.nio.charset.StandardCharsets
  * - Token value is never logged.
  * - Prefer short-lived / fine-grained tokens from the caller (CredentialStore).
  */
-class GitHubApi(private val token: String?) {
+class GitHubApi(rawToken: String?) {
 
     private val TAG = "GitHubApi"
+
+    /**
+     * Sanitize user-pasted tokens:
+     * - trim whitespace / newlines
+     * - strip accidental "Bearer " or "token " prefixes
+     */
+    private val token: String? = rawToken
+        ?.trim()
+        ?.removePrefix("Bearer ")
+        ?.removePrefix("bearer ")
+        ?.removePrefix("token ")
+        ?.removePrefix("Token ")
+        ?.trim()
+        ?.takeIf { it.isNotBlank() }
 
     /** True when a non-blank token was supplied. Useful for UI to know auth is present. */
     val isAuthenticated: Boolean get() = !token.isNullOrBlank()
@@ -452,7 +466,7 @@ class GitHubApi(private val token: String?) {
                 // Auth only needed for api.github.com hops; blob storage URLs are pre-signed.
                 // Never attach the token to non-GitHub hosts.
                 if (currentUrl.host.equals("api.github.com", ignoreCase = true) && !token.isNullOrBlank()) {
-                    conn.setRequestProperty("Authorization", "Bearer $token")
+                    conn.setRequestProperty("Authorization", "token $token")
                 }
                 val status = conn.responseCode
                 if (status in 300..399) {
@@ -650,8 +664,9 @@ private fun JSONObject.toPullRequest(): PullRequest {
             conn.setRequestProperty("Accept", "application/vnd.github+json")
             conn.setRequestProperty("X-GitHub-Api-Version", "2022-11-28")
             // Token is sent only over HTTPS and never written to logs.
+            // Use "token" prefix — works for classic PATs, fine-grained PATs, and OAuth tokens.
             if (!token.isNullOrBlank()) {
-                conn.setRequestProperty("Authorization", "Bearer $token")
+                conn.setRequestProperty("Authorization", "token $token")
             }
             if (body != null) {
                 conn.doOutput = true

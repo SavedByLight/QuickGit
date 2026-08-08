@@ -50,17 +50,23 @@ class CredentialStore(context: Context) {
      */
     fun saveHttpsToken(host: String, token: String, username: String? = null): Boolean {
         val h = normalizeHost(host)
-        if (h.isBlank() || token.isBlank()) {
+        // Strip whitespace and accidental "Bearer "/"token " prefixes from paste.
+        val clean = token.trim()
+            .removePrefix("Bearer ").removePrefix("bearer ")
+            .removePrefix("token ").removePrefix("Token ")
+            .trim()
+        if (h.isBlank() || clean.isBlank()) {
             Log.w(TAG, "saveHttpsToken ignored: blank host or token")
             return false
         }
         val editor = prefs.edit()
-            .putString(tokenKey(h), token.trim())
+            .putString(tokenKey(h), clean)
         if (!username.isNullOrBlank()) {
             editor.putString(usernameKey(h), username.trim())
         }
         val ok = editor.commit() // synchronous — critical for auth UI flow
         if (!ok) Log.e(TAG, "saveHttpsToken commit failed for host=$h")
+        else Log.i(TAG, "saveHttpsToken ok host=$h len=${clean.length}")
         return ok
     }
 

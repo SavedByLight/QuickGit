@@ -19,11 +19,18 @@ import java.nio.charset.StandardCharsets
  * Security: token is only sent as PRIVATE-TOKEN / Bearer over HTTPS and is never logged.
  */
 class GitLabApi(
-    private val host: String,
-    private val token: String?
+    host: String,
+    rawToken: String?
 ) {
     private val TAG = "GitLabApi"
-    private val baseUrl = "https://${host.trim().removePrefix("https://").removePrefix("http://").trimEnd('/')}/api/v4"
+    private val host = host.trim().removePrefix("https://").removePrefix("http://").trimEnd('/')
+    private val token: String? = rawToken
+        ?.trim()
+        ?.removePrefix("Bearer ")?.removePrefix("bearer ")
+        ?.removePrefix("token ")?.removePrefix("Token ")
+        ?.trim()
+        ?.takeIf { it.isNotBlank() }
+    private val baseUrl = "https://$host/api/v4"
 
     data class OwnerProject(val owner: String, val project: String)
 
