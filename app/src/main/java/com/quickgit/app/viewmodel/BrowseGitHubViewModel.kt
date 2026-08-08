@@ -401,22 +401,55 @@ class BrowseGitHubViewModel(
         }
     }
 
-    fun createRepo(name: String, description: String?, isPrivate: Boolean) {
+    fun createRepo(
+        name: String,
+        description: String?,
+        isPrivate: Boolean,
+        onGitLab: Boolean = false
+    ) {
         viewModelScope.launch {
             _state.value = _state.value.copy(creating = true, errorMessage = null)
-            val (repo, result) = withContext(Dispatchers.IO) {
-                accountManager.createRepo(name, description, isPrivate)
-            }
-            _state.value = when (result) {
-                is PrOpResult.Success -> _state.value.copy(
-                    creating = false,
-                    githubRepos = if (repo != null) listOf(repo) + _state.value.githubRepos else _state.value.githubRepos,
-                    statusMessage = "Created ${repo?.name ?: name.trim()}"
-                )
-                is PrOpResult.AuthRequired -> _state.value.copy(
-                    creating = false, authRequired = true, githubConnected = false
-                )
-                is PrOpResult.Error -> _state.value.copy(creating = false, errorMessage = result.message)
+            if (onGitLab) {
+                val h = when {
+                    gitLabAccountManager.isConnected(gitLabAccountManager.host) -> gitLabAccountManager.host
+                    gitLabAccountManager.isConnected("gitlab.com") -> "gitlab.com"
+                    else -> null
+                }
+                if (h == null) {
+                    _state.value = _state.value.copy(
+                        creating = false,
+                        errorMessage = "Connect GitLab in Settings"
+                    )
+                    return@launch
+                }
+                val (project, result) = withContext(Dispatchers.IO) {
+                    gitLabAccountManager.createProject(name, description, isPrivate, h)
+                }
+                _state.value = when (result) {
+                    is PrOpResult.Success -> _state.value.copy(
+                        creating = false,
+                        statusMessage = "Created ${project?.pathWithNamespace ?: name.trim()} on GitLab"
+                    )
+                    is PrOpResult.AuthRequired -> _state.value.copy(
+                        creating = false, authRequired = true, gitlabConnected = false
+                    )
+                    is PrOpResult.Error -> _state.value.copy(creating = false, errorMessage = result.message)
+                }
+            } else {
+                val (repo, result) = withContext(Dispatchers.IO) {
+                    accountManager.createRepo(name, description, isPrivate)
+                }
+                _state.value = when (result) {
+                    is PrOpResult.Success -> _state.value.copy(
+                        creating = false,
+                        githubRepos = if (repo != null) listOf(repo) + _state.value.githubRepos else _state.value.githubRepos,
+                        statusMessage = "Created ${repo?.name ?: name.trim()} on GitHub"
+                    )
+                    is PrOpResult.AuthRequired -> _state.value.copy(
+                        creating = false, authRequired = true, githubConnected = false
+                    )
+                    is PrOpResult.Error -> _state.value.copy(creating = false, errorMessage = result.message)
+                }
             }
         }
     }

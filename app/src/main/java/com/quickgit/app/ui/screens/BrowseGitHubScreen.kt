@@ -89,8 +89,8 @@ fun BrowseGitHubScreen(
             githubConnected = state.githubConnected,
             gitlabConnected = state.gitlabConnected,
             onDismiss = { showCreateDialog = false },
-            onCreate = { name, description, isPrivate, onGitLab ->
-                vm.createRepo(name, description, isPrivate, onGitLab = onGitLab)
+            onCreate = { name, description, isPrivate, forGitLab ->
+                vm.createRepo(name, description, isPrivate, forGitLab)
                 showCreateDialog = false
             }
         )
