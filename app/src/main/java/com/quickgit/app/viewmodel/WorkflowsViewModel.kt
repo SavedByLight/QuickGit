@@ -1,5 +1,6 @@
 package com.quickgit.app.viewmodel
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.quickgit.app.data.WorkflowManager
@@ -283,6 +284,28 @@ class WorkflowsViewModel(private val workflowManager: WorkflowManager) : ViewMod
             } else if (status != null && !isLive(status)) {
                 stopLogWatching()
             }
+        }
+    }
+
+
+    fun saveJobLog(context: Context) {
+        val text = _state.value.logText
+        val jobId = _state.value.logJobId
+        val jobName = _state.value.logJobName ?: "job"
+        if (text.isNullOrBlank() || jobId == null) {
+            _state.value = _state.value.copy(errorMessage = "No log to save yet")
+            return
+        }
+        viewModelScope.launch {
+            _state.value = _state.value.copy(busy = true)
+            val (path, result) = withContext(Dispatchers.IO) {
+                workflowManager.saveJobLogToDownloads(context, jobId, jobName, text)
+            }
+            _state.value = applyResult(
+                _state.value.copy(busy = false),
+                result,
+                successMessage = path?.let { "Saved to $it" } ?: "Log saved to Downloads/QuickGit"
+            )
         }
     }
 
