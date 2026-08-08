@@ -466,9 +466,13 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                     val git = cmd.call()
                     try {
                         installJGitMemoryLimits()
+                        // Apply mobile config BEFORE checkout so the index/working tree
+                        // are not compared using desktop filemode/symlink rules.
+                        applyMobileRepoConfig(git)
                         onProgress("Checking out files…")
                         git.checkout()
                             .setAllPaths(true)
+                            .setForce(true)
                             .setProgressMonitor(TextProgress(onProgress))
                             .call()
                     } finally {
@@ -580,25 +584,84 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
      */
     fun ensureMobileRepoConfig(path: String) {
         try {
+            openGit(path).use { git -> applyMobileRepoConfig(git) }
+        } catch (e: Exception) {
+            AppLog.w(TAG, "ensureMobileRepoConfig failed for $path: ${e.message}")
+        }
+    }
+
+    /**
+     * Android-friendly local git config. Must run before first checkout when possible.
+     * - filemode=false: storage often cannot preserve +x bits
+     * - autocrlf=false: avoid rewriting line endings on checkout
+     * - symlinks=false: Android usually cannot create real symlinks in app storage
+     * - checkstat=minimum: avoid false dirty from coarse filesystem timestamps
+     */
+    private fun applyMobileRepoConfig(git: Git) {
+        val cfg = git.repository.config
+        var changed = false
+        if (cfg.getBoolean("core", null, "filemode", true)) {
+            cfg.setBoolean("core", null, "filemode", false)
+            changed = true
+        }
+        val acrlf = cfg.getString("core", null, "autocrlf")
+        if (acrlf == null || !acrlf.equals("false", ignoreCase = true)) {
+            cfg.setString("core", null, "autocrlf", "false")
+            changed = true
+        }
+        if (cfg.getBoolean("core", null, "symlinks", true)) {
+            cfg.setBoolean("core", null, "symlinks", false)
+            changed = true
+        }
+        val checkstat = cfg.getString("core", null, "checkstat")
+        if (checkstat == null || !checkstat.equals("minimum", ignoreCase = true)) {
+            cfg.setString("core", null, "checkstat", "minimum")
+            changed = true
+        }
+        if (changed) {
+            cfg.save()
+            AppLog.i(
+                TAG,
+                "mobile git config: filemode=false autocrlf=false symlinks=false checkstat=minimum"
+            )
+        }
+    }
+
+    /**
+     * After LFS smudge, the working tree has real blobs while the index still points at
+     * pointer files — native git-lfs hides that via filters; JGit does not. Mark those
+     * paths assume-valid so status stays clean until the user really edits them.
+     */
+    fun markAssumeValid(path: String, relativePaths: List<String>) {
+        if (relativePaths.isEmpty()) return
+        try {
             openGit(path).use { git ->
-                val cfg = git.repository.config
-                var dirty = false
-                if (cfg.getBoolean("core", null, "filemode", true)) {
-                    cfg.setBoolean("core", null, "filemode", false)
-                    dirty = true
-                }
-                val acrlf = cfg.getString("core", null, "autocrlf")
-                if (acrlf == null || !acrlf.equals("false", ignoreCase = true)) {
-                    cfg.setString("core", null, "autocrlf", "false")
-                    dirty = true
-                }
-                if (dirty) {
-                    cfg.save()
-                    AppLog.i(TAG, "ensureMobileRepoConfig: core.filemode=false, core.autocrlf=false for $path")
+                val repo = git.repository
+                val dc = repo.lockDirCache()
+                try {
+                    var n = 0
+                    for (rel in relativePaths) {
+                        val idx = dc.findEntry(rel)
+                        if (idx < 0) continue
+                        val entry = dc.getEntry(idx)
+                        if (!entry.isAssumeValid) {
+                            entry.isAssumeValid = true
+                            n++
+                        }
+                    }
+                    if (n > 0) {
+                        dc.write()
+                        if (!dc.commit()) {
+                            AppLog.w(TAG, "markAssumeValid: DirCache.commit() returned false")
+                        }
+                    }
+                    AppLog.i(TAG, "markAssumeValid: $n path(s) in $path")
+                } finally {
+                    dc.unlock()
                 }
             }
         } catch (e: Exception) {
-            AppLog.w(TAG, "ensureMobileRepoConfig failed for $path: ${e.message}")
+            AppLog.w(TAG, "markAssumeValid failed: ${e.message}")
         }
     }
 
@@ -1566,6 +1629,9 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                 token = credentialStore.getHttpsToken(host),
                 onProgress = onProgress
             )
+            if (result.smudgedPaths.isNotEmpty()) {
+                markAssumeValid(path, result.smudgedPaths)
+            }
             if (result.downloaded == 0 && result.alreadyPresent == 0 && result.failed == 0) null
             else result.message
         } catch (e: Exception) {

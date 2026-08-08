@@ -39,7 +39,9 @@ object LfsSupport {
         val downloaded: Int,
         val alreadyPresent: Int,
         val failed: Int,
-        val message: String
+        val message: String,
+        /** Paths whose working-tree content was replaced from LFS pointers (smudged). */
+        val smudgedPaths: List<String> = emptyList()
     )
 
     fun isPointerFile(file: File): Boolean {
@@ -111,6 +113,7 @@ object LfsSupport {
             return FetchResult(0, 0, 0, "No LFS pointer files found")
         }
 
+        val smudged = mutableListOf<String>()
         val missing = mutableListOf<Pointer>()
         var already = 0
         for (p in pointers) {
@@ -118,7 +121,7 @@ object LfsSupport {
             if (obj.isFile && obj.length() == p.size) {
                 already++
                 // Ensure working tree has real content
-                smudgeIfNeeded(repoRoot, p, obj)
+                if (smudgeIfNeeded(repoRoot, p, obj)) smudged += p.relativePath
             } else {
                 missing += p
             }
@@ -126,7 +129,7 @@ object LfsSupport {
 
         if (missing.isEmpty()) {
             onProgress("All ${pointers.size} LFS object(s) already present")
-            return FetchResult(0, already, 0, "All ${pointers.size} LFS objects already present")
+            return FetchResult(0, already, 0, "All ${pointers.size} LFS objects already present", smudged)
         }
 
         onProgress("Downloading ${missing.size} LFS object(s)…")
@@ -188,7 +191,7 @@ object LfsSupport {
                     if (dest.length() != pointer.size) {
                         AppLog.w(TAG, "size mismatch for $oid: got ${dest.length()} expected ${pointer.size}")
                     }
-                    smudgeIfNeeded(repoRoot, pointer, dest)
+                    if (smudgeIfNeeded(repoRoot, pointer, dest)) smudged += pointer.relativePath
                     downloaded++
                     onProgress("LFS $downloaded/${missing.size}: ${pointer.relativePath}")
                 } catch (e: Exception) {
@@ -203,7 +206,7 @@ object LfsSupport {
             if (already > 0) append(", $already already present")
             if (failed > 0) append(", $failed failed")
         }
-        return FetchResult(downloaded, already, failed, msg)
+        return FetchResult(downloaded, already, failed, msg, smudged)
     }
 
     /**
@@ -283,13 +286,15 @@ object LfsSupport {
         return FetchResult(uploaded, skipped, failed, msg)
     }
 
-    private fun smudgeIfNeeded(repoRoot: File, pointer: Pointer, objectFile: File) {
+    /** @return true if the working-tree file was rewritten from an LFS pointer. */
+    private fun smudgeIfNeeded(repoRoot: File, pointer: Pointer, objectFile: File): Boolean {
         val workFile = File(repoRoot, pointer.relativePath)
         // If work file is still a pointer (or missing), replace with real content
         val stillPointer = !workFile.exists() || isPointerFile(workFile) || workFile.length() != pointer.size
-        if (!stillPointer) return
+        if (!stillPointer) return false
         workFile.parentFile?.mkdirs()
         objectFile.copyTo(workFile, overwrite = true)
+        return true
     }
 
     fun lfsBatchUrl(remoteUrl: String): String? {
