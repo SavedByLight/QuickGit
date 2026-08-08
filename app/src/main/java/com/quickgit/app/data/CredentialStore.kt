@@ -1,6 +1,8 @@
 package com.quickgit.app.data
 
 import android.content.Context
+import android.content.SharedPreferences
+import android.util.Log
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import java.net.URI
@@ -8,25 +10,28 @@ import java.net.URI
 /**
  * Secure storage for HTTPS tokens, usernames, SSH keys, and GPG keys.
  *
- * Uses EncryptedSharedPreferences backed by Android Keystore (AES256-GCM).
- * Never stores secrets in plain SharedPreferences or files.
+ * Tries EncryptedSharedPreferences (Android Keystore). If that fails on the
+ * device (known Keystore bugs on some OEMs / emulators), falls back to plain
+ * SharedPreferences so the app still works — credentials can be saved and the
+ * UI will not get stuck.
  *
  * Requires:
- *   implementation("androidx.security:security-crypto:1.1.0-alpha06") // or latest
+ *   implementation("androidx.security:security-crypto:1.1.0-alpha06")
  */
 class CredentialStore(context: Context) {
 
-    private val masterKey = MasterKey.Builder(context.applicationContext)
-        .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-        .build()
+    private val appContext = context.applicationContext
 
-    private val prefs = EncryptedSharedPreferences.create(
-        context.applicationContext,
-        PREFS_NAME,
-        masterKey,
-        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-    )
+    private val prefs: SharedPreferences = createPrefs(appContext)
+
+    private val encrypted: Boolean =
+        prefs.javaClass.name.contains("Encrypted", ignoreCase = true)
+
+    init {
+        if (!encrypted) {
+            Log.w(TAG, "Using plaintext SharedPreferences fallback — Keystore/EncryptedSharedPreferences unavailable")
+        }
+    }
 
     // ── HTTPS token + username ──────────────────────────────────────────────
 
@@ -41,15 +46,22 @@ class CredentialStore(context: Context) {
 
     /**
      * Saves (or updates) the HTTPS token for [host].
-     * Optionally also stores the username used with that token.
+     * Uses commit() so the write is finished before the credentials screen continues.
      */
-    fun saveHttpsToken(host: String, token: String, username: String? = null) {
-        val editor = prefs.edit()
-            .putString(tokenKey(host), token.trim())
-        if (!username.isNullOrBlank()) {
-            editor.putString(usernameKey(host), username.trim())
+    fun saveHttpsToken(host: String, token: String, username: String? = null): Boolean {
+        val h = normalizeHost(host)
+        if (h.isBlank() || token.isBlank()) {
+            Log.w(TAG, "saveHttpsToken ignored: blank host or token")
+            return false
         }
-        editor.apply()
+        val editor = prefs.edit()
+            .putString(tokenKey(h), token.trim())
+        if (!username.isNullOrBlank()) {
+            editor.putString(usernameKey(h), username.trim())
+        }
+        val ok = editor.commit() // synchronous — critical for auth UI flow
+        if (!ok) Log.e(TAG, "saveHttpsToken commit failed for host=$h")
+        return ok
     }
 
     /** Convenience overload used by some call sites. */
@@ -62,10 +74,11 @@ class CredentialStore(context: Context) {
     }
 
     fun clearHttpsToken(host: String) {
+        val h = normalizeHost(host)
         prefs.edit()
-            .remove(tokenKey(host))
-            .remove(usernameKey(host))
-            .apply()
+            .remove(tokenKey(h))
+            .remove(usernameKey(h))
+            .commit()
     }
 
     // ── SSH key + passphrase ────────────────────────────────────────────────
@@ -79,7 +92,8 @@ class CredentialStore(context: Context) {
     fun getSshPassphrase(): String? =
         prefs.getString(KEY_SSH_PASSPHRASE, null)?.takeIf { it.isNotBlank() }
 
-    fun saveSshKey(privateKey: String, passphrase: String? = null) {
+    fun saveSshKey(privateKey: String, passphrase: String? = null): Boolean {
+        if (privateKey.isBlank()) return false
         val editor = prefs.edit()
             .putString(KEY_SSH_PRIVATE, privateKey.trim())
         if (passphrase != null) {
@@ -87,14 +101,14 @@ class CredentialStore(context: Context) {
         } else {
             editor.remove(KEY_SSH_PASSPHRASE)
         }
-        editor.apply()
+        return editor.commit()
     }
 
     fun saveSshPassphrase(passphrase: String?) {
         if (passphrase.isNullOrBlank()) {
-            prefs.edit().remove(KEY_SSH_PASSPHRASE).apply()
+            prefs.edit().remove(KEY_SSH_PASSPHRASE).commit()
         } else {
-            prefs.edit().putString(KEY_SSH_PASSPHRASE, passphrase).apply()
+            prefs.edit().putString(KEY_SSH_PASSPHRASE, passphrase).commit()
         }
     }
 
@@ -102,7 +116,7 @@ class CredentialStore(context: Context) {
         prefs.edit()
             .remove(KEY_SSH_PRIVATE)
             .remove(KEY_SSH_PASSPHRASE)
-            .apply()
+            .commit()
     }
 
     // ── GPG key + passphrase ────────────────────────────────────────────────
@@ -116,7 +130,8 @@ class CredentialStore(context: Context) {
     fun getGpgPassphrase(): String? =
         prefs.getString(KEY_GPG_PASSPHRASE, null)?.takeIf { it.isNotBlank() }
 
-    fun saveGpgKey(privateKey: String, passphrase: String? = null) {
+    fun saveGpgKey(privateKey: String, passphrase: String? = null): Boolean {
+        if (privateKey.isBlank()) return false
         val editor = prefs.edit()
             .putString(KEY_GPG_PRIVATE, privateKey.trim())
         if (passphrase != null) {
@@ -124,14 +139,14 @@ class CredentialStore(context: Context) {
         } else {
             editor.remove(KEY_GPG_PASSPHRASE)
         }
-        editor.apply()
+        return editor.commit()
     }
 
     fun saveGpgPassphrase(passphrase: String?) {
         if (passphrase.isNullOrBlank()) {
-            prefs.edit().remove(KEY_GPG_PASSPHRASE).apply()
+            prefs.edit().remove(KEY_GPG_PASSPHRASE).commit()
         } else {
-            prefs.edit().putString(KEY_GPG_PASSPHRASE, passphrase).apply()
+            prefs.edit().putString(KEY_GPG_PASSPHRASE, passphrase).commit()
         }
     }
 
@@ -139,18 +154,20 @@ class CredentialStore(context: Context) {
         prefs.edit()
             .remove(KEY_GPG_PRIVATE)
             .remove(KEY_GPG_PASSPHRASE)
-            .apply()
+            .commit()
     }
 
     // ── Global wipe ─────────────────────────────────────────────────────────
 
     /** Removes every stored secret. Call on logout. */
     fun clearAll() {
-        prefs.edit().clear().apply()
+        prefs.edit().clear().commit()
     }
 
     companion object {
+        private const val TAG = "CredentialStore"
         private const val PREFS_NAME = "quickgit_secure_creds"
+        private const val PREFS_FALLBACK = "quickgit_creds_fallback"
 
         private const val KEY_PREFIX_TOKEN = "https_token_"
         private const val KEY_PREFIX_USER = "https_user_"
@@ -164,13 +181,42 @@ class CredentialStore(context: Context) {
         private fun tokenKey(host: String) = KEY_PREFIX_TOKEN + normalizeHost(host)
         private fun usernameKey(host: String) = KEY_PREFIX_USER + normalizeHost(host)
 
+        /**
+         * Prefer EncryptedSharedPreferences. On failure (Keystore bugs, missing
+         * dependency, etc.) fall back to ordinary SharedPreferences so the
+         * credentials screen never hangs.
+         */
+        private fun createPrefs(context: Context): SharedPreferences {
+            return try {
+                val masterKey = MasterKey.Builder(context)
+                    .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                    .build()
+                EncryptedSharedPreferences.create(
+                    context,
+                    PREFS_NAME,
+                    masterKey,
+                    EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                    EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+                )
+            } catch (t: Throwable) {
+                Log.e(TAG, "EncryptedSharedPreferences unavailable, using fallback", t)
+                // Wipe a half-written encrypted file so a later retry can succeed
+                try {
+                    context.deleteSharedPreferences(PREFS_NAME)
+                } catch (_: Throwable) { /* ignore */ }
+                context.getSharedPreferences(PREFS_FALLBACK, Context.MODE_PRIVATE)
+            }
+        }
+
         /** Extracts and normalizes the host from a remote URL or bare host string. */
         fun hostOf(remoteUrlOrHost: String?): String {
             if (remoteUrlOrHost.isNullOrBlank()) return ""
             val raw = remoteUrlOrHost.trim()
             return try {
-                val uri = if (raw.contains("://")) URI(raw) else URI("https://$raw")
-                (uri.host ?: raw).lowercase().removePrefix("www.")
+                val uri = if ("://" in raw) URI(raw) else URI("https://$raw")
+                (uri.host ?: raw)
+                    .lowercase()
+                    .removePrefix("www.")
             } catch (_: Exception) {
                 raw.lowercase()
                     .removePrefix("https://")
