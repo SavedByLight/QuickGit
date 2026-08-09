@@ -103,12 +103,11 @@ class CloneViewModel(
             _state.value = _state.value.copy(inProgress = false, result = result)
             when (result) {
                 is GitOpResult.Success -> notifier.finish("Clone finished")
-                is GitOpResult.AuthRequired -> {
-                    notifier.cancel()
-                }
+                is GitOpResult.UpToDate -> notifier.finish(result.message)
+                is GitOpResult.AuthRequired -> notifier.cancel()
+                is GitOpResult.Conflict -> notifier.cancel()
                 is GitOpResult.Error -> {
                     notifier.update(result.message ?: "Clone failed")
-                    // leave a short moment then clear
                     notifier.cancel()
                 }
             }
