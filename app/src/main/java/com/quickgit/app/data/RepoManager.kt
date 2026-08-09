@@ -434,13 +434,22 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         // More attempts for large packs / LFS-heavy repos where Android GC closes Inflater mid-read.
         val maxAttempts = 5
         for (attempt in 1..maxAttempts) {
-            if (attempt > 1) {
+            // If a previous attempt already fetched objects (valid .git) but failed during
+            // checkout, keep the pack and only retry working-tree checkout — do NOT delete
+            // multi-GB downloads (Android kernel trees) and start over.
+            val hasPartialGit = isValidGitDir(destination)
+            if (attempt > 1 && !hasPartialGit) {
                 cleanUpFailedCloneDestination(destination, alreadyExisted)
                 // Give the GC time to release SoftReferences holding stale WindowCache entries.
                 System.gc()
                 try { Thread.sleep(800L * attempt) } catch (_: InterruptedException) {}
                 onProgress("Retrying clone (attempt $attempt/$maxAttempts)…")
                 AppLog.w(TAG, "clone retry $attempt/$maxAttempts for $label after: ${lastError?.message}")
+            } else if (attempt > 1 && hasPartialGit) {
+                System.gc()
+                try { Thread.sleep(400L * attempt) } catch (_: InterruptedException) {}
+                onProgress("Retrying checkout (attempt $attempt/$maxAttempts)…")
+                AppLog.w(TAG, "checkout retry $attempt/$maxAttempts for $label after: ${lastError?.message}")
             }
             try {
                 synchronized(jgitIoLock) {
@@ -448,22 +457,28 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                     // Inflater in the shared cache after a failed clone.
                     installJGitMemoryLimits()
 
-                    // Two-phase clone reduces peak concurrent inflater use on large packs:
-                    // 1) fetch objects without writing the working tree
-                    // 2) checkout into a fresh cache state
-                    onProgress(if (attempt == 1) "Downloading…" else "Downloading (retry $attempt)…")
-                    val cmd = Git.cloneRepository()
-                        .setURI(cloneUrl)
-                        .setDirectory(destination)
-                        // Mobile: single branch + shallow history avoids huge pack inflation
-                        // that triggers "Inflater has been closed" on Android heaps.
-                        .setCloneAllBranches(false)
-                        .setCloneSubmodules(false)
-                        .setDepth(1)
-                        .setNoCheckout(true)
-                        .setProgressMonitor(TextProgress(onProgress))
-                    applyTransportConfig(cmd, cloneUrl)
-                    val git = cmd.call()
+                    val git: Git = if (hasPartialGit && attempt > 1) {
+                        // Objects already on disk — skip the transport phase.
+                        onProgress("Opening partial clone…")
+                        openGit(destination.absolutePath)
+                    } else {
+                        // Two-phase clone reduces peak concurrent inflater use on large packs:
+                        // 1) fetch objects without writing the working tree
+                        // 2) checkout into a fresh cache state
+                        onProgress(if (attempt == 1) "Downloading…" else "Downloading (retry $attempt)…")
+                        val cmd = Git.cloneRepository()
+                            .setURI(cloneUrl)
+                            .setDirectory(destination)
+                            // Mobile: single branch + shallow history avoids huge pack inflation
+                            // that triggers "Inflater has been closed" on Android heaps.
+                            .setCloneAllBranches(false)
+                            .setCloneSubmodules(false)
+                            .setDepth(1)
+                            .setNoCheckout(true)
+                            .setProgressMonitor(TextProgress(onProgress))
+                        applyTransportConfig(cmd, cloneUrl)
+                        cmd.call()
+                    }
                     try {
                         installJGitMemoryLimits()
                         // Apply mobile config BEFORE checkout so the index/working tree
@@ -472,8 +487,7 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
 
                         // Empty remote (no commits yet): HEAD is unborn / unresolvable.
                         // JGit has already configured the remote; skip checkout + hard-reset
-                        // so we don't hit "Invalid ref name: HEAD". Non-empty repos are
-                        // unchanged — they still get the full checkout + hard reset.
+                        // so we don't hit "Invalid ref name: HEAD".
                         val headId = try {
                             git.repository.resolve(org.eclipse.jgit.lib.Constants.HEAD)
                         } catch (_: Exception) {
@@ -483,19 +497,19 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                             onProgress("Empty repository — ready for first commit")
                             AppLog.i(TAG, "clone of empty repo: ${destination.absolutePath}")
                         } else {
-                            onProgress("Checking out files…")
+                            // Kernel / AOSP-scale trees: checkout alone can take a long time on
+                            // phone storage. Progress comes from JGit's ProgressMonitor.
+                            // Skip a second hard-reset and a full `git status` — both walk the
+                            // entire tree with no useful progress and look "stuck on Syncing"
+                            // for tens of minutes on huge repos. core.filemode/symlinks/autocrlf
+                            // were already set above so the force checkout should match HEAD.
+                            onProgress("Checking out files (large trees can take a while)…")
                             git.checkout()
                                 .setAllPaths(true)
                                 .setForce(true)
                                 .setProgressMonitor(TextProgress(onProgress))
                                 .call()
-                            // Force working tree + index to match HEAD exactly. On Android this
-                            // clears false "modified" noise from modes, symlinks, and partial checkout.
-                            onProgress("Syncing working tree…")
-                            git.reset()
-                                .setMode(org.eclipse.jgit.api.ResetCommand.ResetType.HARD)
-                                .setRef("HEAD")
-                                .call()
+                            onProgress("Working tree ready")
                         }
                     } finally {
                         git.close()
