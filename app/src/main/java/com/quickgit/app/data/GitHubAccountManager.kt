@@ -79,31 +79,38 @@ class GitHubAccountManager(private val credentialStore: CredentialStore) {
         }
     }
 
-    /** Fetches every page of repos the authenticated user can access (GitHub paginates at 100/page). */
+    /** Fetches every page of repos the authenticated user can access, including org repos. */
     fun listRepos(
         affiliation: String = "owner,collaborator,organization_member"
     ): Pair<List<GitHubRemoteRepo>, PrOpResult> {
         if (!isConnected()) return emptyList<GitHubRemoteRepo>() to PrOpResult.AuthRequired(host)
         val perPage = 100
-        val all = mutableListOf<GitHubRemoteRepo>()
+        val byId = linkedMapOf<Long, GitHubRemoteRepo>()
         var page = 1
         while (true) {
             val result = api.listUserRepos(affiliation = affiliation, perPage = perPage, page = page)
             val batch = result.getOrNull()
             if (batch == null) {
-                return if (page == 1) emptyList<GitHubRemoteRepo>() to result.toPrOpResult(host)
-                else all to PrOpResult.Success
+                return if (page == 1 && byId.isEmpty()) emptyList<GitHubRemoteRepo>() to result.toPrOpResult(host)
+                else byId.values.toList() to PrOpResult.Success
             }
-            all += batch
+            batch.forEach { byId[it.id] = it }
             if (batch.size < perPage || page >= 10) break // 10-page safety cap (1000 repos)
             page++
         }
-        return all to PrOpResult.Success
+        // /user/repos often under-reports org repos (token scopes / private membership).
+        // Also walk organizations the user belongs to and merge those repos.
+        mergeOrganizationRepos(byId)
+        return byId.values
+            .sortedByDescending { it.updatedAt }
+            .toList() to PrOpResult.Success
     }
 
     /**
      * Single page of repos (100 by default). [page] is 1-based.
-     * [hasMore] is true when the page was full.
+     * Page 1 also merges repositories from every organization the user belongs to
+     * so org repos are not hidden behind personal-repo pagination.
+     * [hasMore] is true when the user-repos page was full (more personal/collab pages remain).
      */
     fun listReposPage(
         page: Int = 1,
@@ -113,10 +120,56 @@ class GitHubAccountManager(private val credentialStore: CredentialStore) {
         if (!isConnected()) return Triple(emptyList(), false, PrOpResult.AuthRequired(host))
         val result = api.listUserRepos(affiliation = affiliation, perPage = perPage, page = page)
         val batch = result.getOrNull()
-        return if (batch == null) {
-            Triple(emptyList(), false, result.toPrOpResult(host))
-        } else {
-            Triple(batch, batch.size >= perPage, PrOpResult.Success)
+        if (batch == null) {
+            return Triple(emptyList(), false, result.toPrOpResult(host))
+        }
+        if (page == 1) {
+            val byId = linkedMapOf<Long, GitHubRemoteRepo>()
+            batch.forEach { byId[it.id] = it }
+            mergeOrganizationRepos(byId)
+            val merged = byId.values.sortedByDescending { it.updatedAt }.toList()
+            return Triple(merged, batch.size >= perPage, PrOpResult.Success)
+        }
+        return Triple(batch, batch.size >= perPage, PrOpResult.Success)
+    }
+
+    /**
+     * Loads organizations for the authenticated user and merges each org's accessible
+     * repositories into [into] (keyed by repo id). Best-effort: org listing failures are
+     * logged and skipped so a missing `read:org` scope does not break personal repos.
+     */
+    private fun mergeOrganizationRepos(into: MutableMap<Long, GitHubRemoteRepo>) {
+        val orgs = mutableListOf<String>()
+        var orgPage = 1
+        while (orgPage <= 5) {
+            val orgResult = api.listUserOrganizations(perPage = 100, page = orgPage)
+            val batch = orgResult.getOrNull()
+            if (batch == null) {
+                AppLog.w(TAG, "listUserOrganizations failed page=$orgPage: ${orgResult.exceptionOrNull()?.message}")
+                break
+            }
+            orgs += batch
+            if (batch.size < 100) break
+            orgPage++
+        }
+        if (orgs.isEmpty()) {
+            AppLog.i(TAG, "mergeOrganizationRepos: no organizations returned (token may lack read:org)")
+            return
+        }
+        AppLog.i(TAG, "mergeOrganizationRepos: fetching repos for ${orgs.size} org(s)")
+        for (org in orgs) {
+            var page = 1
+            while (page <= 5) {
+                val repoResult = api.listOrgRepos(org, type = "all", perPage = 100, page = page)
+                val batch = repoResult.getOrNull()
+                if (batch == null) {
+                    AppLog.w(TAG, "listOrgRepos($org) failed page=$page: ${repoResult.exceptionOrNull()?.message}")
+                    break
+                }
+                batch.forEach { into[it.id] = it }
+                if (batch.size < 100) break
+                page++
+            }
         }
     }
 
@@ -138,20 +191,30 @@ class GitHubAccountManager(private val credentialStore: CredentialStore) {
     fun searchRepos(query: String): Pair<List<GitHubRemoteRepo>, PrOpResult> {
         if (!isConnected()) return emptyList<GitHubRemoteRepo>() to PrOpResult.AuthRequired(host)
         val login = storedUsername()
-        val result = if (!login.isNullOrBlank() && login != "x-access-token" && query.isNotBlank()) {
-            api.searchUserRepos(login, query, perPage = 100)
-        } else {
-            return if (query.isBlank()) listRepos() else {
-                val (all, opResult) = listRepos()
-                val q = query.trim().lowercase()
-                all.filter {
-                    it.name.lowercase().contains(q) ||
-                        it.fullName.lowercase().contains(q) ||
-                        (it.description?.lowercase()?.contains(q) == true)
-                } to opResult
+        // Prefer full list + client filter so org repos (merged below) are included.
+        // GitHub's search API only sees what the token can search and is easy to under-scope.
+        if (query.isBlank()) return listRepos()
+        val (all, opResult) = listRepos()
+        if (opResult !is PrOpResult.Success) return emptyList<GitHubRemoteRepo>() to opResult
+        val q = query.trim().lowercase()
+        val filtered = all.filter {
+            it.name.lowercase().contains(q) ||
+                it.fullName.lowercase().contains(q) ||
+                it.ownerLogin.lowercase().contains(q) ||
+                (it.description?.lowercase()?.contains(q) == true)
+        }
+        // Also try the search API (with org qualifiers) and merge any extra hits.
+        if (!login.isNullOrBlank() && login != "x-access-token") {
+            val orgs = api.listUserOrganizations(perPage = 100).getOrNull().orEmpty()
+            val searchHits = api.searchUserRepos(login, query, orgLogins = orgs, perPage = 100).getOrNull().orEmpty()
+            if (searchHits.isNotEmpty()) {
+                val byId = linkedMapOf<Long, GitHubRemoteRepo>()
+                filtered.forEach { byId[it.id] = it }
+                searchHits.forEach { byId[it.id] = it }
+                return byId.values.sortedByDescending { it.updatedAt }.toList() to PrOpResult.Success
             }
         }
-        return (result.getOrNull() ?: emptyList()) to result.toPrOpResult(host)
+        return filtered to PrOpResult.Success
     }
 
     fun getUserProfile(login: String? = null): Pair<GitHubApi.GitHubUser?, PrOpResult> {

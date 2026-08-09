@@ -143,9 +143,52 @@ class GitHubApi(private val token: String?) {
         (0 until arr.length()).map { i -> arr.getJSONObject(i).toRemoteRepo() }
     }
 
-    /** Search the authenticated user's accessible repos by name (GitHub search API, limited to user:login). */
-    fun searchUserRepos(login: String, query: String, perPage: Int = 30): Result<List<GitHubRemoteRepo>> = runCatching {
-        val q = if (query.isBlank()) "user:$login" else "${query.trim()} user:$login"
+    /**
+     * Organizations the authenticated user belongs to.
+     * Requires a token that can see org membership (`read:org` for private membership;
+     * public membership works with a basic `repo` token).
+     */
+    fun listUserOrganizations(perPage: Int = 100, page: Int = 1): Result<List<String>> = runCatching {
+        val path = "/user/orgs?per_page=$perPage&page=$page"
+        val arr = request("GET", path) as JSONArray
+        (0 until arr.length()).map { i -> arr.getJSONObject(i).getString("login") }
+    }
+
+    /**
+     * Repositories in an organization that the authenticated user can access.
+     * [type] all|public|private|forks|sources|member
+     */
+    fun listOrgRepos(
+        org: String,
+        type: String = "all",
+        sort: String = "updated",
+        perPage: Int = 100,
+        page: Int = 1
+    ): Result<List<GitHubRemoteRepo>> = runCatching {
+        val path = "/orgs/${org.trim()}/repos?type=$type&sort=$sort&direction=desc&per_page=$perPage&page=$page"
+        val arr = request("GET", path) as JSONArray
+        (0 until arr.length()).map { i -> arr.getJSONObject(i).toRemoteRepo() }
+    }
+
+    /**
+     * Search repos visible to the authenticated user.
+     * Includes personal repos (`user:login`) and any provided organization logins (`org:…`).
+     */
+    fun searchUserRepos(
+        login: String,
+        query: String,
+        orgLogins: List<String> = emptyList(),
+        perPage: Int = 30
+    ): Result<List<GitHubRemoteRepo>> = runCatching {
+        val scope = buildString {
+            append("user:$login")
+            orgLogins.forEach { org ->
+                if (org.isNotBlank() && !org.equals(login, ignoreCase = true)) {
+                    append(" org:${org.trim()}")
+                }
+            }
+        }
+        val q = if (query.isBlank()) scope else "${query.trim()} $scope"
         val encoded = java.net.URLEncoder.encode(q, "UTF-8")
         val arr = (request("GET", "/search/repositories?q=$encoded&per_page=$perPage&sort=updated") as JSONObject)
             .getJSONArray("items")

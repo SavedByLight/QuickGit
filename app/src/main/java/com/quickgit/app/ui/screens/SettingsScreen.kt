@@ -137,7 +137,9 @@ fun SettingsScreen(
             Text(
                 if (state.host.equals("github.com", ignoreCase = true))
                     "Paste a personal access token (classic or fine-grained) with repo access. " +
-                        "QuickGit verifies it with GitHub and uses it for clone, push, pull, and pull requests."
+                        "For organization repos, classic tokens also need read:org; fine-grained tokens must " +
+                        "grant access to each organization. QuickGit verifies it with GitHub and uses it for " +
+                        "clone, push, pull, pull requests, and listing org repositories."
                 else
                     "Used for https:// remotes. Generate a token with repo scope from your host (GitHub, GitLab, etc.).",
                 style = MaterialTheme.typography.bodySmall,
