@@ -17,13 +17,13 @@ import com.quickgit.app.ui.theme.QuickGitTheme
 
 class MainActivity : ComponentActivity() {
 
-    private val storagePermissionLauncher = registerForActivityResult(
+    private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { /* reposRoot falls back if still not writable */ }
+    ) { /* storage falls back if denied; notifications are best-effort */ }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        requestStorageIfNeeded()
+        requestPermissionsIfNeeded()
         setContent {
             QuickGitTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
@@ -36,29 +36,35 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun requestStorageIfNeeded() {
-        if (Build.VERSION.SDK_INT > Build.VERSION_CODES.Q) {
-            // API 30+ ignores requestLegacyExternalStorage and enforces scoped
-            // storage no matter what permissions are held, so there's nothing
-            // to request here — RepoManager.reposRoot falls back to
-            // app-private storage on these versions instead.
-            return
-        }
-        // API 29 (Q) still needs WRITE_EXTERNAL_STORAGE granted for the legacy
-        // flag to actually restore public-folder write access.
+    private fun requestPermissionsIfNeeded() {
         val needed = mutableListOf<String>()
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE)
-            != PackageManager.PERMISSION_GRANTED
-        ) {
-            needed += Manifest.permission.WRITE_EXTERNAL_STORAGE
+
+        // Storage only relevant on older APIs (see RepoManager).
+        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.Q) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                != PackageManager.PERMISSION_GRANTED
+            ) {
+                needed += Manifest.permission.WRITE_EXTERNAL_STORAGE
+            }
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE)
+                != PackageManager.PERMISSION_GRANTED
+            ) {
+                needed += Manifest.permission.READ_EXTERNAL_STORAGE
+            }
         }
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE)
-            != PackageManager.PERMISSION_GRANTED
-        ) {
-            needed += Manifest.permission.READ_EXTERNAL_STORAGE
+
+        // Notification permission required on Android 13+ so clone/push progress can appear
+        // as a status-bar chip / notification.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED
+            ) {
+                needed += Manifest.permission.POST_NOTIFICATIONS
+            }
         }
+
         if (needed.isNotEmpty()) {
-            storagePermissionLauncher.launch(needed.toTypedArray())
+            permissionLauncher.launch(needed.toTypedArray())
         }
     }
 }

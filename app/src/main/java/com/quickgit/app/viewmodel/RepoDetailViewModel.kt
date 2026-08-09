@@ -1,7 +1,9 @@
 package com.quickgit.app.viewmodel
 
+import android.app.Application
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.quickgit.app.data.GitProgressNotifier
 import com.quickgit.app.data.RepoManager
 import com.quickgit.app.data.models.GitOpResult
 import com.quickgit.app.data.models.RepoStatus
@@ -33,11 +35,15 @@ data class RepoDetailUiState(
     val isGitLabRemote: Boolean = false
 )
 
-class RepoDetailViewModel(private val repoManager: RepoManager) : ViewModel() {
+class RepoDetailViewModel(
+    private val repoManager: RepoManager,
+    private val app: Application
+) : ViewModel() {
     private val _state = MutableStateFlow(RepoDetailUiState())
     val state: StateFlow<RepoDetailUiState> = _state.asStateFlow()
 
     private lateinit var repoPath: String
+    private val notifier = GitProgressNotifier(app)
 
     fun init(repoPath: String) {
         this.repoPath = repoPath
@@ -156,10 +162,18 @@ class RepoDetailViewModel(private val repoManager: RepoManager) : ViewModel() {
     fun push(force: Boolean = false, forceWithLease: Boolean = false) {
         viewModelScope.launch {
             _state.value = _state.value.copy(busy = true)
+            notifier.start("Pushing…", "Starting…")
             val result = withContext(Dispatchers.IO) {
-                repoManager.push(repoPath, force = force, forceWithLease = forceWithLease)
+                repoManager.push(repoPath, force = force, forceWithLease = forceWithLease) { progress ->
+                    val percent = parsePercent(progress)
+                    notifier.update(progress, percent)
+                }
             }
             _state.value = _state.value.copy(busy = false, lastResult = result)
+            when (result) {
+                is GitOpResult.Success -> notifier.finish("Push finished")
+                else -> notifier.cancel()
+            }
         }
     }
 
@@ -180,8 +194,18 @@ class RepoDetailViewModel(private val repoManager: RepoManager) : ViewModel() {
     fun pull() {
         viewModelScope.launch {
             _state.value = _state.value.copy(busy = true)
-            val result = withContext(Dispatchers.IO) { repoManager.pull(repoPath) }
+            notifier.start("Pulling…", "Starting…")
+            val result = withContext(Dispatchers.IO) {
+                repoManager.pull(repoPath) { progress ->
+                    val percent = parsePercent(progress)
+                    notifier.update(progress, percent)
+                }
+            }
             _state.value = _state.value.copy(busy = false, lastResult = result)
+            when (result) {
+                is GitOpResult.Success, is GitOpResult.UpToDate -> notifier.finish("Pull finished")
+                else -> notifier.cancel()
+            }
             loadStatus(showRefreshing = false)
         }
     }
@@ -190,12 +214,19 @@ class RepoDetailViewModel(private val repoManager: RepoManager) : ViewModel() {
     fun pullWithLfs() {
         viewModelScope.launch {
             _state.value = _state.value.copy(busy = true)
-            val pullResult = withContext(Dispatchers.IO) { repoManager.pull(repoPath) }
+            notifier.start("Pulling…", "Starting…")
+            val pullResult = withContext(Dispatchers.IO) {
+                repoManager.pull(repoPath) { progress ->
+                    notifier.update(progress, parsePercent(progress))
+                }
+            }
             if (pullResult is GitOpResult.Error || pullResult is GitOpResult.AuthRequired || pullResult is GitOpResult.Conflict) {
                 _state.value = _state.value.copy(busy = false, lastResult = pullResult)
+                notifier.cancel()
                 loadStatus(showRefreshing = false)
                 return@launch
             }
+            notifier.update("Fetching LFS…")
             val lfsResult = withContext(Dispatchers.IO) { repoManager.fetchLfs(repoPath) }
             _state.value = _state.value.copy(
                 busy = false,
@@ -206,6 +237,7 @@ class RepoDetailViewModel(private val repoManager: RepoManager) : ViewModel() {
                     else -> null
                 }
             )
+            if (lfsResult is GitOpResult.Error) notifier.cancel() else notifier.finish("Pull finished")
             loadStatus(showRefreshing = false)
         }
     }
@@ -214,13 +246,18 @@ class RepoDetailViewModel(private val repoManager: RepoManager) : ViewModel() {
     fun pushWithLfs(force: Boolean = false, forceWithLease: Boolean = false) {
         viewModelScope.launch {
             _state.value = _state.value.copy(busy = true)
+            notifier.start("Pushing…", "Starting…")
             val pushResult = withContext(Dispatchers.IO) {
-                repoManager.push(repoPath, force = force, forceWithLease = forceWithLease)
+                repoManager.push(repoPath, force = force, forceWithLease = forceWithLease) { progress ->
+                    notifier.update(progress, parsePercent(progress))
+                }
             }
             if (pushResult is GitOpResult.Error || pushResult is GitOpResult.AuthRequired) {
                 _state.value = _state.value.copy(busy = false, lastResult = pushResult)
+                notifier.cancel()
                 return@launch
             }
+            notifier.update("Uploading LFS…")
             val lfsResult = withContext(Dispatchers.IO) { repoManager.pushLfs(repoPath) }
             _state.value = _state.value.copy(
                 busy = false,
@@ -231,6 +268,7 @@ class RepoDetailViewModel(private val repoManager: RepoManager) : ViewModel() {
                     else -> null
                 }
             )
+            if (lfsResult is GitOpResult.Error) notifier.cancel() else notifier.finish("Push finished")
         }
     }
 
@@ -349,5 +387,10 @@ class RepoDetailViewModel(private val repoManager: RepoManager) : ViewModel() {
         val u = url.lowercase()
         // gitlab.com and typical self-hosted hosts (gitlab.example.com)
         return u.contains("gitlab.com") || u.contains("gitlab.")
+    }
+
+    private fun parsePercent(text: String): Int? {
+        val match = Regex("""(\d{1,3})\s*%""").find(text) ?: return null
+        return match.groupValues[1].toIntOrNull()?.coerceIn(0, 100)
     }
 }

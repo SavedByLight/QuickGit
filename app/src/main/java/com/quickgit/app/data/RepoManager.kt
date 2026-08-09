@@ -1037,7 +1037,8 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     fun push(
         path: String,
         force: Boolean = false,
-        forceWithLease: Boolean = false
+        forceWithLease: Boolean = false,
+        onProgress: (String) -> Unit = {}
     ): GitOpResult {
         val mode = when {
             forceWithLease -> "force-with-lease"
@@ -1051,9 +1052,12 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                 maybeUploadLfs(path, remoteUrl)?.let { AppLog.i(TAG, it) }
 
                 if (forceWithLease || force) {
+                    onProgress("Force pushing…")
                     pushForced(git, remoteUrl, withLease = forceWithLease)
                 } else {
+                    onProgress("Pushing…")
                     val cmd = git.push()
+                        .setProgressMonitor(TextProgress(onProgress))
                     applyTransportConfig(cmd, remoteUrl)
                     val results = cmd.call()
                     val rejected = results.flatMap { it.remoteUpdates }
@@ -1211,7 +1215,7 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         }
     }
 
-    fun pull(path: String): GitOpResult {
+    fun pull(path: String, onProgress: (String) -> Unit = {}): GitOpResult {
         AppLog.i(TAG, "pull: $path")
         return try {
             openGit(path).use { git ->
@@ -1228,7 +1232,9 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                     GitOpResult.Conflict(unresolved)
                 } else {
                     val remoteUrl = git.repository.config.getString("remote", "origin", "url") ?: ""
+                    onProgress("Pulling…")
                     val cmd = git.pull()
+                        .setProgressMonitor(TextProgress(onProgress))
                     applyTransportConfig(cmd, remoteUrl)
                     val result = cmd.call()
                     when {

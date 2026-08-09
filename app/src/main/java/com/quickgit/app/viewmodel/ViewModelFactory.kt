@@ -24,9 +24,9 @@ class ViewModelFactory(private val app: Application) : ViewModelProvider.Factory
                     gitApp.gitLabAccountManager
                 )
             modelClass.isAssignableFrom(CloneViewModel::class.java) ->
-                CloneViewModel(gitApp.repoManager)
+                CloneViewModel(gitApp.repoManager, app)
             modelClass.isAssignableFrom(RepoDetailViewModel::class.java) ->
-                RepoDetailViewModel(gitApp.repoManager)
+                RepoDetailViewModel(gitApp.repoManager, app)
             modelClass.isAssignableFrom(HistoryViewModel::class.java) ->
                 HistoryViewModel(gitApp.repoManager)
             modelClass.isAssignableFrom(BranchesViewModel::class.java) ->

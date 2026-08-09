@@ -1,7 +1,9 @@
 package com.quickgit.app.viewmodel
 
+import android.app.Application
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.quickgit.app.data.GitProgressNotifier
 import com.quickgit.app.data.RepoManager
 import com.quickgit.app.data.models.GitOpResult
 import kotlinx.coroutines.Dispatchers
@@ -21,11 +23,15 @@ data class CloneUiState(
     val usingDefaultDestination: Boolean = true
 )
 
-class CloneViewModel(private val repoManager: RepoManager) : ViewModel() {
+class CloneViewModel(
+    private val repoManager: RepoManager,
+    private val app: Application
+) : ViewModel() {
     private val _state = MutableStateFlow(CloneUiState())
     val state: StateFlow<CloneUiState> = _state.asStateFlow()
 
     private var pickedDestination: File? = null
+    private val notifier = GitProgressNotifier(app)
 
     /** Suggest a default folder name from a git URL (last path segment without .git). */
     fun defaultFolderNameFor(url: String): String {
@@ -87,13 +93,33 @@ class CloneViewModel(private val repoManager: RepoManager) : ViewModel() {
             progressText = "Starting…",
             destinationPath = destination.absolutePath
         )
+        notifier.start("Cloning…", "Starting…")
         viewModelScope.launch(Dispatchers.IO) {
             val result = repoManager.cloneRepo(url, destination) { progress ->
                 _state.value = _state.value.copy(progressText = progress)
+                val percent = parsePercent(progress)
+                notifier.update(progress, percent)
             }
             _state.value = _state.value.copy(inProgress = false, result = result)
+            when (result) {
+                is GitOpResult.Success -> notifier.finish("Clone finished")
+                is GitOpResult.AuthRequired -> {
+                    notifier.cancel()
+                }
+                is GitOpResult.Error -> {
+                    notifier.update(result.message ?: "Clone failed")
+                    // leave a short moment then clear
+                    notifier.cancel()
+                }
+            }
         }
     }
 
     fun consumeResult() { _state.value = _state.value.copy(result = null) }
+
+    private fun parsePercent(text: String): Int? {
+        // TextProgress emits e.g. "Receiving objects: 42%"
+        val match = Regex("""(\d{1,3})\s*%""").find(text) ?: return null
+        return match.groupValues[1].toIntOrNull()?.coerceIn(0, 100)
+    }
 }
