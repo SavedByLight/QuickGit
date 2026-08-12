@@ -41,7 +41,6 @@ class ViewModelFactory(private val app: Application) : ViewModelProvider.Factory
                     gitApp.repoManager,
                     gitApp.gitHubAccountManager,
                     gitApp.gitLabAccountManager,
-                    gitApp.gerritAccountManager,
                     gitApp.appUpdateManager
                 )
             modelClass.isAssignableFrom(FilesViewModel::class.java) ->
@@ -62,16 +61,12 @@ class ViewModelFactory(private val app: Application) : ViewModelProvider.Factory
                 BrowseGitHubViewModel(
                     gitApp.gitHubAccountManager,
                     gitApp.gitLabAccountManager,
-                    gitApp.gerritAccountManager,
                     gitApp.repoManager
                 )
-            modelClass.isAssignableFrom(GerritChangesViewModel::class.java) ->
-                GerritChangesViewModel(gitApp.gerritAccountManager)
             modelClass.isAssignableFrom(ProfileViewModel::class.java) ->
                 ProfileViewModel(
                     gitApp.gitHubAccountManager,
-                    gitApp.gitLabAccountManager,
-                    gitApp.gerritAccountManager
+                    gitApp.gitLabAccountManager
                 )
             modelClass.isAssignableFrom(UserSearchViewModel::class.java) ->
                 UserSearchViewModel(

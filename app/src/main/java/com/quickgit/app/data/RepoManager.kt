@@ -568,41 +568,8 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         )
     }
 
-    /**
-     * Gerrit authenticated HTTP clones need the `/a/` path prefix so credentials are applied.
-     * Anonymous URLs without `/a/` still work for public projects.
-     */
-    private fun normalizeCloneUrl(url: String): String {
-        if (!url.startsWith("https://") && !url.startsWith("http://")) return url
-        val host = CredentialStore.hostOf(url)
-        val hasCreds = credentialStore.hasHttpsCredential(host)
-        if (!hasCreds) return url
-        // Already using /a/ (Gerrit auth prefix)
-        if (url.contains("/a/")) return url
-        // Only rewrite known-Gerrit primary host (or any host with stored Gerrit primary)
-        val gerritPrimary = try {
-            // soft dependency — string match on stored primary host key
-            context.getSharedPreferences("quickgit_secure_prefs", Context.MODE_PRIVATE)
-            null
-        } catch (_: Exception) { null }
-        // Insert /a/ after host for hosts that look like Gerrit clones from our project list
-        // Pattern: https://host/project -> https://host/a/project when we have HTTPS creds
-        // for that host AND the path does not start with /a/
-        return try {
-            val uri = java.net.URI(url)
-            val path = uri.path?.trimStart('/') ?: return url
-            if (path.startsWith("a/")) return url
-            // Heuristic: if username is stored for this host (Gerrit/GitLab style user+pass),
-            // prefer /a/ only when host is not github/gitlab
-            if (host.contains("github") || host.contains("gitlab")) return url
-            val user = credentialStore.getHttpsUsername(host)
-            if (user.isNullOrBlank()) return url
-            val newPath = "/a/$path"
-            java.net.URI(uri.scheme, uri.authority, newPath, uri.query, uri.fragment).toString()
-        } catch (_: Exception) {
-            url
-        }
-    }
+    /** Normalize clone URL (identity for GitHub/GitLab; kept for call-site compatibility). */
+    private fun normalizeCloneUrl(url: String): String = url
 
     /** True when the exception is the classic empty-repo "Invalid ref name: HEAD" (or close variants). */
     private fun isEmptyRepoCloneError(e: Throwable): Boolean {
@@ -1094,60 +1061,6 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         } catch (e: Exception) {
             AppLog.e(TAG, "push failed", e)
             GitOpResult.Error(e.message ?: "Push failed", e)
-        }
-    }
-
-    /**
-     * Upload the current branch HEAD to Gerrit for review.
-     * Pushes to `refs/for/<branch>` (optionally `%topic=…`).
-     */
-    fun pushForReview(path: String, topic: String? = null, targetBranch: String? = null): GitOpResult {
-        AppLog.i(TAG, "pushForReview: $path topic=$topic target=$targetBranch")
-        return try {
-            openGit(path).use { git ->
-                val repo = git.repository
-                val branch = targetBranch?.takeIf { it.isNotBlank() }
-                    ?: repo.branch
-                    ?: return GitOpResult.Error("Detached HEAD — check out a branch before pushing for review")
-                val remoteUrl = repo.config.getString("remote", "origin", "url") ?: ""
-                if (remoteUrl.isBlank()) {
-                    return GitOpResult.Error("No origin remote configured")
-                }
-                maybeUploadLfs(path, remoteUrl)?.let { AppLog.i(TAG, it) }
-
-                var dest = "refs/for/$branch"
-                val t = topic?.trim().orEmpty()
-                if (t.isNotEmpty()) {
-                    dest += "%topic=${t.replace(" ", "_")}"
-                }
-                val spec = RefSpec("HEAD:$dest")
-                AppLog.i(TAG, "pushForReview refspec=$spec")
-                val cmd = git.push()
-                    .setRemote("origin")
-                    .setRefSpecs(spec)
-                applyTransportConfig(cmd, remoteUrl)
-                val results = cmd.call()
-                val messages = results.flatMap { it.messages?.lines().orEmpty() }
-                messages.forEach { AppLog.i(TAG, "gerrit: $it") }
-                val rejected = results.flatMap { it.remoteUpdates }
-                    .filter { it.status.name.contains("REJECTED") || it.status.name.contains("NON_EXISTING") }
-                if (rejected.isNotEmpty()) {
-                    val detail = rejected.joinToString { "${it.remoteName}: ${it.status}" }
-                    AppLog.w(TAG, "pushForReview rejected: $detail")
-                    return GitOpResult.Error("Review push rejected ($detail)")
-                }
-                AppLog.i(TAG, "pushForReview succeeded -> $dest")
-                GitOpResult.Success
-            }
-        } catch (e: org.eclipse.jgit.api.errors.TransportException) {
-            AppLog.e(TAG, "pushForReview failed (transport)", e)
-            if (isAuthFailure(e)) {
-                val url = openGit(path).use { it.repository.config.getString("remote", "origin", "url") } ?: ""
-                GitOpResult.AuthRequired(url)
-            } else GitOpResult.Error(e.message ?: "Push for review failed", e)
-        } catch (e: Exception) {
-            AppLog.e(TAG, "pushForReview failed", e)
-            GitOpResult.Error(e.message ?: "Push for review failed", e)
         }
     }
 

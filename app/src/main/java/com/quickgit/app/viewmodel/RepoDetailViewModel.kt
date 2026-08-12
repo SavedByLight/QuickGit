@@ -29,8 +29,6 @@ data class RepoDetailUiState(
     /** Append Signed-off-by trailer on commit (git commit -s). */
     val signOff: Boolean = false,
     val remoteUrl: String? = null,
-    /** True when origin looks like a Gerrit host — hides GH Actions/PRs/etc., shows push-for-review. */
-    val isGerritRemote: Boolean = false,
     /** True when origin is GitLab (gitlab.com or self-hosted) — use MR/CI/Issues labels. */
     val isGitLabRemote: Boolean = false
 )
@@ -69,13 +67,11 @@ class RepoDetailViewModel(
                     b to url
                 }
             }
-            val isGerrit = isGerritRemoteUrl(remoteUrl)
             val isGitLab = isGitLabRemoteUrl(remoteUrl)
             _state.value = _state.value.copy(
                 status = status,
                 branch = branch ?: "",
                 remoteUrl = remoteUrl,
-                isGerritRemote = isGerrit,
                 isGitLabRemote = isGitLab,
                 refreshing = if (showRefreshing) false else _state.value.refreshing
             )
@@ -174,20 +170,6 @@ class RepoDetailViewModel(
                 is GitOpResult.Success -> notifier.finish("Push finished")
                 else -> notifier.cancel()
             }
-        }
-    }
-
-    /**
-     * Push current HEAD to Gerrit for code review (`refs/for/<branch>`).
-     * Optional [topic] becomes `refs/for/<branch>%topic=<topic>`.
-     */
-    fun pushForReview(topic: String? = null) {
-        viewModelScope.launch {
-            _state.value = _state.value.copy(busy = true)
-            val result = withContext(Dispatchers.IO) {
-                repoManager.pushForReview(repoPath, topic = topic)
-            }
-            _state.value = _state.value.copy(busy = false, lastResult = result)
         }
     }
 
@@ -371,16 +353,6 @@ class RepoDetailViewModel(
     }
 
     fun consumeResult() { _state.value = _state.value.copy(lastResult = null, statusMessage = null) }
-
-    private fun isGerritRemoteUrl(url: String?): Boolean {
-        if (url.isNullOrBlank()) return false
-        val u = url.lowercase()
-        if (u.contains("github.com") || u.contains("gitlab.com") || u.contains("gitlab.")) return false
-        if (u.contains("gerrit")) return true
-        // Authenticated Gerrit HTTP clone path
-        if ("/a/" in u) return true
-        return false
-    }
 
     private fun isGitLabRemoteUrl(url: String?): Boolean {
         if (url.isNullOrBlank()) return false

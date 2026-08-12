@@ -4,7 +4,6 @@ import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.quickgit.app.data.CredentialStore
-import com.quickgit.app.data.GerritAccountManager
 import com.quickgit.app.data.GitHubAccountManager
 import com.quickgit.app.data.GitLabAccountManager
 import com.quickgit.app.data.RepoManager
@@ -28,10 +27,6 @@ data class SettingsUiState(
     val gitlabHost: String = "gitlab.com",
     val gitlabUsername: String? = null,
     val gitlabConnected: Boolean = false,
-    /** Gerrit account (any host). */
-    val gerritHost: String = "",
-    val gerritUsername: String? = null,
-    val gerritConnected: Boolean = false,
     val connecting: Boolean = false,
     val authorName: String = "",
     val authorEmail: String = "",
@@ -64,7 +59,6 @@ class SettingsViewModel(
     private val repoManager: RepoManager,
     private val gitHubAccountManager: GitHubAccountManager,
     private val gitLabAccountManager: GitLabAccountManager,
-    private val gerritAccountManager: GerritAccountManager,
     private val appUpdateManager: com.quickgit.app.data.AppUpdateManager
 ) : ViewModel() {
 
@@ -81,7 +75,6 @@ class SettingsViewModel(
         refreshAuthor()
         verifyGitHubIfConnected()
         verifyGitLabIfConnected()
-        verifyGerritIfConnected()
         refreshAppVersion()
     }
 
@@ -664,106 +657,6 @@ class SettingsViewModel(
             gitlabUsername = null,
             gitlabConnected = false,
             statusMessage = "Disconnected from GitLab ($h)",
-            isError = false
-        )
-    }
-
-    // ---- Gerrit ----
-
-    private fun verifyGerritIfConnected() {
-        // gerritHost starts empty in UI state; restore from the host we persisted on connect.
-        val h = _state.value.gerritHost.takeIf { it.isNotBlank() }
-            ?: gerritAccountManager.primaryHost()
-            ?: return
-        if (!gerritAccountManager.isConnected(h)) return
-        // Seed host into state immediately so the form shows it while we refresh.
-        if (_state.value.gerritHost.isBlank()) {
-            _state.value = _state.value.copy(
-                gerritHost = h,
-                gerritUsername = gerritAccountManager.storedUsername(h),
-                gerritConnected = true
-            )
-        }
-        viewModelScope.launch {
-            val (account, result) = withContext(Dispatchers.IO) {
-                gerritAccountManager.refreshAccount(h)
-            }
-            if (account != null) {
-                _state.value = _state.value.copy(
-                    gerritHost = account.host,
-                    gerritUsername = account.username,
-                    gerritConnected = true
-                )
-            } else if (result is PrOpResult.AuthRequired) {
-                _state.value = _state.value.copy(
-                    gerritUsername = null,
-                    gerritConnected = false
-                )
-            }
-        }
-    }
-
-    fun connectGerrit(host: String, username: String, passwordOrToken: String) {
-        val h = host.trim()
-        val user = username.trim()
-        val pass = passwordOrToken.trim()
-        if (h.isBlank() || user.isBlank() || pass.isBlank()) {
-            _state.value = _state.value.copy(
-                statusMessage = "Gerrit host, username, and HTTP password/token are required",
-                isError = true
-            )
-            return
-        }
-        _state.value = _state.value.copy(connecting = true, statusMessage = null)
-        viewModelScope.launch {
-            val (account, result) = withContext(Dispatchers.IO) {
-                gerritAccountManager.connect(user, pass, h)
-            }
-            when {
-                account != null -> {
-                    _state.value = _state.value.copy(
-                        connecting = false,
-                        gerritHost = account.host,
-                        gerritUsername = account.username,
-                        gerritConnected = true,
-                        statusMessage = "Gerrit connected as ${account.username} on ${account.host}",
-                        isError = false
-                    )
-                }
-                result is PrOpResult.AuthRequired -> {
-                    _state.value = _state.value.copy(
-                        connecting = false,
-                        gerritConnected = false,
-                        statusMessage = "Invalid Gerrit credentials for $h",
-                        isError = true
-                    )
-                }
-                result is PrOpResult.Error -> {
-                    _state.value = _state.value.copy(
-                        connecting = false,
-                        statusMessage = result.message,
-                        isError = true
-                    )
-                }
-                else -> {
-                    _state.value = _state.value.copy(
-                        connecting = false,
-                        statusMessage = "Could not verify Gerrit credentials",
-                        isError = true
-                    )
-                }
-            }
-        }
-    }
-
-    fun disconnectGerrit() {
-        val h = _state.value.gerritHost
-        if (h.isNotBlank()) gerritAccountManager.disconnect(h)
-        _state.value = _state.value.copy(
-            gerritUsername = null,
-            gerritConnected = false,
-            gerritHost = "",
-            statusMessage = "Disconnected from Gerrit",
             isError = false
         )
     }

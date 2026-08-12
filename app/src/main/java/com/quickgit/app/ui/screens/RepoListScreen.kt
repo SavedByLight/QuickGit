@@ -17,7 +17,6 @@ import androidx.compose.material.icons.filled.Create
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.RateReview
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Terminal
@@ -42,7 +41,6 @@ fun RepoListScreen(
     onOpenRepo: (RepoInfo) -> Unit,
     onClone: () -> Unit,
     onBrowseGitHub: () -> Unit = {},
-    onGerritChanges: () -> Unit = {},
     onOpenProfile: () -> Unit = {},
     onSearchPeople: () -> Unit = {},
     onSettings: () -> Unit,
@@ -135,9 +133,6 @@ fun RepoListScreen(
                             )
                         }
                     }
-                    IconButton(onClick = onGerritChanges) {
-                        Icon(Icons.Default.RateReview, contentDescription = "Gerrit changes")
-                    }
                     IconButton(onClick = onLogs) {
                         Icon(Icons.Default.Terminal, contentDescription = "Logs")
                     }
@@ -224,7 +219,7 @@ fun RepoListScreen(
                         Text("No repositories yet", style = MaterialTheme.typography.titleMedium)
                         Spacer(Modifier.height(8.dp))
                         Text(
-                            "Tap + to clone a URL or browse GitHub, GitLab, or Gerrit.",
+                            "Tap + to clone a URL or browse GitHub or GitLab.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )

@@ -2,7 +2,6 @@ package com.quickgit.app.viewmodel
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.quickgit.app.data.GerritAccountManager
 import com.quickgit.app.data.GitHubAccountManager
 import com.quickgit.app.data.GitLabAccountManager
 import com.quickgit.app.data.models.GitHubRemoteRepo
@@ -62,8 +61,7 @@ data class ProfileUiState(
 
 class ProfileViewModel(
     private val accountManager: GitHubAccountManager,
-    private val gitLabAccountManager: GitLabAccountManager,
-    private val gerritAccountManager: GerritAccountManager
+    private val gitLabAccountManager: GitLabAccountManager
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(ProfileUiState())
@@ -313,18 +311,6 @@ class ProfileViewModel(
                     "GitLab",
                     account.username,
                     "$glHost · ${account.name ?: ""}".trimEnd(' ', '·')
-                )
-            }
-        }
-        val geHost = gerritAccountManager.primaryHost()
-            ?: gerritAccountManager.host.takeIf { gerritAccountManager.isConnected(it) }
-        if (geHost != null && gerritAccountManager.isConnected(geHost)) {
-            val (account, _) = withContext(Dispatchers.IO) { gerritAccountManager.refreshAccount(geHost) }
-            if (account != null) {
-                list += ConnectedProviderSummary(
-                    "Gerrit",
-                    account.username,
-                    listOfNotNull(account.host, account.email).joinToString(" · ")
                 )
             }
         }

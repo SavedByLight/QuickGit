@@ -3,7 +3,6 @@ package com.quickgit.app
 import android.app.Application
 import com.quickgit.app.data.AppUpdateManager
 import com.quickgit.app.data.CredentialStore
-import com.quickgit.app.data.GerritAccountManager
 import com.quickgit.app.data.GitHubAccountManager
 import com.quickgit.app.data.GitLabAccountManager
 import com.quickgit.app.data.IssueManager
@@ -23,8 +22,6 @@ class QuickGitApp : Application() {
         private set
     lateinit var gitLabAccountManager: GitLabAccountManager
         private set
-    lateinit var gerritAccountManager: GerritAccountManager
-        private set
     lateinit var issueManager: IssueManager
         private set
     lateinit var workflowManager: WorkflowManager
@@ -41,7 +38,6 @@ class QuickGitApp : Application() {
         pullRequestManager = PullRequestManager(repoManager, credentialStore)
         gitHubAccountManager = GitHubAccountManager(credentialStore)
         gitLabAccountManager = GitLabAccountManager(credentialStore)
-        gerritAccountManager = GerritAccountManager(credentialStore)
         issueManager = IssueManager(repoManager, credentialStore)
         workflowManager = WorkflowManager(repoManager, credentialStore)
         releaseManager = ReleaseManager(repoManager, credentialStore)

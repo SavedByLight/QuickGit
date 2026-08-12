@@ -112,17 +112,14 @@ fun RepoDetailScreen(
             ) {
                 item { SubPageButton(Icons.Default.FolderOpen, "Files", onOpenFiles) }
                 item { SubPageButton(Icons.Default.AccountTree, "Branches", onOpenBranches) }
-                if (!state.isGerritRemote) {
-                    // GitLab: MRs / Issues board / Build. GitHub: PRs / Issues / Actions.
-                    // Gerrit hides this row entirely.
-                    val prLabel = if (state.isGitLabRemote) "MRs" else "PRs"
-                    val issuesLabel = if (state.isGitLabRemote) "Board" else "Issues"
-                    val ciLabel = if (state.isGitLabRemote) "Build" else "Actions"
-                    item { SubPageButton(Icons.Default.CallMerge, prLabel, onOpenPullRequests) }
-                    item { SubPageButton(Icons.Default.BugReport, issuesLabel, onOpenIssues) }
-                    item { SubPageButton(Icons.Default.PlayCircle, ciLabel, onOpenWorkflows) }
-                    item { SubPageButton(Icons.Default.NewReleases, "Releases", onOpenReleases) }
-                }
+                // GitLab: MRs / Issues board / Build. GitHub: PRs / Issues / Actions.
+                val prLabel = if (state.isGitLabRemote) "MRs" else "PRs"
+                val issuesLabel = if (state.isGitLabRemote) "Board" else "Issues"
+                val ciLabel = if (state.isGitLabRemote) "Build" else "Actions"
+                item { SubPageButton(Icons.Default.CallMerge, prLabel, onOpenPullRequests) }
+                item { SubPageButton(Icons.Default.BugReport, issuesLabel, onOpenIssues) }
+                item { SubPageButton(Icons.Default.PlayCircle, ciLabel, onOpenWorkflows) }
+                item { SubPageButton(Icons.Default.NewReleases, "Releases", onOpenReleases) }
             }
 
             var showLfsTrack by remember { mutableStateOf(false) }
@@ -130,9 +127,6 @@ fun RepoDetailScreen(
             var showForcePushConfirm by remember { mutableStateOf(false) }
             // true = force-with-lease (safer default), false = unconditional force
             var forcePushUseLease by remember { mutableStateOf(true) }
-            var showPushModeDialog by remember { mutableStateOf(false) }
-            // true = refs/for/<branch> review; false = normal branch push
-            var pushForReview by remember { mutableStateOf(true) }
             var showPullOptions by remember { mutableStateOf(false) }
             var showPushOptions by remember { mutableStateOf(false) }
             var showStatusOptions by remember { mutableStateOf(false) }
@@ -148,14 +142,7 @@ fun RepoDetailScreen(
                 }
                 Spacer(Modifier.width(8.dp))
                 Button(
-                    onClick = {
-                        if (state.isGerritRemote) {
-                            pushForReview = true
-                            showPushModeDialog = true
-                        } else {
-                            showPushOptions = true
-                        }
-                    },
+                    onClick = { showPushOptions = true },
                     enabled = !state.busy,
                     modifier = Modifier.weight(1f)
                 ) {
@@ -179,86 +166,6 @@ fun RepoDetailScreen(
                     Text("LFS")
                 }
             }
-
-            if (showPushModeDialog) {
-                androidx.compose.ui.window.Dialog(onDismissRequest = { showPushModeDialog = false }) {
-                    Surface(
-                        shape = MaterialTheme.shapes.extraLarge,
-                        tonalElevation = 6.dp,
-                        modifier = Modifier.fillMaxWidth().padding(24.dp)
-                    ) {
-                        Column(Modifier.padding(24.dp)) {
-                            Text("Push", style = MaterialTheme.typography.headlineSmall)
-                            Spacer(Modifier.height(8.dp))
-                            Text(
-                                "Choose how to push to Gerrit:",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Spacer(Modifier.height(16.dp))
-
-                            ForcePushModeOption(
-                                title = "Push for review",
-                                subtitle = "Upload to refs/for/${state.branch.ifBlank { "branch" }} for code review",
-                                selected = pushForReview,
-                                onSelect = { pushForReview = true }
-                            )
-                            Spacer(Modifier.height(8.dp))
-                            ForcePushModeOption(
-                                title = "Push to branch",
-                                subtitle = "Update the remote branch tip directly (no review)",
-                                selected = !pushForReview,
-                                onSelect = { pushForReview = false }
-                            )
-
-                            Spacer(Modifier.height(12.dp))
-                            Text(
-                                "Force push",
-                                style = MaterialTheme.typography.titleSmall,
-                                color = GitRed
-                            )
-                            Spacer(Modifier.height(4.dp))
-                            TextButton(
-                                onClick = {
-                                    showPushModeDialog = false
-                                    forcePushUseLease = true
-                                    showForcePushConfirm = true
-                                },
-                                colors = ButtonDefaults.textButtonColors(contentColor = GitRed)
-                            ) { Text("Force with lease…") }
-                            TextButton(
-                                onClick = {
-                                    showPushModeDialog = false
-                                    forcePushUseLease = false
-                                    showForcePushConfirm = true
-                                },
-                                colors = ButtonDefaults.textButtonColors(contentColor = GitRed)
-                            ) { Text("Force (no lease)…") }
-
-                            Spacer(Modifier.height(20.dp))
-                            Row(
-                                Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.End
-                            ) {
-                                TextButton(onClick = { showPushModeDialog = false }) {
-                                    Text("Cancel")
-                                }
-                                Spacer(Modifier.width(8.dp))
-                                Button(
-                                    onClick = {
-                                        showPushModeDialog = false
-                                        if (pushForReview) vm.pushForReview()
-                                        else vm.push(force = false)
-                                    }
-                                ) {
-                                    Text(if (pushForReview) "Push for review" else "Push")
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
 
             if (showPullOptions) {
                 androidx.compose.ui.window.Dialog(onDismissRequest = { showPullOptions = false }) {

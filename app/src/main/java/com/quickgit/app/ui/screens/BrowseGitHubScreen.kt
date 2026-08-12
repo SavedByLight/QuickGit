@@ -19,7 +19,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.quickgit.app.data.models.GerritProject
 import com.quickgit.app.data.models.GitHubRemoteRepo
 import com.quickgit.app.data.models.GitLabProject
 import com.quickgit.app.data.models.GitOpResult
@@ -98,8 +97,7 @@ fun BrowseGitHubScreen(
 
     val tabs = listOf(
         BrowseProviderTab.GITHUB to "GitHub",
-        BrowseProviderTab.GITLAB to "GitLab",
-        BrowseProviderTab.GERRIT to "Gerrit"
+        BrowseProviderTab.GITLAB to "GitLab"
     )
     val selectedIndex = tabs.indexOfFirst { it.first == state.selectedTab }.coerceAtLeast(0)
 
@@ -131,7 +129,7 @@ fun BrowseGitHubScreen(
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
-                        "Connect GitHub, GitLab, or Gerrit in Settings to browse remote repos.",
+                        "Connect GitHub or GitLab in Settings to browse remote repos.",
                         style = MaterialTheme.typography.bodyLarge
                     )
                     Spacer(Modifier.height(16.dp))
@@ -147,7 +145,6 @@ fun BrowseGitHubScreen(
                     val connected = when (tab) {
                         BrowseProviderTab.GITHUB -> state.githubConnected
                         BrowseProviderTab.GITLAB -> state.gitlabConnected
-                        BrowseProviderTab.GERRIT -> state.gerritConnected
                     }
                     Tab(
                         selected = selectedIndex == index,
@@ -174,7 +171,6 @@ fun BrowseGitHubScreen(
                         when (state.selectedTab) {
                             BrowseProviderTab.GITHUB -> "Search GitHub repos…"
                             BrowseProviderTab.GITLAB -> "Search GitLab projects…"
-                            BrowseProviderTab.GERRIT -> "Search Gerrit projects…"
                         }
                     )
                 },
@@ -185,13 +181,6 @@ fun BrowseGitHubScreen(
             val accountLine = when (state.selectedTab) {
                 BrowseProviderTab.GITHUB -> state.githubLogin?.let { "@$it" }
                 BrowseProviderTab.GITLAB -> state.gitlabUsername?.let { "@$it" }
-                BrowseProviderTab.GERRIT -> buildString {
-                    state.gerritUsername?.let { append(it) }
-                    state.gerritHost?.let {
-                        if (isNotEmpty()) append(" @ ")
-                        append(it)
-                    }
-                }.ifBlank { null }
             }
             if (accountLine != null) {
                 Text(
@@ -257,36 +246,6 @@ fun BrowseGitHubScreen(
                                 onClone = { vm.cloneGitLabProject(project) },
                                 onCloneToFolder = {
                                     pendingFolderAction = { vm.cloneGitLabProjectAfterPickingFolder(project) }
-                                    destinationPicker.launch(null)
-                                }
-                            )
-                            HorizontalDivider(Modifier.padding(start = 50.dp))
-                        }
-                    }
-                    BrowseProviderTab.GERRIT -> ProviderList(
-                        empty = state.gerritProjects.isEmpty() && state.gerritLoaded && !state.loading,
-                        emptyText = if (!state.gerritConnected) "Connect Gerrit in Settings."
-                        else "No Gerrit projects match.",
-                        loadingMore = state.loadingMore,
-                        hasMore = state.gerritHasMore,
-                        onLoadMore = vm::loadMore
-                    ) {
-                        items(state.gerritProjects, key = { "ge-${it.id}" }) { project ->
-                            RemoteRepoRow(
-                                title = project.name,
-                                subtitle = buildString {
-                                    project.description?.let { append(it) }
-                                    if (project.state != "ACTIVE") {
-                                        if (isNotEmpty()) append(" · ")
-                                        append(project.state)
-                                    }
-                                }.ifBlank { null },
-                                isPrivate = false,
-                                cloning = state.cloningKey == "ge:${project.id}",
-                                enabled = !state.cloning,
-                                onClone = { vm.cloneGerritProject(project) },
-                                onCloneToFolder = {
-                                    pendingFolderAction = { vm.cloneGerritProjectAfterPickingFolder(project) }
                                     destinationPicker.launch(null)
                                 }
                             )
