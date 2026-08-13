@@ -29,9 +29,7 @@ object SyntaxHighlight {
         val default: Color
     )
 
-    @Composable
-    fun defaultPalette(base: Color): Palette {
-        val dark = isSystemInDarkTheme()
+    fun defaultPalette(base: Color, dark: Boolean): Palette {
         return if (dark) {
             Palette(
                 keyword = Color(0xFFFF7B72),
@@ -411,9 +409,9 @@ object SyntaxHighlight {
     }
 }
 
-/** Remembered palette + language for a given path and base text color. */
+/** Remembered palette for a given base text color (keyed on dark/light theme). */
 @Composable
 fun rememberSyntaxPalette(baseColor: Color): SyntaxHighlight.Palette {
     val dark = isSystemInDarkTheme()
-    return remember(dark, baseColor) { SyntaxHighlight.defaultPalette(baseColor) }
+    return remember(dark, baseColor) { SyntaxHighlight.defaultPalette(baseColor, dark) }
 }
