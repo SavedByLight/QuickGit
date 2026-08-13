@@ -499,16 +499,29 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                         } else {
                             // Kernel / AOSP-scale trees: checkout alone can take a long time on
                             // phone storage. Progress comes from JGit's ProgressMonitor.
-                            // Skip a second hard-reset and a full `git status` — both walk the
-                            // entire tree with no useful progress and look "stuck on Syncing"
-                            // for tens of minutes on huge repos. core.filemode/symlinks/autocrlf
-                            // were already set above so the force checkout should match HEAD.
+                            // core.filemode/symlinks/autocrlf were already set above so the
+                            // working tree should match HEAD. Prefer a hard reset after the
+                            // force checkout: on some Android filesystems / JGit versions the
+                            // no-checkout + CheckoutCommand path can leave the index populated
+                            // while the working tree is empty (every path then shows as
+                            // "deleted"). Reset --hard forces index + worktree from HEAD.
                             onProgress("Checking out files (large trees can take a while)…")
                             git.checkout()
                                 .setAllPaths(true)
                                 .setForce(true)
                                 .setProgressMonitor(TextProgress(onProgress))
                                 .call()
+                            onProgress("Syncing working tree…")
+                            try {
+                                git.reset()
+                                    .setMode(org.eclipse.jgit.api.ResetCommand.ResetType.HARD)
+                                    .setRef("HEAD")
+                                    .setProgressMonitor(TextProgress(onProgress))
+                                    .call()
+                            } catch (resetEx: Exception) {
+                                // Non-fatal: checkout already ran; log and continue.
+                                AppLog.w(TAG, "post-checkout hard reset failed (continuing): ${resetEx.message}")
+                            }
                             onProgress("Working tree ready")
                         }
                     } finally {
@@ -623,14 +636,42 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
      * spurious diffs on mixed CRLF/LF repos.
      */
 
-    /** Log the first few dirty paths after clone so we can diagnose residual false positives. */
+    /**
+     * Log the first few dirty paths after clone so we can diagnose residual false positives.
+     * If the only problem is a large number of "missing" paths (classic symptom of a
+     * no-checkout clone whose working tree was not fully written), attempt one more
+     * hard reset to recover before the user sees "everything deleted".
+     */
     private fun logIfDirtyAfterClone(path: String) {
         try {
             openGit(path).use { git ->
-                val s = git.status().call()
+                var s = git.status().call()
                 if (s.isClean) {
                     AppLog.i(TAG, "post-clone status: clean")
                     return
+                }
+                val missingHeavy =
+                    s.missing.isNotEmpty() &&
+                        s.missing.size >= (s.modified.size + s.untracked.size + s.changed.size + s.added.size + 1) &&
+                        s.missing.size > 3
+                if (missingHeavy) {
+                    AppLog.w(
+                        TAG,
+                        "post-clone: ${s.missing.size} missing path(s) — attempting repair hard-reset"
+                    )
+                    try {
+                        git.reset()
+                            .setMode(org.eclipse.jgit.api.ResetCommand.ResetType.HARD)
+                            .setRef("HEAD")
+                            .call()
+                        s = git.status().call()
+                        if (s.isClean) {
+                            AppLog.i(TAG, "post-clone repair succeeded: working tree clean")
+                            return
+                        }
+                    } catch (repairEx: Exception) {
+                        AppLog.w(TAG, "post-clone repair hard-reset failed: ${repairEx.message}")
+                    }
                 }
                 val samples = (
                     s.modified.take(8).map { "M $it" } +
@@ -1042,10 +1083,32 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                     applyTransportConfig(cmd, remoteUrl)
                     val results = cmd.call()
                     val rejected = results.flatMap { it.remoteUpdates }
-                        .filter { it.status.name.contains("REJECTED") }
+                        .filter { it.status.name.contains("REJECTED") || it.status.name.contains("NON_EXISTING") }
                     if (rejected.isNotEmpty()) {
-                        AppLog.w(TAG, "push rejected: ${rejected.size} ref(s)")
-                        GitOpResult.Error("Push rejected — pull first (${rejected.size} ref(s) rejected)")
+                        val details = rejected.joinToString("; ") { upd ->
+                            val msg = upd.message?.takeIf { it.isNotBlank() }
+                            val status = upd.status?.name ?: "REJECTED"
+                            when {
+                                status.contains("NONFASTFORWARD") ->
+                                    "non-fast-forward (pull/rebase first)" + (msg?.let { ": $it" } ?: "")
+                                status.contains("OTHER") || status.contains("REMOTE_CHANGED") ->
+                                    msg ?: status
+                                else -> msg ?: status
+                            }
+                        }
+                        AppLog.w(TAG, "push rejected: $details")
+                        // GitHub rejects workflow-file updates without the `workflow` scope with a
+                        // clear message in RemoteRefUpdate.message; surface it instead of always
+                        // blaming a missing pull.
+                        val hint = when {
+                            details.contains("workflow", ignoreCase = true) ||
+                                details.contains("refusing to allow", ignoreCase = true) ->
+                                "Push rejected (token may lack the workflow scope): $details"
+                            details.contains("non-fast-forward", ignoreCase = true) ->
+                                "Push rejected — pull first: $details"
+                            else -> "Push rejected: $details"
+                        }
+                        GitOpResult.Error(hint)
                     } else {
                         AppLog.i(TAG, "push succeeded")
                         GitOpResult.Success
