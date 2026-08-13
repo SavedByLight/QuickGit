@@ -19,6 +19,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.quickgit.app.ui.components.SyntaxHighlight
+import com.quickgit.app.ui.components.rememberSyntaxPalette
 import com.quickgit.app.ui.theme.GitGreen
 import com.quickgit.app.viewmodel.EditorViewModel
 
@@ -137,6 +139,7 @@ fun EditorScreen(
                 else -> CodeEditor(
                     text = state.content,
                     onTextChange = vm::setContent,
+                    filePath = relativePath,
                     modifier = Modifier.fillMaxSize()
                 )
             }
@@ -148,6 +151,7 @@ fun EditorScreen(
 private fun CodeEditor(
     text: String,
     onTextChange: (String) -> Unit,
+    filePath: String,
     modifier: Modifier = Modifier
 ) {
     val vScroll = rememberScrollState()
@@ -158,14 +162,20 @@ private fun CodeEditor(
         lineCount < 1000 -> 48.dp
         else -> 56.dp
     }
+    val baseColor = MaterialTheme.colorScheme.onSurface
     val codeStyle = TextStyle(
         fontFamily = FontFamily.Monospace,
         fontSize = 13.sp,
         lineHeight = 20.sp,
-        color = MaterialTheme.colorScheme.onSurface
+        color = baseColor
     )
     val gutterBg = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
     val gutterFg = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f)
+    val language = remember(filePath) { SyntaxHighlight.languageFromPath(filePath) }
+    val palette = rememberSyntaxPalette(baseColor)
+    val highlightTransform = remember(language, palette) {
+        SyntaxHighlight.visualTransformation(language, palette)
+    }
 
     Row(modifier.background(MaterialTheme.colorScheme.surface)) {
         // Line-number gutter — fixed width, scrolls with content vertically
@@ -186,7 +196,7 @@ private fun CodeEditor(
                 )
             }
         }
-        // Editable body
+        // Editable body with language-colored tokens
         Box(
             Modifier
                 .weight(1f)
@@ -200,6 +210,7 @@ private fun CodeEditor(
                 onValueChange = onTextChange,
                 textStyle = codeStyle,
                 cursorBrush = SolidColor(GitGreen),
+                visualTransformation = highlightTransform,
                 modifier = Modifier.fillMaxWidth()
             )
         }

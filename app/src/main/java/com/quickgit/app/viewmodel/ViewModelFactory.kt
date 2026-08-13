@@ -66,7 +66,8 @@ class ViewModelFactory(private val app: Application) : ViewModelProvider.Factory
             modelClass.isAssignableFrom(ProfileViewModel::class.java) ->
                 ProfileViewModel(
                     gitApp.gitHubAccountManager,
-                    gitApp.gitLabAccountManager
+                    gitApp.gitLabAccountManager,
+                    gitApp.repoManager
                 )
             modelClass.isAssignableFrom(UserSearchViewModel::class.java) ->
                 UserSearchViewModel(

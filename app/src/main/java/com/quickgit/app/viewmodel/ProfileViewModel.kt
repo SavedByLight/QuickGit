@@ -4,8 +4,10 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.quickgit.app.data.GitHubAccountManager
 import com.quickgit.app.data.GitLabAccountManager
+import com.quickgit.app.data.RepoManager
 import com.quickgit.app.data.models.GitHubRemoteRepo
 import com.quickgit.app.data.models.GitLabProject
+import com.quickgit.app.data.models.GitOpResult
 import com.quickgit.app.data.models.PrOpResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -13,6 +15,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 
 enum class ProfileProvider {
     GITHUB,
@@ -56,12 +59,16 @@ data class ProfileUiState(
     /** Which host profile is shown (self only switches between connected accounts). */
     val selectedProvider: ProfileProvider = ProfileProvider.GITHUB,
     /** Providers the user can switch between on self profile. */
-    val availableProviders: List<ProfileProvider> = emptyList()
+    val availableProviders: List<ProfileProvider> = emptyList(),
+    /** Repo currently being cloned from the profile download action. */
+    val cloningRepoId: Long? = null,
+    val cloneProgress: String? = null
 )
 
 class ProfileViewModel(
     private val accountManager: GitHubAccountManager,
-    private val gitLabAccountManager: GitLabAccountManager
+    private val gitLabAccountManager: GitLabAccountManager,
+    private val repoManager: RepoManager
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(ProfileUiState())
@@ -342,6 +349,55 @@ class ProfileViewModel(
                     authRequired = true
                 )
                 else -> _state.value = _state.value.copy(forkingRepoId = null, forkError = "Fork failed")
+            }
+        }
+    }
+
+    /**
+     * Clone the selected profile repo into the default repos root (same as Browse → download).
+     * HTTPS by default; uses stored credentials via RepoManager transport config.
+     */
+    fun cloneRepo(repo: GitHubRemoteRepo, useSsh: Boolean = false) {
+        val url = if (useSsh) repo.sshUrl else repo.cloneUrl
+        if (url.isBlank()) {
+            _state.value = _state.value.copy(forkError = "No clone URL for ${repo.name}")
+            return
+        }
+        viewModelScope.launch {
+            _state.value = _state.value.copy(
+                cloningRepoId = repo.id,
+                cloneProgress = "Cloning…",
+                statusMessage = null,
+                forkError = null
+            )
+            val destination = File(repoManager.reposRoot, repo.name)
+            val result = withContext(Dispatchers.IO) {
+                repoManager.cloneRepo(url, destination) { progress ->
+                    _state.value = _state.value.copy(cloneProgress = progress)
+                }
+            }
+            _state.value = when (result) {
+                is GitOpResult.Success -> _state.value.copy(
+                    cloningRepoId = null,
+                    cloneProgress = null,
+                    statusMessage = "Cloned ${repo.name}"
+                )
+                is GitOpResult.AuthRequired -> _state.value.copy(
+                    cloningRepoId = null,
+                    cloneProgress = null,
+                    authRequired = true,
+                    forkError = "Authentication required to clone"
+                )
+                is GitOpResult.Error -> _state.value.copy(
+                    cloningRepoId = null,
+                    cloneProgress = null,
+                    forkError = result.message
+                )
+                else -> _state.value.copy(
+                    cloningRepoId = null,
+                    cloneProgress = null,
+                    statusMessage = "Cloned ${repo.name}"
+                )
             }
         }
     }

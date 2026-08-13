@@ -28,6 +28,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.quickgit.app.ui.components.SyntaxHighlight
+import com.quickgit.app.ui.components.rememberSyntaxPalette
 import com.quickgit.app.viewmodel.RemoteFileViewModel
 
 /** Read-only view of a single file's content, fetched straight from GitHub — no clone. */
@@ -55,6 +57,13 @@ fun RemoteFileScreen(
         state.error?.let { snackbarHostState.showSnackbar(it) }
     }
 
+    val baseColor = MaterialTheme.colorScheme.onSurface
+    val language = remember(path) { SyntaxHighlight.languageFromPath(path) }
+    val palette = rememberSyntaxPalette(baseColor)
+    val highlighted = remember(state.content, language, palette) {
+        SyntaxHighlight.highlight(state.content ?: "", language, palette)
+    }
+
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
@@ -78,7 +87,7 @@ fun RemoteFileScreen(
                 }
                 else -> {
                     Text(
-                        text = state.content ?: "",
+                        text = highlighted,
                         fontFamily = FontFamily.Monospace,
                         fontSize = 13.sp,
                         modifier = Modifier

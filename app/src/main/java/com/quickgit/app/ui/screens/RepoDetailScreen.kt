@@ -272,18 +272,7 @@ fun RepoDetailScreen(
                                 onClick = { showLfsOptions = false; showLfsTrack = true },
                                 modifier = Modifier.fillMaxWidth()
                             ) { Text("LFS track…") }
-                            TextButton(
-                                onClick = { showLfsOptions = false; vm.fetchLfs() },
-                                modifier = Modifier.fillMaxWidth()
-                            ) { Text("LFS pull") }
-                            TextButton(
-                                onClick = { showLfsOptions = false; vm.pushLfs() },
-                                modifier = Modifier.fillMaxWidth()
-                            ) { Text("LFS push") }
-                            TextButton(
-                                onClick = { showLfsOptions = false; vm.lfsStatus() },
-                                modifier = Modifier.fillMaxWidth()
-                            ) { Text("LFS status") }
+                            // Pull / push / status live under the Status / Pull / Push menus
                             Spacer(Modifier.height(8.dp))
                             TextButton(onClick = { showLfsOptions = false }, modifier = Modifier.align(Alignment.End)) {
                                 Text("Cancel")

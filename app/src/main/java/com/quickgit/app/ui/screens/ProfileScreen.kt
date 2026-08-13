@@ -231,8 +231,9 @@ fun ProfileScreen(
                                 repo,
                                 showFork = !state.isSelf && state.selectedProvider == ProfileProvider.GITHUB,
                                 forking = state.forkingRepoId == repo.id,
+                                cloning = state.cloningRepoId == repo.id,
                                 onClick = { onOpenRepo(repo) },
-                                onClone = { onCloneRepo(repo) },
+                                onClone = { vm.cloneRepo(repo) },
                                 onFork = { vm.fork(repo) }
                             )
                             HorizontalDivider()
@@ -287,6 +288,7 @@ private fun ProfileRepoRow(
     repo: GitHubRemoteRepo,
     showFork: Boolean,
     forking: Boolean,
+    cloning: Boolean = false,
     onClick: () -> Unit,
     onClone: () -> Unit,
     onFork: () -> Unit
@@ -333,8 +335,12 @@ private fun ProfileRepoRow(
                 )
             }
         }
-        IconButton(onClick = onClone, modifier = Modifier.padding(end = 4.dp)) {
-            Icon(Icons.Default.Download, "Clone this repo")
+        if (cloning) {
+            CircularProgressIndicator(Modifier.padding(end = 12.dp).size(20.dp), strokeWidth = 2.dp)
+        } else {
+            IconButton(onClick = onClone, modifier = Modifier.padding(end = 4.dp)) {
+                Icon(Icons.Default.Download, "Clone this repo")
+            }
         }
         if (showFork) {
             if (forking) {

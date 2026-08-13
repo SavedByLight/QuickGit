@@ -18,6 +18,8 @@ import androidx.compose.ui.unit.sp
 import com.quickgit.app.data.models.FileChange
 import com.quickgit.app.data.models.GitOpResult
 import com.quickgit.app.ui.components.PullToRefreshBox
+import com.quickgit.app.ui.components.SyntaxHighlight
+import com.quickgit.app.ui.components.rememberSyntaxPalette
 import com.quickgit.app.ui.theme.GitAmber
 import com.quickgit.app.viewmodel.MergeViewModel
 
@@ -142,11 +144,18 @@ private fun ConflictEditorDialog(fc: FileChange, vm: MergeViewModel, onDismiss: 
                     Spacer(Modifier.height(12.dp))
                     Text("Edit merged content:", style = MaterialTheme.typography.labelMedium)
                     Spacer(Modifier.height(4.dp))
+                    val mergeBase = MaterialTheme.colorScheme.onSurface
+                    val mergeLang = remember(fc.path) { SyntaxHighlight.languageFromPath(fc.path) }
+                    val mergePalette = rememberSyntaxPalette(mergeBase)
+                    val mergeHighlight = remember(mergeLang, mergePalette) {
+                        SyntaxHighlight.visualTransformation(mergeLang, mergePalette)
+                    }
                     OutlinedTextField(
                         value = edited ?: "",
                         onValueChange = { edited = it },
                         modifier = Modifier.fillMaxWidth().height(220.dp),
-                        textStyle = androidx.compose.ui.text.TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+                        textStyle = androidx.compose.ui.text.TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.sp),
+                        visualTransformation = mergeHighlight
                     )
                 }
             }
