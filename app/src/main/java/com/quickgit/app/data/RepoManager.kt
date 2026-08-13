@@ -702,7 +702,11 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
             var i = 0
             while (i < total && checked < maxSamples) {
                 val entry = dc.getEntry(i)
-                if (entry != null && !entry.isDirectory) {
+                // DirCacheEntry has no isDirectory; skip pure gitlink/tree modes if present.
+                if (entry != null &&
+                    entry.fileMode != org.eclipse.jgit.lib.FileMode.TREE &&
+                    entry.fileMode != org.eclipse.jgit.lib.FileMode.GITLINK
+                ) {
                     val f = File(workTree, entry.pathString)
                     if (!f.exists()) missing++
                     checked++
