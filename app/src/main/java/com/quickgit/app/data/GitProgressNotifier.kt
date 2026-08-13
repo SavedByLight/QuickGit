@@ -17,34 +17,35 @@ import com.quickgit.app.MainActivity
 import com.quickgit.app.R
 
 /**
- * Shows ongoing progress for long git operations (clone / push / pull) as a
- * notification. Call [start], then [update], then [finish] or [cancel].
- *
- * Requires [POST_NOTIFICATIONS] on Android 13+ and a monochrome [R.drawable.ic_notification].
+ * Progress notifications for long-running work: clone, push/pull, and Actions runs.
+ * Use distinct [Kind] values so concurrent operations do not overwrite each other.
  */
 class GitProgressNotifier(context: Context) {
 
     private val appContext = context.applicationContext
 
+    enum class Kind(val notificationId: Int, val defaultTitle: String) {
+        CLONE(42001, "Cloning…"),
+        PUSH(42002, "Pushing…"),
+        PULL(42003, "Pulling…"),
+        ACTIONS(42004, "Actions…")
+    }
+
     companion object {
         private const val TAG = "GitProgressNotifier"
         const val CHANNEL_ID = "git_progress"
         private const val CHANNEL_NAME = "Git progress"
-        private const val NOTIFICATION_ID = 42001
 
-        /** Create the progress channel early (Application.onCreate). Safe to call repeatedly. */
         fun ensureChannel(context: Context) {
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
             val sysNm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            val existing = sysNm.getNotificationChannel(CHANNEL_ID)
-            if (existing != null) return
+            if (sysNm.getNotificationChannel(CHANNEL_ID) != null) return
             val channel = NotificationChannel(
                 CHANNEL_ID,
                 CHANNEL_NAME,
-                // DEFAULT so the shade entry is visible; setOnlyAlertOnce avoids sound spam.
                 NotificationManager.IMPORTANCE_DEFAULT
             ).apply {
-                description = "Shows progress while cloning, pushing, or pulling"
+                description = "Progress for clone, push, pull, and workflow runs"
                 setShowBadge(false)
                 enableVibration(false)
                 setSound(null, null)
@@ -55,8 +56,8 @@ class GitProgressNotifier(context: Context) {
     }
 
     private val nm = NotificationManagerCompat.from(appContext)
-    private var title: String = "QuickGit"
-    private var lastPercent: Int = -1
+    private val titles = mutableMapOf<Kind, String>()
+    private val lastPercent = mutableMapOf<Kind, Int>()
     private val mainHandler = Handler(Looper.getMainLooper())
 
     init {
@@ -74,7 +75,6 @@ class GitProgressNotifier(context: Context) {
                 return false
             }
         }
-        // Also respect the system-level "app notifications" toggle
         if (!nm.areNotificationsEnabled()) {
             AppLog.w(TAG, "notifications disabled for app (system setting)")
             return false
@@ -82,32 +82,66 @@ class GitProgressNotifier(context: Context) {
         return true
     }
 
+    fun start(kind: Kind, title: String = kind.defaultTitle, text: String = "Starting…") {
+        titles[kind] = title
+        lastPercent[kind] = -1
+        post(kind, text, indeterminate = true)
+    }
+
     fun start(title: String, text: String = "Starting…") {
-        this.title = title
-        this.lastPercent = -1
-        post(text, indeterminate = true)
+        val kind = when {
+            title.contains("clon", ignoreCase = true) -> Kind.CLONE
+            title.contains("pull", ignoreCase = true) -> Kind.PULL
+            title.contains("action", ignoreCase = true) ||
+                title.contains("workflow", ignoreCase = true) -> Kind.ACTIONS
+            else -> Kind.PUSH
+        }
+        start(kind, title, text)
+    }
+
+    fun update(kind: Kind, text: String, percent: Int? = null) {
+        val p = percent?.coerceIn(0, 100)
+        if (p != null) lastPercent[kind] = p
+        post(
+            kind,
+            text,
+            indeterminate = p == null,
+            percent = p ?: lastPercent[kind]?.coerceAtLeast(0) ?: 0
+        )
     }
 
     fun update(text: String, percent: Int? = null) {
-        val p = percent?.coerceIn(0, 100)
-        if (p != null) lastPercent = p
-        post(text, indeterminate = p == null, percent = p ?: lastPercent.coerceAtLeast(0))
+        val kind = titles.keys.lastOrNull() ?: Kind.PUSH
+        update(kind, text, percent)
+    }
+
+    fun finish(kind: Kind, text: String = "Done") {
+        post(kind, text, indeterminate = false, percent = 100, ongoing = false, autoCancel = true)
+        mainHandler.postDelayed({ cancel(kind) }, 3500)
     }
 
     fun finish(text: String = "Done") {
-        post(text, indeterminate = false, percent = 100, ongoing = false, autoCancel = true)
-        mainHandler.postDelayed({ cancel() }, 2500)
+        val kind = titles.keys.lastOrNull() ?: Kind.PUSH
+        finish(kind, text)
     }
 
-    fun cancel() {
+    fun cancel(kind: Kind) {
         try {
-            nm.cancel(NOTIFICATION_ID)
+            nm.cancel(kind.notificationId)
         } catch (e: Exception) {
             AppLog.w(TAG, "cancel failed: ${e.message}")
         }
+        titles.remove(kind)
+        lastPercent.remove(kind)
+    }
+
+    fun cancel() {
+        val kinds = titles.keys.toList().ifEmpty { Kind.entries }
+        kinds.forEach { cancel(it) }
     }
 
     private fun post(
+        kind: Kind,
         text: String,
         indeterminate: Boolean,
         percent: Int = 0,
@@ -115,18 +149,18 @@ class GitProgressNotifier(context: Context) {
         autoCancel: Boolean = false
     ) {
         if (!hasPermission()) return
-
         ensureChannel(appContext)
 
         val openApp = PendingIntent.getActivity(
             appContext,
-            0,
+            kind.notificationId,
             Intent(appContext, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
             },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
+        val title = titles[kind] ?: kind.defaultTitle
         val builder = NotificationCompat.Builder(appContext, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(title)
@@ -137,7 +171,10 @@ class GitProgressNotifier(context: Context) {
             .setSilent(true)
             .setOngoing(ongoing)
             .setAutoCancel(autoCancel)
-            .setCategory(NotificationCompat.CATEGORY_PROGRESS)
+            .setCategory(
+                if (kind == Kind.ACTIONS) NotificationCompat.CATEGORY_STATUS
+                else NotificationCompat.CATEGORY_PROGRESS
+            )
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
 
@@ -148,7 +185,7 @@ class GitProgressNotifier(context: Context) {
         }
 
         try {
-            nm.notify(NOTIFICATION_ID, builder.build())
+            nm.notify(kind.notificationId, builder.build())
         } catch (e: SecurityException) {
             AppLog.w(TAG, "notify failed (permission): ${e.message}")
         } catch (e: Exception) {

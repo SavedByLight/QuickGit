@@ -158,17 +158,17 @@ class RepoDetailViewModel(
     fun push(force: Boolean = false, forceWithLease: Boolean = false) {
         viewModelScope.launch {
             _state.value = _state.value.copy(busy = true)
-            notifier.start("Pushing…", "Starting…")
+            notifier.start(GitProgressNotifier.Kind.PUSH, "Pushing…", "Starting…")
             val result = withContext(Dispatchers.IO) {
                 repoManager.push(repoPath, force = force, forceWithLease = forceWithLease) { progress ->
                     val percent = parsePercent(progress)
-                    notifier.update(progress, percent)
+                    notifier.update(GitProgressNotifier.Kind.PUSH, progress, percent)
                 }
             }
             _state.value = _state.value.copy(busy = false, lastResult = result)
             when (result) {
-                is GitOpResult.Success -> notifier.finish("Push finished")
-                else -> notifier.cancel()
+                is GitOpResult.Success -> notifier.finish(GitProgressNotifier.Kind.PUSH, "Push finished")
+                else -> notifier.cancel(GitProgressNotifier.Kind.PUSH)
             }
         }
     }
@@ -176,17 +176,18 @@ class RepoDetailViewModel(
     fun pull() {
         viewModelScope.launch {
             _state.value = _state.value.copy(busy = true)
-            notifier.start("Pulling…", "Starting…")
+            notifier.start(GitProgressNotifier.Kind.PULL, "Pulling…", "Starting…")
             val result = withContext(Dispatchers.IO) {
                 repoManager.pull(repoPath) { progress ->
                     val percent = parsePercent(progress)
-                    notifier.update(progress, percent)
+                    notifier.update(GitProgressNotifier.Kind.PULL, progress, percent)
                 }
             }
             _state.value = _state.value.copy(busy = false, lastResult = result)
             when (result) {
-                is GitOpResult.Success, is GitOpResult.UpToDate -> notifier.finish("Pull finished")
-                else -> notifier.cancel()
+                is GitOpResult.Success, is GitOpResult.UpToDate ->
+                    notifier.finish(GitProgressNotifier.Kind.PULL, "Pull finished")
+                else -> notifier.cancel(GitProgressNotifier.Kind.PULL)
             }
             loadStatus(showRefreshing = false)
         }
@@ -196,19 +197,19 @@ class RepoDetailViewModel(
     fun pullWithLfs() {
         viewModelScope.launch {
             _state.value = _state.value.copy(busy = true)
-            notifier.start("Pulling…", "Starting…")
+            notifier.start(GitProgressNotifier.Kind.PULL, "Pulling…", "Starting…")
             val pullResult = withContext(Dispatchers.IO) {
                 repoManager.pull(repoPath) { progress ->
-                    notifier.update(progress, parsePercent(progress))
+                    notifier.update(GitProgressNotifier.Kind.PULL, progress, parsePercent(progress))
                 }
             }
             if (pullResult is GitOpResult.Error || pullResult is GitOpResult.AuthRequired || pullResult is GitOpResult.Conflict) {
                 _state.value = _state.value.copy(busy = false, lastResult = pullResult)
-                notifier.cancel()
+                notifier.cancel(GitProgressNotifier.Kind.PULL)
                 loadStatus(showRefreshing = false)
                 return@launch
             }
-            notifier.update("Fetching LFS…")
+            notifier.update(GitProgressNotifier.Kind.PULL, "Fetching LFS…")
             val lfsResult = withContext(Dispatchers.IO) { repoManager.fetchLfs(repoPath) }
             _state.value = _state.value.copy(
                 busy = false,
@@ -219,7 +220,8 @@ class RepoDetailViewModel(
                     else -> null
                 }
             )
-            if (lfsResult is GitOpResult.Error) notifier.cancel() else notifier.finish("Pull finished")
+            if (lfsResult is GitOpResult.Error) notifier.cancel(GitProgressNotifier.Kind.PULL)
+            else notifier.finish(GitProgressNotifier.Kind.PULL, "Pull finished")
             loadStatus(showRefreshing = false)
         }
     }
@@ -228,18 +230,18 @@ class RepoDetailViewModel(
     fun pushWithLfs(force: Boolean = false, forceWithLease: Boolean = false) {
         viewModelScope.launch {
             _state.value = _state.value.copy(busy = true)
-            notifier.start("Pushing…", "Starting…")
+            notifier.start(GitProgressNotifier.Kind.PUSH, "Pushing…", "Starting…")
             val pushResult = withContext(Dispatchers.IO) {
                 repoManager.push(repoPath, force = force, forceWithLease = forceWithLease) { progress ->
-                    notifier.update(progress, parsePercent(progress))
+                    notifier.update(GitProgressNotifier.Kind.PUSH, progress, parsePercent(progress))
                 }
             }
             if (pushResult is GitOpResult.Error || pushResult is GitOpResult.AuthRequired) {
                 _state.value = _state.value.copy(busy = false, lastResult = pushResult)
-                notifier.cancel()
+                notifier.cancel(GitProgressNotifier.Kind.PUSH)
                 return@launch
             }
-            notifier.update("Uploading LFS…")
+            notifier.update(GitProgressNotifier.Kind.PUSH, "Uploading LFS…")
             val lfsResult = withContext(Dispatchers.IO) { repoManager.pushLfs(repoPath) }
             _state.value = _state.value.copy(
                 busy = false,
@@ -250,7 +252,8 @@ class RepoDetailViewModel(
                     else -> null
                 }
             )
-            if (lfsResult is GitOpResult.Error) notifier.cancel() else notifier.finish("Push finished")
+            if (lfsResult is GitOpResult.Error) notifier.cancel(GitProgressNotifier.Kind.PUSH)
+            else notifier.finish(GitProgressNotifier.Kind.PUSH, "Push finished")
         }
     }
 

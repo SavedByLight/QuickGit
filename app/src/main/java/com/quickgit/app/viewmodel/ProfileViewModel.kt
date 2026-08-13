@@ -1,9 +1,11 @@
 package com.quickgit.app.viewmodel
 
+import android.app.Application
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.quickgit.app.data.GitHubAccountManager
 import com.quickgit.app.data.GitLabAccountManager
+import com.quickgit.app.data.GitProgressNotifier
 import com.quickgit.app.data.RepoManager
 import com.quickgit.app.data.models.GitHubRemoteRepo
 import com.quickgit.app.data.models.GitLabProject
@@ -71,7 +73,8 @@ data class ProfileUiState(
 class ProfileViewModel(
     private val accountManager: GitHubAccountManager,
     private val gitLabAccountManager: GitLabAccountManager,
-    private val repoManager: RepoManager
+    private val repoManager: RepoManager,
+    app: Application
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(ProfileUiState())
@@ -82,6 +85,7 @@ class ProfileViewModel(
     private var reposPage = 1
     private var profileLoginForRepos: String? = null
     private val pageSize = 100
+    private val notifier = GitProgressNotifier(app)
 
     fun load(login: String?) {
         currentLogin = login
@@ -457,11 +461,20 @@ class ProfileViewModel(
                 statusMessage = null,
                 forkError = null
             )
+            notifier.start(GitProgressNotifier.Kind.CLONE, "Cloning ${repo.name}…", "Starting…")
             val destination = File(repoManager.reposRoot, repo.name)
             val result = withContext(Dispatchers.IO) {
                 repoManager.cloneRepo(url, destination) { progress ->
                     _state.value = _state.value.copy(cloneProgress = progress)
+                    val percent = Regex("""(\d{1,3})\s*%""").find(progress)
+                        ?.groupValues?.get(1)?.toIntOrNull()?.coerceIn(0, 100)
+                    notifier.update(GitProgressNotifier.Kind.CLONE, progress, percent)
                 }
+            }
+            when (result) {
+                is GitOpResult.Success, is GitOpResult.UpToDate ->
+                    notifier.finish(GitProgressNotifier.Kind.CLONE, "Cloned ${repo.name}")
+                else -> notifier.cancel(GitProgressNotifier.Kind.CLONE)
             }
             _state.value = when (result) {
                 is GitOpResult.Success -> _state.value.copy(

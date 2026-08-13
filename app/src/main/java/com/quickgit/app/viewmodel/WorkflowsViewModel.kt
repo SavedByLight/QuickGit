@@ -1,8 +1,10 @@
 package com.quickgit.app.viewmodel
 
+import android.app.Application
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.quickgit.app.data.GitProgressNotifier
 import com.quickgit.app.data.WorkflowManager
 import com.quickgit.app.data.models.PrOpResult
 import com.quickgit.app.data.models.Workflow
@@ -53,7 +55,10 @@ data class WorkflowsUiState(
     val livePageToken: String? = null
 )
 
-class WorkflowsViewModel(private val workflowManager: WorkflowManager) : ViewModel() {
+class WorkflowsViewModel(
+    private val workflowManager: WorkflowManager,
+    app: Application
+) : ViewModel() {
 
     private val _state = MutableStateFlow(WorkflowsUiState())
     val state: StateFlow<WorkflowsUiState> = _state.asStateFlow()
@@ -62,6 +67,7 @@ class WorkflowsViewModel(private val workflowManager: WorkflowManager) : ViewMod
     private var project: WorkflowManager.ProjectRef? = null
     private var pollJob: Job? = null
     private var logPollJob: Job? = null
+    private val notifier = GitProgressNotifier(app)
 
     fun init(repoPath: String) {
         this.repoPath = repoPath
@@ -160,16 +166,30 @@ class WorkflowsViewModel(private val workflowManager: WorkflowManager) : ViewMod
         stopWatching()
         val ref = project ?: return
         _state.value = _state.value.copy(watching = true)
+        notifier.start(GitProgressNotifier.Kind.ACTIONS, "Actions run", "Watching run #$runId…")
         pollJob = viewModelScope.launch {
             while (isActive) {
                 delay(2_000)
                 val (run, _) = withContext(Dispatchers.IO) { workflowManager.getRun(ref, runId) }
                 val (jobs, _) = withContext(Dispatchers.IO) { workflowManager.listJobs(ref, runId) }
                 if (run != null) {
+                    val jobSummary = jobs.joinToString(", ") {
+                        "${it.name}: ${it.conclusion ?: it.status}"
+                    }.ifBlank { run.status }
+                    val title = run.name.ifBlank { "Run #$runId" }
+                    notifier.start(GitProgressNotifier.Kind.ACTIONS, title, jobSummary)
                     _state.value = _state.value.copy(selectedRun = run, jobs = jobs)
                     if (!isLive(run.status)) {
                         _state.value = _state.value.copy(watching = false)
-                        // Full log text is only published after the job finishes — fetch it then.
+                        val conclusion = run.conclusion ?: run.status
+                        when (conclusion.lowercase()) {
+                            "success", "completed" ->
+                                notifier.finish(GitProgressNotifier.Kind.ACTIONS, "$title · $conclusion")
+                            "cancelled", "canceled", "skipped" ->
+                                notifier.finish(GitProgressNotifier.Kind.ACTIONS, "$title · $conclusion")
+                            else ->
+                                notifier.finish(GitProgressNotifier.Kind.ACTIONS, "$title · $conclusion")
+                        }
                         val finishedJob = jobs.firstOrNull { it.conclusion != null }
                             ?: jobs.firstOrNull()
                         if (finishedJob != null && _state.value.logJobId == null && !ref.isGitLab) {
@@ -187,6 +207,7 @@ class WorkflowsViewModel(private val workflowManager: WorkflowManager) : ViewMod
         pollJob = null
         if (_state.value.watching) {
             _state.value = _state.value.copy(watching = false)
+            notifier.cancel(GitProgressNotifier.Kind.ACTIONS)
         }
     }
 
@@ -194,6 +215,11 @@ class WorkflowsViewModel(private val workflowManager: WorkflowManager) : ViewMod
         val ref = project ?: return
         viewModelScope.launch {
             _state.value = _state.value.copy(busy = true)
+            notifier.start(
+                GitProgressNotifier.Kind.ACTIONS,
+                "Dispatch workflow",
+                "Starting on $refName…"
+            )
             val result = withContext(Dispatchers.IO) {
                 workflowManager.dispatch(ref, workflowId, refName, inputs)
             }
@@ -203,8 +229,19 @@ class WorkflowsViewModel(private val workflowManager: WorkflowManager) : ViewMod
                 successMessage = if (ref.isGitLab) null else "Workflow dispatched"
             )
             if (result is PrOpResult.Success) {
+                notifier.update(GitProgressNotifier.Kind.ACTIONS, "Dispatched — waiting for run…")
                 delay(1_500)
                 refreshRuns()
+                // Pick up the newest in-progress run and watch it with notifications.
+                val newest = _state.value.runs.firstOrNull { isLive(it.status) }
+                    ?: _state.value.runs.firstOrNull()
+                if (newest != null && isLive(newest.status)) {
+                    openRun(newest.id)
+                } else {
+                    notifier.finish(GitProgressNotifier.Kind.ACTIONS, "Workflow dispatched")
+                }
+            } else {
+                notifier.cancel(GitProgressNotifier.Kind.ACTIONS)
             }
         }
     }
@@ -213,6 +250,7 @@ class WorkflowsViewModel(private val workflowManager: WorkflowManager) : ViewMod
         val ref = project ?: return
         viewModelScope.launch {
             _state.value = _state.value.copy(busy = true)
+            notifier.update(GitProgressNotifier.Kind.ACTIONS, "Cancel requested…")
             val result = withContext(Dispatchers.IO) { workflowManager.cancelRun(ref, runId) }
             _state.value = applyResult(
                 _state.value.copy(busy = false),
@@ -220,6 +258,7 @@ class WorkflowsViewModel(private val workflowManager: WorkflowManager) : ViewMod
                 successMessage = "Cancel requested"
             )
             if (result is PrOpResult.Success) openRun(runId)
+            else notifier.cancel(GitProgressNotifier.Kind.ACTIONS)
         }
     }
 
@@ -227,6 +266,7 @@ class WorkflowsViewModel(private val workflowManager: WorkflowManager) : ViewMod
         val ref = project ?: return
         viewModelScope.launch {
             _state.value = _state.value.copy(busy = true)
+            notifier.start(GitProgressNotifier.Kind.ACTIONS, "Re-run workflow", "Requesting re-run…")
             val result = withContext(Dispatchers.IO) { workflowManager.rerun(ref, runId) }
             _state.value = applyResult(
                 _state.value.copy(busy = false),
@@ -236,6 +276,11 @@ class WorkflowsViewModel(private val workflowManager: WorkflowManager) : ViewMod
             if (result is PrOpResult.Success) {
                 delay(1_500)
                 refreshRuns()
+                val newest = _state.value.runs.firstOrNull { isLive(it.status) }
+                if (newest != null) openRun(newest.id)
+                else notifier.finish(GitProgressNotifier.Kind.ACTIONS, "Re-run requested")
+            } else {
+                notifier.cancel(GitProgressNotifier.Kind.ACTIONS)
             }
         }
     }

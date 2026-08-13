@@ -93,22 +93,22 @@ class CloneViewModel(
             progressText = "Starting…",
             destinationPath = destination.absolutePath
         )
-        notifier.start("Cloning…", "Starting…")
+        notifier.start(GitProgressNotifier.Kind.CLONE, "Cloning…", "Starting…")
         viewModelScope.launch(Dispatchers.IO) {
             val result = repoManager.cloneRepo(url, destination) { progress ->
                 _state.value = _state.value.copy(progressText = progress)
                 val percent = parsePercent(progress)
-                notifier.update(progress, percent)
+                notifier.update(GitProgressNotifier.Kind.CLONE, progress, percent)
             }
             _state.value = _state.value.copy(inProgress = false, result = result)
             when (result) {
-                is GitOpResult.Success -> notifier.finish("Clone finished")
-                is GitOpResult.UpToDate -> notifier.finish(result.message)
-                is GitOpResult.AuthRequired -> notifier.cancel()
-                is GitOpResult.Conflict -> notifier.cancel()
+                is GitOpResult.Success -> notifier.finish(GitProgressNotifier.Kind.CLONE, "Clone finished")
+                is GitOpResult.UpToDate -> notifier.finish(GitProgressNotifier.Kind.CLONE, result.message)
+                is GitOpResult.AuthRequired -> notifier.cancel(GitProgressNotifier.Kind.CLONE)
+                is GitOpResult.Conflict -> notifier.cancel(GitProgressNotifier.Kind.CLONE)
                 is GitOpResult.Error -> {
-                    notifier.update(result.message ?: "Clone failed")
-                    notifier.cancel()
+                    notifier.update(GitProgressNotifier.Kind.CLONE, result.message ?: "Clone failed")
+                    notifier.cancel(GitProgressNotifier.Kind.CLONE)
                 }
             }
         }

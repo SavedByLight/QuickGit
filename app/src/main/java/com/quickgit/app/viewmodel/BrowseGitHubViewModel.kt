@@ -1,10 +1,12 @@
 package com.quickgit.app.viewmodel
 
+import android.app.Application
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.quickgit.app.data.GitHubAccountManager
 import com.quickgit.app.data.GitLabAccountManager
+import com.quickgit.app.data.GitProgressNotifier
 import com.quickgit.app.data.RepoManager
 import com.quickgit.app.data.models.GitHubRemoteRepo
 import com.quickgit.app.data.models.GitLabProject
@@ -52,7 +54,8 @@ data class BrowseGitHubUiState(
 class BrowseGitHubViewModel(
     private val accountManager: GitHubAccountManager,
     private val gitLabAccountManager: GitLabAccountManager,
-    private val repoManager: RepoManager
+    private val repoManager: RepoManager,
+    app: Application
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(BrowseGitHubUiState())
@@ -61,6 +64,7 @@ class BrowseGitHubViewModel(
     private var searchJob: Job? = null
     private var pendingCloneUrl: String? = null
     private var pendingCloneName: String? = null
+    private val notifier = GitProgressNotifier(app)
 
     companion object {
         const val PAGE_SIZE = 100
@@ -322,10 +326,21 @@ class BrowseGitHubViewModel(
                 cloneResult = null,
                 errorMessage = null
             )
+            notifier.start(GitProgressNotifier.Kind.CLONE, "Cloning $folderName…", "Starting…")
             val result = withContext(Dispatchers.IO) {
                 repoManager.cloneRepo(url, destination) { progress ->
                     _state.value = _state.value.copy(progressText = progress)
+                    val percent = Regex("""(\d{1,3})\s*%""").find(progress)
+                        ?.groupValues?.get(1)?.toIntOrNull()?.coerceIn(0, 100)
+                    notifier.update(GitProgressNotifier.Kind.CLONE, progress, percent)
                 }
+            }
+            when (result) {
+                is GitOpResult.Success ->
+                    notifier.finish(GitProgressNotifier.Kind.CLONE, "Cloned $folderName")
+                is GitOpResult.UpToDate ->
+                    notifier.finish(GitProgressNotifier.Kind.CLONE, result.message)
+                else -> notifier.cancel(GitProgressNotifier.Kind.CLONE)
             }
             _state.value = _state.value.copy(
                 cloning = false,
