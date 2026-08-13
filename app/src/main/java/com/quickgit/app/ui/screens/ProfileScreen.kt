@@ -238,6 +238,22 @@ fun ProfileScreen(
                             )
                             HorizontalDivider()
                         }
+                        if (state.hasMoreRepos) {
+                            item {
+                                Box(
+                                    Modifier.fillMaxWidth().padding(16.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    if (state.loadingMoreRepos) {
+                                        CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 2.dp)
+                                    } else {
+                                        OutlinedButton(onClick = { vm.loadMoreRepos() }) {
+                                            Text("Load more")
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }

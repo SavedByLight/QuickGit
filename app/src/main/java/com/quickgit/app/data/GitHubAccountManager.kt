@@ -227,10 +227,18 @@ class GitHubAccountManager(private val credentialStore: CredentialStore) {
         return result.getOrNull() to result.toPrOpResult(host)
     }
 
-    fun searchUsers(query: String): Pair<List<GitHubApi.GitHubUserSummary>, PrOpResult> {
-        if (!isConnected()) return emptyList<GitHubApi.GitHubUserSummary>() to PrOpResult.AuthRequired(host)
-        val result = api.searchUsers(query)
-        return (result.getOrNull() ?: emptyList()) to result.toPrOpResult(host)
+    fun searchUsers(
+        query: String,
+        page: Int = 1,
+        perPage: Int = 100
+    ): Triple<List<GitHubApi.GitHubUserSummary>, Boolean, PrOpResult> {
+        if (!isConnected()) {
+            return Triple(emptyList(), false, PrOpResult.AuthRequired(host))
+        }
+        val result = api.searchUsers(query, perPage = perPage, page = page)
+        val batch = result.getOrNull() ?: emptyList()
+        val hasMore = batch.size >= perPage
+        return Triple(batch, hasMore, result.toPrOpResult(host))
     }
 
     /** Fetches every page of the user's public repos (GitHub paginates at 100/page). */
@@ -252,6 +260,21 @@ class GitHubAccountManager(private val credentialStore: CredentialStore) {
             page++
         }
         return all to PrOpResult.Success
+    }
+
+    /** Single page of public repos for [login] (100 by default). [page] is 1-based. */
+    fun listPublicReposPage(
+        login: String,
+        page: Int = 1,
+        perPage: Int = 100
+    ): Triple<List<GitHubRemoteRepo>, Boolean, PrOpResult> {
+        if (!isConnected()) return Triple(emptyList(), false, PrOpResult.AuthRequired(host))
+        val result = api.listPublicRepos(login, perPage = perPage, page = page)
+        val batch = result.getOrNull()
+        if (batch == null) {
+            return Triple(emptyList(), false, result.toPrOpResult(host))
+        }
+        return Triple(batch, batch.size >= perPage, PrOpResult.Success)
     }
 
     /** Lists files/folders at a path in someone else's (or your own) repo, without cloning it. */

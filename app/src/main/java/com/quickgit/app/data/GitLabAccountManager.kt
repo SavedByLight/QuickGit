@@ -170,10 +170,18 @@ class GitLabAccountManager(private val credentialStore: CredentialStore) {
     }
 
 
-    fun searchUsers(query: String, h: String = host): Pair<List<com.quickgit.app.data.gitlab.GitLabApi.GitLabUserSummary>, PrOpResult> {
-        if (!isConnected(h)) return emptyList<com.quickgit.app.data.gitlab.GitLabApi.GitLabUserSummary>() to PrOpResult.AuthRequired(h)
-        val result = api(h).searchUsers(query)
-        return (result.getOrNull() ?: emptyList()) to result.toPrOpResult(h)
+    fun searchUsers(
+        query: String,
+        h: String = host,
+        page: Int = 1,
+        perPage: Int = 100
+    ): Triple<List<com.quickgit.app.data.gitlab.GitLabApi.GitLabUserSummary>, Boolean, PrOpResult> {
+        if (!isConnected(h)) {
+            return Triple(emptyList(), false, PrOpResult.AuthRequired(h))
+        }
+        val result = api(h).searchUsers(query, perPage = perPage, page = page)
+        val batch = result.getOrNull() ?: emptyList()
+        return Triple(batch, batch.size >= perPage, result.toPrOpResult(h))
     }
 
     // Persist primary GitLab host so UI can restore it

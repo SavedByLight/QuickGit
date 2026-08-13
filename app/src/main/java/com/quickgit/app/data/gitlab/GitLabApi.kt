@@ -91,9 +91,9 @@ class GitLabApi(
         val webUrl: String
     )
 
-    fun searchUsers(query: String, perPage: Int = 30): Result<List<GitLabUserSummary>> = runCatching {
+    fun searchUsers(query: String, perPage: Int = 100, page: Int = 1): Result<List<GitLabUserSummary>> = runCatching {
         val q = java.net.URLEncoder.encode(query.trim(), "UTF-8")
-        val arr = request("GET", "/users?search=$q&per_page=$perPage") as JSONArray
+        val arr = request("GET", "/users?search=$q&per_page=$perPage&page=$page") as JSONArray
         (0 until arr.length()).map { i ->
             val o = arr.getJSONObject(i)
             GitLabUserSummary(

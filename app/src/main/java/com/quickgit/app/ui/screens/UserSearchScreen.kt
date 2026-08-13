@@ -132,6 +132,22 @@ fun UserSearchScreen(
                         }
                     }
                 }
+                if (state.hasMore && !state.loading) {
+                    item {
+                        Box(
+                            Modifier.fillMaxWidth().padding(16.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (state.loadingMore) {
+                                CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 2.dp)
+                            } else {
+                                OutlinedButton(onClick = { vm.loadMore() }) {
+                                    Text("Load more")
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }

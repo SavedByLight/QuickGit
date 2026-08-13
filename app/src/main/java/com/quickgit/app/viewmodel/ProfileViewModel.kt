@@ -62,7 +62,10 @@ data class ProfileUiState(
     val availableProviders: List<ProfileProvider> = emptyList(),
     /** Repo currently being cloned from the profile download action. */
     val cloningRepoId: Long? = null,
-    val cloneProgress: String? = null
+    val cloneProgress: String? = null,
+    /** More repo pages available (100 per page). */
+    val hasMoreRepos: Boolean = false,
+    val loadingMoreRepos: Boolean = false
 )
 
 class ProfileViewModel(
@@ -76,6 +79,9 @@ class ProfileViewModel(
 
     private var currentLogin: String? = null
     private var viewingOtherUser = false
+    private var reposPage = 1
+    private var profileLoginForRepos: String? = null
+    private val pageSize = 100
 
     fun load(login: String?) {
         currentLogin = login
@@ -130,6 +136,8 @@ class ProfileViewModel(
         providers: List<ConnectedProviderSummary>,
         available: List<ProfileProvider>
     ) {
+        reposPage = 1
+        profileLoginForRepos = null
         _state.value = _state.value.copy(
             loading = true,
             errorMessage = null,
@@ -138,7 +146,9 @@ class ProfileViewModel(
             connectedProviders = providers,
             isSelf = true,
             repos = emptyList(),
-            user = null
+            user = null,
+            hasMoreRepos = false,
+            loadingMoreRepos = false
         )
         when (provider) {
             ProfileProvider.GITHUB -> loadGitHubProfile(null, isSelf = true, providers, available)
@@ -169,11 +179,13 @@ class ProfileViewModel(
         }
         when {
             user != null -> {
-                val (repos, _) = withContext(Dispatchers.IO) {
+                reposPage = 1
+                profileLoginForRepos = if (isSelf && login == null) null else user.login
+                val (repos, hasMore, _) = withContext(Dispatchers.IO) {
                     if (isSelf && login == null) {
-                        accountManager.listRepos()
+                        accountManager.listReposPage(page = 1, perPage = pageSize)
                     } else {
-                        accountManager.listPublicRepos(user.login)
+                        accountManager.listPublicReposPage(user.login, page = 1, perPage = pageSize)
                     }
                 }
                 _state.value = ProfileUiState(
@@ -196,7 +208,8 @@ class ProfileViewModel(
                     isSelf = isSelf,
                     connectedProviders = providers,
                     availableProviders = available,
-                    selectedProvider = ProfileProvider.GITHUB
+                    selectedProvider = ProfileProvider.GITHUB,
+                    hasMoreRepos = hasMore
                 )
             }
             userResult is PrOpResult.AuthRequired -> {
@@ -260,8 +273,10 @@ class ProfileViewModel(
             )
             return
         }
-        val (projects, _) = withContext(Dispatchers.IO) {
-            gitLabAccountManager.listProjects(glHost)
+        reposPage = 1
+        profileLoginForRepos = null
+        val (projects, hasMore, _) = withContext(Dispatchers.IO) {
+            gitLabAccountManager.listProjectsPage(page = 1, perPage = pageSize, h = glHost)
         }
         val repos = projects.map { it.toRemoteRepo() }
         _state.value = ProfileUiState(
@@ -278,8 +293,63 @@ class ProfileViewModel(
             isSelf = true,
             connectedProviders = providers,
             availableProviders = available,
-            selectedProvider = ProfileProvider.GITLAB
+            selectedProvider = ProfileProvider.GITLAB,
+            hasMoreRepos = hasMore
         )
+    }
+
+    /** Append the next page of repositories (100 at a time). */
+    fun loadMoreRepos() {
+        val s = _state.value
+        if (!s.hasMoreRepos || s.loadingMoreRepos || s.loading) return
+        viewModelScope.launch {
+            _state.value = s.copy(loadingMoreRepos = true)
+            val next = reposPage + 1
+            val (batch, hasMore, result) = withContext(Dispatchers.IO) {
+                when (s.selectedProvider) {
+                    ProfileProvider.GITHUB -> {
+                        val login = profileLoginForRepos
+                        if (login == null && s.isSelf) {
+                            accountManager.listReposPage(page = next, perPage = pageSize)
+                        } else if (login != null) {
+                            accountManager.listPublicReposPage(login, page = next, perPage = pageSize)
+                        } else {
+                            Triple(emptyList(), false, PrOpResult.Success)
+                        }
+                    }
+                    ProfileProvider.GITLAB -> {
+                        val glHost = when {
+                            gitLabAccountManager.isConnected(gitLabAccountManager.host) ->
+                                gitLabAccountManager.host
+                            gitLabAccountManager.isConnected("gitlab.com") -> "gitlab.com"
+                            else -> null
+                        }
+                        if (glHost == null) Triple(emptyList(), false, PrOpResult.Error("Not connected"))
+                        else {
+                            val (projects, more, op) =
+                                gitLabAccountManager.listProjectsPage(page = next, perPage = pageSize, h = glHost)
+                            Triple(projects.map { it.toRemoteRepo() }, more, op)
+                        }
+                    }
+                }
+            }
+            if (result is PrOpResult.Error) {
+                _state.value = _state.value.copy(
+                    loadingMoreRepos = false,
+                    forkError = result.message
+                )
+                return@launch
+            }
+            reposPage = next
+            val existing = _state.value.repos
+            val seen = existing.map { it.id }.toHashSet()
+            val merged = existing + batch.filter { it.id !in seen }
+            _state.value = _state.value.copy(
+                repos = merged,
+                hasMoreRepos = hasMore,
+                loadingMoreRepos = false
+            )
+        }
     }
 
     private fun GitLabProject.toRemoteRepo() = GitHubRemoteRepo(

@@ -84,12 +84,12 @@ class GitHubApi(private val token: String?) {
         (request("GET", "/users/${login.trim()}") as JSONObject).toGitHubUser()
     }
 
-    /** Search users by login/name (GitHub Search API). */
-    fun searchUsers(query: String, perPage: Int = 30): Result<List<GitHubUserSummary>> = runCatching {
+    /** Search users by login/name (GitHub Search API). [page] is 1-based. */
+    fun searchUsers(query: String, perPage: Int = 100, page: Int = 1): Result<List<GitHubUserSummary>> = runCatching {
         val q = query.trim()
         if (q.isEmpty()) return@runCatching emptyList()
         val encoded = java.net.URLEncoder.encode(q, "UTF-8")
-        val arr = (request("GET", "/search/users?q=$encoded&per_page=$perPage") as JSONObject)
+        val arr = (request("GET", "/search/users?q=$encoded&per_page=$perPage&page=$page") as JSONObject)
             .getJSONArray("items")
         (0 until arr.length()).map { i ->
             val o = arr.getJSONObject(i)
