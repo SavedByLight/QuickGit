@@ -497,17 +497,16 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                             onProgress("Empty repository — ready for first commit")
                             AppLog.i(TAG, "clone of empty repo: ${destination.absolutePath}")
                         } else {
-                            // Kernel / AOSP-scale trees: checkout alone can take a long time on
-                            // phone storage. Progress comes from JGit's ProgressMonitor.
-                            // core.filemode/symlinks/autocrlf were already set above so the
-                            // force checkout should match HEAD. Do NOT always run reset --hard
-                            // afterward — that walks the entire tree a second time and roughly
-                            // doubles checkout time on huge repos. logIfDirtyAfterClone repairs
-                            // only when a quick probe shows a mostly-missing working tree.
+                            // After setNoCheckout(true), materialize the working tree with a
+                            // single hard reset — same idea as `git clone --no-checkout &&
+                            // git reset --hard`. A plain CheckoutCommand can leave the index
+                            // populated while files are missing on Android storage, so the UI
+                            // shows every path as "deleted". One HARD reset writes index +
+                            // worktree in one pass (faster than checkout+reset, and correct).
                             onProgress("Checking out files (large trees can take a while)…")
-                            git.checkout()
-                                .setAllPaths(true)
-                                .setForce(true)
+                            git.reset()
+                                .setMode(org.eclipse.jgit.api.ResetCommand.ResetType.HARD)
+                                .setRef("HEAD")
                                 .setProgressMonitor(TextProgress(onProgress))
                                 .call()
                             onProgress("Working tree ready")

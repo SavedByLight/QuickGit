@@ -5,13 +5,11 @@ import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.MotionScheme
 import androidx.compose.material3.Shapes
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
-import androidx.compose.material3.expressiveLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
@@ -32,7 +30,7 @@ val GitGreen = Color(0xFF2DA44E)
 val GitRed = Color(0xFFCF222E)
 val GitAmber = Color(0xFFBF8700)
 
-/** Fallback light scheme when dynamic color is unavailable (pre-Android 12). */
+/** Static light scheme (pre–Android 12 or when dynamic color is off). */
 private val LightColors = lightColorScheme(
     primary = GitBlue,
     onPrimary = Color.White,
@@ -86,7 +84,8 @@ private val DarkColors = darkColorScheme(
 )
 
 /**
- * Material 3 Expressive shapes — larger, friendlier corner radii than default M3.
+ * M3 Expressive–inspired shapes: larger corner radii than default M3.
+ * MotionScheme.expressive() needs material3 1.5+ (AGP/compileSdk beyond this project).
  */
 private val ExpressiveShapes = Shapes(
     extraSmall = RoundedCornerShape(8.dp),
@@ -96,9 +95,6 @@ private val ExpressiveShapes = Shapes(
     extraLarge = RoundedCornerShape(36.dp)
 )
 
-/**
- * Slightly more distinctive type scale for M3 Expressive feel while staying readable on mobile.
- */
 private val ExpressiveTypography = Typography(
     displayLarge = TextStyle(
         fontFamily = FontFamily.SansSerif,
@@ -150,11 +146,8 @@ private val ExpressiveTypography = Typography(
 )
 
 /**
- * Material 3 Expressive theme:
- * - Dynamic color (Material You) on Android 12+
- * - Expressive light seed scheme when dynamic is off
- * - Expressive motion scheme (spring-based)
- * - Larger corner radii + tuned type scale
+ * Material 3 theme with Material You dynamic color and expressive shapes/type.
+ * Compatible with compileSdk 34 / AGP 8.5 (no material3 1.5 alpha).
  */
 @Composable
 fun QuickGitTheme(
@@ -167,15 +160,8 @@ fun QuickGitTheme(
         dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
             if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
         }
-        // M3 Expressive static light seed when not using wallpaper colors
-        !darkTheme -> {
-            try {
-                expressiveLightColorScheme()
-            } catch (_: Throwable) {
-                LightColors
-            }
-        }
-        else -> DarkColors
+        darkTheme -> DarkColors
+        else -> LightColors
     }
 
     val view = LocalView.current
@@ -195,11 +181,6 @@ fun QuickGitTheme(
         colorScheme = colorScheme,
         typography = ExpressiveTypography,
         shapes = ExpressiveShapes,
-        motionScheme = try {
-            MotionScheme.expressive()
-        } catch (_: Throwable) {
-            MotionScheme.standard()
-        },
         content = content
     )
 }

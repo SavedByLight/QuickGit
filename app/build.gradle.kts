@@ -82,9 +82,9 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.ui:ui-tooling-preview")
-    // Material 3 Expressive APIs (MotionScheme.expressive, expressiveLightColorScheme)
-    // pinned above the BOM so M3E is available.
-    implementation("androidx.compose.material3:material3:1.5.0-alpha26")
+    // Stay on BOM material3 — 1.5.x alpha requires AGP 8.6+/compileSdk 35–37.
+    // M3E-style theming is implemented in Theme.kt (dynamic color, shapes, type).
+    implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
     // Avatar images (GitHub user/profile pictures)
     implementation("io.coil-kt:coil-compose:2.6.0")    // Pull-to-refresh (androidx.compose.material.pullrefresh) still lives in the M2 "material"
