@@ -4,6 +4,7 @@ import com.quickgit.app.data.github.GitHubApi
 import com.quickgit.app.data.github.toPrOpResult
 import com.quickgit.app.data.models.GitHubRemoteRepo
 import com.quickgit.app.data.models.PrOpResult
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Connects a GitHub account via personal access token (already stored in CredentialStore)
@@ -18,6 +19,30 @@ class GitHubAccountManager(private val credentialStore: CredentialStore) {
     private val host = "github.com"
 
     private val api: GitHubApi get() = GitHubApi(credentialStore.getHttpsToken(host))
+
+    /** Short-lived in-memory cache so Profile/Browse re-entry is instant. */
+    private data class RepoCacheEntry(val repos: List<GitHubRemoteRepo>, val expiresAtMs: Long)
+    private val repoPageCache = ConcurrentHashMap<String, RepoCacheEntry>()
+    private var orgReposCache: RepoCacheEntry? = null
+    private val cacheTtlMs = 120_000L // 2 minutes
+
+    private fun cacheGet(key: String): List<GitHubRemoteRepo>? {
+        val e = repoPageCache[key] ?: return null
+        if (System.currentTimeMillis() > e.expiresAtMs) {
+            repoPageCache.remove(key)
+            return null
+        }
+        return e.repos
+    }
+
+    private fun cachePut(key: String, repos: List<GitHubRemoteRepo>) {
+        repoPageCache[key] = RepoCacheEntry(repos, System.currentTimeMillis() + cacheTtlMs)
+    }
+
+    fun invalidateRepoCache() {
+        repoPageCache.clear()
+        orgReposCache = null
+    }
 
     data class ConnectedAccount(
         val login: String,
@@ -65,6 +90,7 @@ class GitHubAccountManager(private val credentialStore: CredentialStore) {
     fun disconnect() {
         AppLog.i(TAG, "disconnect")
         credentialStore.clearHttpsToken(host)
+        invalidateRepoCache()
     }
 
     /** Re-verify the stored token and return the current user, or null if not connected / invalid. */
@@ -107,10 +133,10 @@ class GitHubAccountManager(private val credentialStore: CredentialStore) {
     }
 
     /**
-     * Single page of repos (100 by default). [page] is 1-based.
-     * Page 1 also merges repositories from every organization the user belongs to
-     * so org repos are not hidden behind personal-repo pagination.
-     * [hasMore] is true when the user-repos page was full (more personal/collab pages remain).
+     * Single page of personal/collaborator/org-member repos via `/user/repos` (100 by default).
+     * Does **not** walk every organization separately — that was the main first-load stall.
+     * Call [listOrganizationReposExtra] in the background and merge if you need full org coverage.
+     * Results are cached ~2 minutes.
      */
     fun listReposPage(
         page: Int = 1,
@@ -118,19 +144,36 @@ class GitHubAccountManager(private val credentialStore: CredentialStore) {
         affiliation: String = "owner,collaborator,organization_member"
     ): Triple<List<GitHubRemoteRepo>, Boolean, PrOpResult> {
         if (!isConnected()) return Triple(emptyList(), false, PrOpResult.AuthRequired(host))
+        val cacheKey = "userRepos:$affiliation:$perPage:$page"
+        cacheGet(cacheKey)?.let { cached ->
+            AppLog.i(TAG, "listReposPage cache hit page=$page size=${cached.size}")
+            return Triple(cached, cached.size >= perPage, PrOpResult.Success)
+        }
         val result = api.listUserRepos(affiliation = affiliation, perPage = perPage, page = page)
         val batch = result.getOrNull()
         if (batch == null) {
             return Triple(emptyList(), false, result.toPrOpResult(host))
         }
-        if (page == 1) {
-            val byId = linkedMapOf<Long, GitHubRemoteRepo>()
-            batch.forEach { byId[it.id] = it }
-            mergeOrganizationRepos(byId)
-            val merged = byId.values.sortedByDescending { it.updatedAt }.toList()
-            return Triple(merged, batch.size >= perPage, PrOpResult.Success)
-        }
+        cachePut(cacheKey, batch)
         return Triple(batch, batch.size >= perPage, PrOpResult.Success)
+    }
+
+    /**
+     * Org repos not always fully represented by `/user/repos`. Fetched separately so the UI
+     * can show the first personal page immediately. Cached ~2 minutes.
+     */
+    fun listOrganizationReposExtra(): Pair<List<GitHubRemoteRepo>, PrOpResult> {
+        if (!isConnected()) return emptyList<GitHubRemoteRepo>() to PrOpResult.AuthRequired(host)
+        val existing = orgReposCache
+        if (existing != null && System.currentTimeMillis() <= existing.expiresAtMs) {
+            AppLog.i(TAG, "listOrganizationReposExtra cache hit size=${existing.repos.size}")
+            return existing.repos to PrOpResult.Success
+        }
+        val byId = linkedMapOf<Long, GitHubRemoteRepo>()
+        mergeOrganizationRepos(byId)
+        val list = byId.values.sortedByDescending { it.updatedAt }.toList()
+        orgReposCache = RepoCacheEntry(list, System.currentTimeMillis() + cacheTtlMs)
+        return list to PrOpResult.Success
     }
 
     /**
@@ -191,30 +234,32 @@ class GitHubAccountManager(private val credentialStore: CredentialStore) {
     fun searchRepos(query: String): Pair<List<GitHubRemoteRepo>, PrOpResult> {
         if (!isConnected()) return emptyList<GitHubRemoteRepo>() to PrOpResult.AuthRequired(host)
         val login = storedUsername()
-        // Prefer full list + client filter so org repos (merged below) are included.
-        // GitHub's search API only sees what the token can search and is easy to under-scope.
-        if (query.isBlank()) return listRepos()
-        val (all, opResult) = listRepos()
-        if (opResult !is PrOpResult.Success) return emptyList<GitHubRemoteRepo>() to opResult
-        val q = query.trim().lowercase()
-        val filtered = all.filter {
-            it.name.lowercase().contains(q) ||
-                it.fullName.lowercase().contains(q) ||
-                it.ownerLogin.lowercase().contains(q) ||
-                (it.description?.lowercase()?.contains(q) == true)
+        if (query.isBlank()) {
+            val (page, _, op) = listReposPage(page = 1, perPage = 100)
+            return page to op
         }
-        // Also try the search API (with org qualifiers) and merge any extra hits.
+        val q = query.trim().lowercase()
+        val byId = linkedMapOf<Long, GitHubRemoteRepo>()
+        // Fast path: filter first 2 pages of /user/repos (cached) — no full org walk.
+        for (page in 1..2) {
+            val (batch, hasMore, op) = listReposPage(page = page, perPage = 100)
+            if (op !is PrOpResult.Success && page == 1) return emptyList<GitHubRemoteRepo>() to op
+            batch.filter {
+                it.name.lowercase().contains(q) ||
+                    it.fullName.lowercase().contains(q) ||
+                    it.ownerLogin.lowercase().contains(q) ||
+                    (it.description?.lowercase()?.contains(q) == true)
+            }.forEach { byId[it.id] = it }
+            if (!hasMore) break
+        }
+        // GitHub search API for broader matches (includes org repos the token can see).
         if (!login.isNullOrBlank() && login != "x-access-token") {
             val orgs = api.listUserOrganizations(perPage = 100).getOrNull().orEmpty()
-            val searchHits = api.searchUserRepos(login, query, orgLogins = orgs, perPage = 100).getOrNull().orEmpty()
-            if (searchHits.isNotEmpty()) {
-                val byId = linkedMapOf<Long, GitHubRemoteRepo>()
-                filtered.forEach { byId[it.id] = it }
-                searchHits.forEach { byId[it.id] = it }
-                return byId.values.sortedByDescending { it.updatedAt }.toList() to PrOpResult.Success
-            }
+            val searchHits = api.searchUserRepos(login, query, orgLogins = orgs, perPage = 100)
+                .getOrNull().orEmpty()
+            searchHits.forEach { byId[it.id] = it }
         }
-        return filtered to PrOpResult.Success
+        return byId.values.sortedByDescending { it.updatedAt }.toList() to PrOpResult.Success
     }
 
     fun getUserProfile(login: String? = null): Pair<GitHubApi.GitHubUser?, PrOpResult> {
@@ -262,18 +307,23 @@ class GitHubAccountManager(private val credentialStore: CredentialStore) {
         return all to PrOpResult.Success
     }
 
-    /** Single page of public repos for [login] (100 by default). [page] is 1-based. */
+    /** Single page of public repos for [login] (100 by default). [page] is 1-based. Cached ~2 min. */
     fun listPublicReposPage(
         login: String,
         page: Int = 1,
         perPage: Int = 100
     ): Triple<List<GitHubRemoteRepo>, Boolean, PrOpResult> {
         if (!isConnected()) return Triple(emptyList(), false, PrOpResult.AuthRequired(host))
+        val cacheKey = "publicRepos:${login.lowercase()}:$perPage:$page"
+        cacheGet(cacheKey)?.let { cached ->
+            return Triple(cached, cached.size >= perPage, PrOpResult.Success)
+        }
         val result = api.listPublicRepos(login, perPage = perPage, page = page)
         val batch = result.getOrNull()
         if (batch == null) {
             return Triple(emptyList(), false, result.toPrOpResult(host))
         }
+        cachePut(cacheKey, batch)
         return Triple(batch, batch.size >= perPage, PrOpResult.Success)
     }
 

@@ -208,7 +208,25 @@ class BrowseGitHubViewModel(
                     githubHasMore = hasMore,
                     githubLoaded = true
                 )
+                // After first personal page (no search), merge org repos in the background
+                // so the list paints quickly and org coverage arrives without blocking.
+                if (reset && query.isBlank()) {
+                    mergeOrgReposInBackground()
+                }
             }
+        }
+    }
+
+    private fun mergeOrgReposInBackground() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val (orgRepos, result) = accountManager.listOrganizationReposExtra()
+            if (result !is PrOpResult.Success || orgRepos.isEmpty()) return@launch
+            val current = _state.value.githubRepos
+            val seen = current.map { it.id }.toHashSet()
+            val extra = orgRepos.filter { it.id !in seen }
+            if (extra.isEmpty()) return@launch
+            val combined = (current + extra).sortedByDescending { it.updatedAt }
+            _state.value = _state.value.copy(githubRepos = combined)
         }
     }
 

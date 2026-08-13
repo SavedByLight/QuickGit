@@ -500,28 +500,16 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                             // Kernel / AOSP-scale trees: checkout alone can take a long time on
                             // phone storage. Progress comes from JGit's ProgressMonitor.
                             // core.filemode/symlinks/autocrlf were already set above so the
-                            // working tree should match HEAD. Prefer a hard reset after the
-                            // force checkout: on some Android filesystems / JGit versions the
-                            // no-checkout + CheckoutCommand path can leave the index populated
-                            // while the working tree is empty (every path then shows as
-                            // "deleted"). Reset --hard forces index + worktree from HEAD.
+                            // force checkout should match HEAD. Do NOT always run reset --hard
+                            // afterward — that walks the entire tree a second time and roughly
+                            // doubles checkout time on huge repos. logIfDirtyAfterClone repairs
+                            // only when a quick probe shows a mostly-missing working tree.
                             onProgress("Checking out files (large trees can take a while)…")
                             git.checkout()
                                 .setAllPaths(true)
                                 .setForce(true)
                                 .setProgressMonitor(TextProgress(onProgress))
                                 .call()
-                            onProgress("Syncing working tree…")
-                            try {
-                                git.reset()
-                                    .setMode(org.eclipse.jgit.api.ResetCommand.ResetType.HARD)
-                                    .setRef("HEAD")
-                                    .setProgressMonitor(TextProgress(onProgress))
-                                    .call()
-                            } catch (resetEx: Exception) {
-                                // Non-fatal: checkout already ran; log and continue.
-                                AppLog.w(TAG, "post-checkout hard reset failed (continuing): ${resetEx.message}")
-                            }
                             onProgress("Working tree ready")
                         }
                     } finally {
@@ -637,41 +625,47 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
      */
 
     /**
-     * Log the first few dirty paths after clone so we can diagnose residual false positives.
-     * If the only problem is a large number of "missing" paths (classic symptom of a
-     * no-checkout clone whose working tree was not fully written), attempt one more
-     * hard reset to recover before the user sees "everything deleted".
+     * After clone: cheap working-tree probe first (avoids full `git status` on kernel-scale
+     * trees). Only if sampled index paths are missing on disk do we hard-reset and log a
+     * full status — the usual "everything deleted" failure mode.
      */
     private fun logIfDirtyAfterClone(path: String) {
         try {
             openGit(path).use { git ->
-                var s = git.status().call()
-                if (s.isClean) {
-                    AppLog.i(TAG, "post-clone status: clean")
+                val repo = git.repository
+                val root = repo.workTree ?: File(path)
+                // Sample up to 24 index paths — O(1) disk checks instead of a full tree walk.
+                val sampleMissing = sampleMissingFromIndex(repo, root, maxSamples = 24)
+                if (sampleMissing == 0) {
+                    AppLog.i(TAG, "post-clone probe: working tree looks present (sampled index paths exist)")
                     return
                 }
-                val missingHeavy =
-                    s.missing.isNotEmpty() &&
-                        s.missing.size >= (s.modified.size + s.untracked.size + s.changed.size + s.added.size + 1) &&
-                        s.missing.size > 3
-                if (missingHeavy) {
-                    AppLog.w(
-                        TAG,
-                        "post-clone: ${s.missing.size} missing path(s) — attempting repair hard-reset"
-                    )
-                    try {
-                        git.reset()
-                            .setMode(org.eclipse.jgit.api.ResetCommand.ResetType.HARD)
-                            .setRef("HEAD")
-                            .call()
-                        s = git.status().call()
-                        if (s.isClean) {
-                            AppLog.i(TAG, "post-clone repair succeeded: working tree clean")
-                            return
-                        }
-                    } catch (repairEx: Exception) {
-                        AppLog.w(TAG, "post-clone repair hard-reset failed: ${repairEx.message}")
-                    }
+                AppLog.w(
+                    TAG,
+                    "post-clone probe: $sampleMissing sampled path(s) missing — repair hard-reset"
+                )
+                try {
+                    git.reset()
+                        .setMode(org.eclipse.jgit.api.ResetCommand.ResetType.HARD)
+                        .setRef("HEAD")
+                        .call()
+                } catch (repairEx: Exception) {
+                    AppLog.w(TAG, "post-clone repair hard-reset failed: ${repairEx.message}")
+                }
+                // Optional diagnostic status — skip on enormous trees to avoid multi-minute stalls.
+                val indexEntries = try {
+                    repo.readDirCache().entryCount
+                } catch (_: Exception) {
+                    0
+                }
+                if (indexEntries > 50_000) {
+                    AppLog.i(TAG, "post-clone: skipped full status ($indexEntries index entries)")
+                    return
+                }
+                val s = git.status().call()
+                if (s.isClean) {
+                    AppLog.i(TAG, "post-clone status: clean after repair")
+                    return
                 }
                 val samples = (
                     s.modified.take(8).map { "M $it" } +
@@ -689,6 +683,36 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
             }
         } catch (e: Exception) {
             AppLog.w(TAG, "post-clone status check failed: ${e.message}")
+        }
+    }
+
+    /** How many of up to [maxSamples] index paths are missing on disk (0 = look OK). */
+    private fun sampleMissingFromIndex(
+        repo: org.eclipse.jgit.lib.Repository,
+        workTree: File,
+        maxSamples: Int
+    ): Int {
+        return try {
+            val dc = repo.readDirCache()
+            val total = dc.entryCount
+            if (total == 0) return 0
+            var missing = 0
+            var checked = 0
+            val step = (total / maxSamples).coerceAtLeast(1)
+            var i = 0
+            while (i < total && checked < maxSamples) {
+                val entry = dc.getEntry(i)
+                if (entry != null && !entry.isDirectory) {
+                    val f = File(workTree, entry.pathString)
+                    if (!f.exists()) missing++
+                    checked++
+                }
+                i += step
+            }
+            missing
+        } catch (e: Exception) {
+            AppLog.w(TAG, "sampleMissingFromIndex failed: ${e.message}")
+            0
         }
     }
 

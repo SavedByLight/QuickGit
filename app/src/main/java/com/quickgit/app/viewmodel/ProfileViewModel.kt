@@ -211,6 +211,10 @@ class ProfileViewModel(
                     selectedProvider = ProfileProvider.GITHUB,
                     hasMoreRepos = hasMore
                 )
+                // Self profile: paint personal repos first; merge org repos in background.
+                if (isSelf && login == null) {
+                    mergeOrgReposInBackground()
+                }
             }
             userResult is PrOpResult.AuthRequired -> {
                 _state.value = ProfileUiState(
@@ -296,6 +300,19 @@ class ProfileViewModel(
             selectedProvider = ProfileProvider.GITLAB,
             hasMoreRepos = hasMore
         )
+    }
+
+    private fun mergeOrgReposInBackground() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val (orgRepos, result) = accountManager.listOrganizationReposExtra()
+            if (result !is PrOpResult.Success || orgRepos.isEmpty()) return@launch
+            val current = _state.value.repos
+            val seen = current.map { it.id }.toHashSet()
+            val extra = orgRepos.filter { it.id !in seen }
+            if (extra.isEmpty()) return@launch
+            val combined = (current + extra).sortedByDescending { it.updatedAt }
+            _state.value = _state.value.copy(repos = combined)
+        }
     }
 
     /** Append the next page of repositories (100 at a time). */
