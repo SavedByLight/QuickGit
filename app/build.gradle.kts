@@ -82,7 +82,9 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.ui:ui-tooling-preview")
-    implementation("androidx.compose.material3:material3")
+    // Material 3 Expressive APIs (MotionScheme.expressive, expressiveLightColorScheme)
+    // pinned above the BOM so M3E is available.
+    implementation("androidx.compose.material3:material3:1.5.0-alpha26")
     implementation("androidx.compose.material:material-icons-extended")
     // Avatar images (GitHub user/profile pictures)
     implementation("io.coil-kt:coil-compose:2.6.0")    // Pull-to-refresh (androidx.compose.material.pullrefresh) still lives in the M2 "material"

@@ -6,11 +6,14 @@ import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
+import com.quickgit.app.data.AppLog
+import com.quickgit.app.data.GitProgressNotifier
 import com.quickgit.app.navigation.QuickGitNavGraph
 import com.quickgit.app.ui.components.AutoUpdateHost
 import com.quickgit.app.ui.theme.QuickGitTheme
@@ -19,15 +22,24 @@ class MainActivity : ComponentActivity() {
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { /* storage falls back if denied; notifications are best-effort */ }
+    ) { results ->
+        val notif = results[Manifest.permission.POST_NOTIFICATIONS]
+        if (notif == false) {
+            AppLog.w("MainActivity", "POST_NOTIFICATIONS denied — git progress notifications disabled")
+        } else if (notif == true) {
+            AppLog.i("MainActivity", "POST_NOTIFICATIONS granted")
+            GitProgressNotifier.ensureChannel(this)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        GitProgressNotifier.ensureChannel(this)
         requestPermissionsIfNeeded()
         setContent {
             QuickGitTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    // On launch: check GitHub Releases, auto-download newer APK, prompt install
                     AutoUpdateHost {
                         QuickGitNavGraph()
                     }
@@ -39,7 +51,6 @@ class MainActivity : ComponentActivity() {
     private fun requestPermissionsIfNeeded() {
         val needed = mutableListOf<String>()
 
-        // Storage only relevant on older APIs (see RepoManager).
         if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.Q) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE)
                 != PackageManager.PERMISSION_GRANTED
@@ -53,8 +64,6 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // Notification permission required on Android 13+ so clone/push progress can appear
-        // as a status-bar chip / notification.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
                 != PackageManager.PERMISSION_GRANTED

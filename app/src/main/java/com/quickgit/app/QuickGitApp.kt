@@ -5,6 +5,7 @@ import com.quickgit.app.data.AppUpdateManager
 import com.quickgit.app.data.CredentialStore
 import com.quickgit.app.data.GitHubAccountManager
 import com.quickgit.app.data.GitLabAccountManager
+import com.quickgit.app.data.GitProgressNotifier
 import com.quickgit.app.data.IssueManager
 import com.quickgit.app.data.PullRequestManager
 import com.quickgit.app.data.ReleaseManager
@@ -33,6 +34,8 @@ class QuickGitApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // Progress notifications need the channel before any clone/push starts.
+        GitProgressNotifier.ensureChannel(this)
         credentialStore = CredentialStore(this)
         repoManager = RepoManager(this, credentialStore)
         pullRequestManager = PullRequestManager(repoManager, credentialStore)

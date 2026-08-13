@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- White silhouette for status-bar notifications (Android ignores color here). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="#FFFFFF">
+    <!-- Simplified git branching mark -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M6,3c-1.66,0 -3,1.34 -3,3c0,1.28 0.81,2.37 1.95,2.8L4.95,14.2C3.81,14.63 3,15.72 3,17c0,1.66 1.34,3 3,3s3,-1.34 3,-3c0,-1.2 -0.71,-2.23 -1.73,-2.71L7.27,8.71C8.29,8.23 9,7.2 9,6c0,-1.66 -1.34,-3 -3,-3zM6,17.5c-0.28,0 -0.5,-0.22 -0.5,-0.5s0.22,-0.5 0.5,-0.5s0.5,0.22 0.5,0.5S6.28,17.5 6,17.5zM6,6.5c-0.28,0 -0.5,-0.22 -0.5,-0.5S5.72,5.5 6,5.5S6.5,5.72 6.5,6S6.28,6.5 6,6.5z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M18,11c-1.66,0 -3,1.34 -3,3c0,1.2 0.71,2.23 1.73,2.71v0.08c0,1.66 1.34,3 3,3s3,-1.34 3,-3s-1.34,-3 -3,-3c-0.17,0 -0.34,0.02 -0.5,0.05v-0.84C18.66,12.4 18.34,12 18,11zM18,17.5c-0.28,0 -0.5,-0.22 -0.5,-0.5s0.22,-0.5 0.5,-0.5s0.5,0.22 0.5,0.5S18.28,17.5 18,17.5z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M9.5,7.5h5c0.83,0 1.5,0.67 1.5,1.5v3.5h-1.5V9.5h-5V7.5z" />
+</vector>
