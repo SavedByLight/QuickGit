@@ -20,7 +20,9 @@ data class CloneUiState(
     val destinationPath: String? = null,
     val destinationError: String? = null,
     /** When true, destination is the default under reposRoot (no SAF pick required). */
-    val usingDefaultDestination: Boolean = true
+    val usingDefaultDestination: Boolean = true,
+    /** 1 = shallow (default), 0 = full history, N = --depth N */
+    val depth: Int = 1
 )
 
 class CloneViewModel(
@@ -38,6 +40,10 @@ class CloneViewModel(
         val trimmed = url.trim().removeSuffix("/").removeSuffix(".git")
         val last = trimmed.substringAfterLast('/').substringAfterLast(':')
         return last.ifBlank { "repo" }
+    }
+
+    fun setDepth(depth: Int) {
+        _state.value = _state.value.copy(depth = depth.coerceAtLeast(0))
     }
 
     /** Update the preview path for the default (reposRoot / folderName) destination. */
@@ -95,7 +101,7 @@ class CloneViewModel(
         )
         notifier.start(GitProgressNotifier.Kind.CLONE, "Cloning…", "Starting…")
         viewModelScope.launch(Dispatchers.IO) {
-            val result = repoManager.cloneRepo(url, destination) { progress ->
+            val result = repoManager.cloneRepo(url, destination, depth = _state.value.depth) { progress ->
                 _state.value = _state.value.copy(progressText = progress)
                 val percent = parsePercent(progress)
                 notifier.update(GitProgressNotifier.Kind.CLONE, progress, percent)

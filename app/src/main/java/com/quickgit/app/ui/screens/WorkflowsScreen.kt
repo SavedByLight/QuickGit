@@ -49,6 +49,7 @@ import java.io.ByteArrayInputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.nio.charset.StandardCharsets
+import com.quickgit.app.ui.adaptive.AdaptiveContent
 import com.quickgit.app.viewmodel.WorkflowsViewModel
 import kotlinx.coroutines.launch
 
@@ -136,78 +137,80 @@ fun WorkflowsScreen(
             )
         }
     ) { padding ->
-        Column(Modifier.padding(padding).fillMaxSize()) {
-            // Workflow filter chips
-            if (state.workflows.isNotEmpty()) {
-                LazyRow(
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    item {
-                        FilterChip(
-                            selected = state.selectedWorkflowId == null,
-                            onClick = { vm.selectWorkflow(null) },
-                            label = { Text("All workflows") }
-                        )
-                    }
-                    items(state.workflows, key = { it.id }) { wf ->
-                        FilterChip(
-                            selected = state.selectedWorkflowId == wf.id,
-                            onClick = { vm.selectWorkflow(wf.id) },
-                            label = { Text(wf.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                            trailingIcon = {
-                                IconButton(
-                                    onClick = { showDispatch = wf },
-                                    modifier = Modifier.size(24.dp)
-                                ) {
-                                    Icon(Icons.Default.PlayArrow, "Run", Modifier.size(16.dp))
+        AdaptiveContent(Modifier.padding(padding)) {
+            Column(Modifier.fillMaxSize()) {
+                // Workflow filter chips
+                if (state.workflows.isNotEmpty()) {
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        item {
+                            FilterChip(
+                                selected = state.selectedWorkflowId == null,
+                                onClick = { vm.selectWorkflow(null) },
+                                label = { Text("All workflows") }
+                            )
+                        }
+                        items(state.workflows, key = { it.id }) { wf ->
+                            FilterChip(
+                                selected = state.selectedWorkflowId == wf.id,
+                                onClick = { vm.selectWorkflow(wf.id) },
+                                label = { Text(wf.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                                trailingIcon = {
+                                    IconButton(
+                                        onClick = { showDispatch = wf },
+                                        modifier = Modifier.size(24.dp)
+                                    ) {
+                                        Icon(Icons.Default.PlayArrow, "Run", Modifier.size(16.dp))
+                                    }
                                 }
-                            }
-                        )
-                    }
-                }
-            }
-
-            // Status filter
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = 12.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                WorkflowRunFilter.entries.forEach { f ->
-                    FilterChip(
-                        selected = state.filter == f,
-                        onClick = { vm.setFilter(f) },
-                        label = { Text(f.label) }
-                    )
-                }
-            }
-
-            Box(Modifier.fillMaxSize()) {
-                when {
-                    state.loading && state.runs.isEmpty() -> {
-                        CircularProgressIndicator(Modifier.align(Alignment.Center))
-                    }
-                    state.runs.isEmpty() -> {
-                        Text(
-                            "No workflow runs found.",
-                            Modifier.align(Alignment.Center).padding(32.dp),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = TextAlign.Center
-                        )
-                    }
-                    else -> {
-                        LazyColumn(
-                            contentPadding = PaddingValues(12.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            items(state.runs, key = { it.id }) { run ->
-                                RunCard(run = run, onClick = { vm.openRun(run.id) })
-                            }
+                            )
                         }
                     }
                 }
-                if (state.loading && state.runs.isNotEmpty()) {
-                    LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter))
+
+                // Status filter
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    WorkflowRunFilter.entries.forEach { f ->
+                        FilterChip(
+                            selected = state.filter == f,
+                            onClick = { vm.setFilter(f) },
+                            label = { Text(f.label) }
+                        )
+                    }
+                }
+
+                Box(Modifier.fillMaxSize()) {
+                    when {
+                        state.loading && state.runs.isEmpty() -> {
+                            CircularProgressIndicator(Modifier.align(Alignment.Center))
+                        }
+                        state.runs.isEmpty() -> {
+                            Text(
+                                "No workflow runs found.",
+                                Modifier.align(Alignment.Center).padding(32.dp),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                        else -> {
+                            LazyColumn(
+                                contentPadding = PaddingValues(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                items(state.runs, key = { it.id }) { run ->
+                                    RunCard(run = run, onClick = { vm.openRun(run.id) })
+                                }
+                            }
+                        }
+                    }
+                    if (state.loading && state.runs.isNotEmpty()) {
+                        LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter))
+                    }
                 }
             }
         }

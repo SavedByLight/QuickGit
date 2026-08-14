@@ -30,6 +30,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.quickgit.app.data.models.RepoInfo
+import com.quickgit.app.ui.adaptive.AdaptiveContent
 import com.quickgit.app.ui.components.PullToRefreshBox
 import com.quickgit.app.ui.components.UserAvatar
 import com.quickgit.app.viewmodel.RepoListViewModel
@@ -194,43 +195,45 @@ fun RepoListScreen(
             }
         }
     ) { padding ->
-        Box(Modifier.padding(padding).fillMaxSize()) {
-            // Dim overlay when FAB menu is open so taps dismiss it
-            if (fabExpanded) {
-                Box(
-                    Modifier
-                        .fillMaxSize()
-                        .clickable { fabExpanded = false }
-                )
-            }
+        AdaptiveContent(Modifier.padding(padding)) {
+            Box(Modifier.fillMaxSize()) {
+                // Dim overlay when FAB menu is open so taps dismiss it
+                if (fabExpanded) {
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            .clickable { fabExpanded = false }
+                    )
+                }
 
-            PullToRefreshBox(
-                isRefreshing = loading,
-                onRefresh = vm::refresh,
-                modifier = Modifier.fillMaxSize()
-            ) {
-                if (loading && repos.isEmpty()) {
-                    CircularProgressIndicator(Modifier.align(Alignment.Center))
-                } else if (repos.isEmpty()) {
-                    Column(
-                        Modifier.align(Alignment.Center).padding(32.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Text("No repositories yet", style = MaterialTheme.typography.titleMedium)
-                        Spacer(Modifier.height(8.dp))
-                        Text(
-                            "Tap + to clone a URL or browse GitHub or GitLab.",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                } else {
-                    LazyColumn(Modifier.fillMaxSize()) {
-                        items(repos, key = { it.localPath }) { repo ->
-                            RepoRow(repo, onClick = { onOpenRepo(repo) }, onDelete = { repoToDelete = repo })
-                            HorizontalDivider()
+                PullToRefreshBox(
+                    isRefreshing = loading,
+                    onRefresh = vm::refresh,
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    if (loading && repos.isEmpty()) {
+                        CircularProgressIndicator(Modifier.align(Alignment.Center))
+                    } else if (repos.isEmpty()) {
+                        Column(
+                            Modifier.align(Alignment.Center).padding(32.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text("No repositories yet", style = MaterialTheme.typography.titleMedium)
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                "Tap + to clone a URL or browse GitHub or GitLab.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
-                        item { Spacer(Modifier.height(96.dp)) }
+                    } else {
+                        LazyColumn(Modifier.fillMaxSize()) {
+                            items(repos, key = { it.localPath }) { repo ->
+                                RepoRow(repo, onClick = { onOpenRepo(repo) }, onDelete = { repoToDelete = repo })
+                                HorizontalDivider()
+                            }
+                            item { Spacer(Modifier.height(96.dp)) }
+                        }
                     }
                 }
             }

@@ -19,6 +19,13 @@
     <!-- Install APKs downloaded by AppUpdateManager (Android 8+) -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
+    <!--
+      Touchscreen is not required so the app can run on Chromebooks / desktop-class
+      devices that rely on keyboard + trackpad / mouse.
+    -->
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+    <uses-feature android:name="android.hardware.faketouch" android:required="false" />
+
     <application
         android:name=".QuickGitApp"
         android:allowBackup="true"
@@ -28,17 +35,28 @@
         android:requestLegacyExternalStorage="true"
         android:supportsRtl="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar"
-        android:usesCleartextTraffic="false">
+        android:usesCleartextTraffic="false"
+        android:resizeableActivity="true">
 
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:configChanges="orientation|screenSize|keyboardHidden"
-            android:windowSoftInputMode="adjustResize">
+            android:resizeableActivity="true"
+            android:supportsPictureInPicture="false"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode"
+            android:windowSoftInputMode="adjustResize"
+            android:enableOnBackInvokedCallback="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- ChromeOS / freeform: allow any aspect ratio and unrestricted window size -->
+            <layout
+                android:defaultWidth="800dp"
+                android:defaultHeight="600dp"
+                android:minWidth="320dp"
+                android:minHeight="400dp"
+                android:gravity="center" />
         </activity>
 
         <!-- Used by AppUpdateManager to hand the downloaded APK to the package installer -->

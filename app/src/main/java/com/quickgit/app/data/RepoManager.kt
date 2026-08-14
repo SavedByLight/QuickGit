@@ -413,14 +413,16 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     fun cloneRepo(
         url: String,
         folderName: String,
-        onProgress: (String) -> Unit = {}
-    ): GitOpResult = cloneRepo(url, File(reposRoot, folderName), onProgress)
+        onProgress: (String) -> Unit = {},
+        depth: Int = 1
+    ): GitOpResult = cloneRepo(url, File(reposRoot, folderName), onProgress, depth)
 
     /** Clones into an explicit [destination], e.g. one the user picked via the system file manager. */
     fun cloneRepo(
         url: String,
         destination: File,
-        onProgress: (String) -> Unit
+        onProgress: (String) -> Unit,
+        depth: Int = 1
     ): GitOpResult {
         val label = destination.name
         if (destination.exists() && destination.listFiles()?.isNotEmpty() == true) {
@@ -469,13 +471,16 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                         val cmd = Git.cloneRepository()
                             .setURI(cloneUrl)
                             .setDirectory(destination)
-                            // Mobile: single branch + shallow history avoids huge pack inflation
+                            // Mobile: single branch; optional shallow depth avoids huge pack inflation
                             // that triggers "Inflater has been closed" on Android heaps.
+                            // depth <= 0 means full history (no --depth).
                             .setCloneAllBranches(false)
                             .setCloneSubmodules(false)
-                            .setDepth(1)
                             .setNoCheckout(true)
                             .setProgressMonitor(TextProgress(onProgress))
+                        if (depth > 0) {
+                            cmd.setDepth(depth)
+                        }
                         applyTransportConfig(cmd, cloneUrl)
                         cmd.call()
                     }
@@ -1027,7 +1032,8 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         message: String,
         authorName: String,
         authorEmail: String,
-        signOff: Boolean = isSignOffEnabled()
+        signOff: Boolean = isSignOffEnabled(),
+        amend: Boolean = false
     ): GitOpResult =
         withRepoLock(path) {
             val shouldSign = isGpgSigningEnabled() && credentialStore.hasGpgKey()
@@ -1035,14 +1041,21 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
             val gpgPass = if (shouldSign) credentialStore.getGpgPassphrase() else null
             val fullMessage = if (signOff) appendSignOff(message, authorName, authorEmail) else message
             openGit(path).use { git ->
+                if (amend) {
+                    val head = git.repository.resolve("HEAD")
+                    if (head == null) {
+                        return@withRepoLock GitOpResult.Error("Nothing to amend — no commits yet")
+                    }
+                }
                 val doCommit = {
                     val cmd = git.commit()
                         .setMessage(fullMessage)
                         .setAuthor(PersonIdent(authorName, authorEmail))
                         .setCommitter(PersonIdent(authorName, authorEmail))
+                        .setAmend(amend)
                     if (shouldSign && gpgKey != null) {
                         cmd.setSign(true)
-                        AppLog.i(TAG, "commit: OpenPGP signing enabled")
+                        AppLog.i(TAG, "commit: OpenPGP signing enabled" + if (amend) " (amend)" else "")
                     } else {
                         cmd.setSign(false)
                     }
@@ -1057,11 +1070,109 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
             AppLog.i(
                 TAG,
                 "commit succeeded: ${message.take(50)}" +
+                    (if (amend) " (amended)" else "") +
                     (if (shouldSign) " (gpg-signed)" else "") +
                     (if (signOff) " (signed-off)" else "")
             )
             GitOpResult.Success
         }
+
+    /**
+     * Suggest a GitHub-style default commit message from the current index/working tree.
+     * Examples: "Delete foo.txt", "Rename a.kt to b.kt", "Add README.md", "Update Main.kt".
+     */
+    fun suggestCommitMessage(path: String): String {
+        return try {
+            openGit(path).use { git ->
+                val s = git.status().call()
+                val added = (s.added + s.untracked).sorted()
+                val deleted = (s.removed + s.missing).sorted()
+                val modified = (s.changed + s.modified).sorted()
+                if (deleted.size == 1 && added.size == 1) {
+                    val from = deleted.first().substringAfterLast('/')
+                    val to = added.first().substringAfterLast('/')
+                    if (from != to) return "Rename $from to $to"
+                }
+                when {
+                    added.size == 1 && deleted.isEmpty() && modified.isEmpty() ->
+                        "Add ${added.first().substringAfterLast('/')}"
+                    deleted.size == 1 && added.isEmpty() && modified.isEmpty() ->
+                        "Delete ${deleted.first().substringAfterLast('/')}"
+                    modified.size == 1 && added.isEmpty() && deleted.isEmpty() ->
+                        "Update ${modified.first().substringAfterLast('/')}"
+                    added.isNotEmpty() && deleted.isEmpty() && modified.isEmpty() ->
+                        if (added.size <= 3) "Add ${added.joinToString(", ") { it.substringAfterLast('/') }}"
+                        else "Add ${added.size} files"
+                    deleted.isNotEmpty() && added.isEmpty() && modified.isEmpty() ->
+                        if (deleted.size <= 3) "Delete ${deleted.joinToString(", ") { it.substringAfterLast('/') }}"
+                        else "Delete ${deleted.size} files"
+                    modified.isNotEmpty() && added.isEmpty() && deleted.isEmpty() ->
+                        if (modified.size <= 3) "Update ${modified.joinToString(", ") { it.substringAfterLast('/') }}"
+                        else "Update ${modified.size} files"
+                    else -> {
+                        val parts = mutableListOf<String>()
+                        if (added.isNotEmpty()) parts += "add ${added.size}"
+                        if (modified.isNotEmpty()) parts += "update ${modified.size}"
+                        if (deleted.isNotEmpty()) parts += "delete ${deleted.size}"
+                        parts.joinToString(", ").replaceFirstChar { it.uppercase() }
+                    }
+                }
+            }
+        } catch (_: Exception) {
+            ""
+        }
+    }
+
+    /** List configured remotes as name → URL. */
+    fun listRemotes(path: String): Map<String, String> {
+        return try {
+            openGit(path).use { git ->
+                val cfg = git.repository.config
+                cfg.getSubsections("remote").associateWith { name ->
+                    cfg.getString("remote", name, "url") ?: ""
+                }.filterValues { it.isNotBlank() }
+            }
+        } catch (_: Exception) {
+            emptyMap()
+        }
+    }
+
+    /** Add or update a remote. */
+    fun addOrSetRemote(path: String, name: String, url: String): GitOpResult {
+        val n = name.trim()
+        val u = url.trim()
+        if (n.isBlank() || u.isBlank()) return GitOpResult.Error("Remote name and URL are required")
+        return try {
+            openGit(path).use { git ->
+                val cfg = git.repository.config
+                cfg.setString("remote", n, "url", u)
+                if (cfg.getString("remote", n, "fetch") == null) {
+                    cfg.setString("remote", n, "fetch", "+refs/heads/*:refs/remotes/$n/*")
+                }
+                cfg.save()
+            }
+            AppLog.i(TAG, "remote set: $n -> $u")
+            GitOpResult.Success
+        } catch (e: Exception) {
+            GitOpResult.Error(e.message ?: "Failed to set remote", e)
+        }
+    }
+
+    fun removeRemote(path: String, name: String): GitOpResult {
+        val n = name.trim()
+        if (n.isBlank()) return GitOpResult.Error("Remote name required")
+        return try {
+            openGit(path).use { git ->
+                val cfg = git.repository.config
+                cfg.unsetSection("remote", n)
+                cfg.save()
+            }
+            AppLog.i(TAG, "remote removed: $n")
+            GitOpResult.Success
+        } catch (e: Exception) {
+            GitOpResult.Error(e.message ?: "Failed to remove remote", e)
+        }
+    }
 
     /** Appends a Signed-off-by trailer if one is not already present (DCO / git commit -s). */
     private fun appendSignOff(message: String, name: String, email: String): String {
@@ -1077,16 +1188,20 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     // ---------------- Push / Pull / Fetch ----------------
 
     /**
-     * Push to origin.
+     * Push to a remote (default origin).
+     * - [remote]: remote name (origin, upstream, …)
+     * - [localBranch]/[remoteBranch]: optional ref mapping; null = current branch defaults
      * - [forceWithLease]: only overwrite remote if it still matches our remote-tracking tip
-     *   (safe against clobbering others' commits; requires a prior fetch).
      * - [force]: unconditional overwrite (`--force`). Prefer lease unless you know you need this.
-     * If both are true, lease wins.
+     * If both force flags are true, lease wins.
      */
     fun push(
         path: String,
         force: Boolean = false,
         forceWithLease: Boolean = false,
+        remote: String = "origin",
+        localBranch: String? = null,
+        remoteBranch: String? = null,
         onProgress: (String) -> Unit = {}
     ): GitOpResult {
         val mode = when {
@@ -1094,10 +1209,14 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
             force -> "force"
             else -> "normal"
         }
-        AppLog.i(TAG, "push: $path mode=$mode")
+        val remoteName = remote.ifBlank { "origin" }
+        AppLog.i(TAG, "push: $path remote=$remoteName mode=$mode")
         return try {
             openGit(path).use { git ->
-                val remoteUrl = git.repository.config.getString("remote", "origin", "url") ?: ""
+                val remoteUrl = git.repository.config.getString("remote", remoteName, "url") ?: ""
+                if (remoteUrl.isBlank()) {
+                    return@use GitOpResult.Error("No URL configured for remote '$remoteName'")
+                }
                 maybeUploadLfs(path, remoteUrl)?.let { AppLog.i(TAG, it) }
 
                 if (forceWithLease || force) {
@@ -1106,7 +1225,13 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                 } else {
                     onProgress("Pushing…")
                     val cmd = git.push()
+                        .setRemote(remoteName)
                         .setProgressMonitor(TextProgress(onProgress))
+                    val lb = localBranch?.takeIf { it.isNotBlank() }
+                    val rb = remoteBranch?.takeIf { it.isNotBlank() } ?: lb
+                    if (lb != null && rb != null) {
+                        cmd.setRefSpecs(org.eclipse.jgit.transport.RefSpec("refs/heads/$lb:refs/heads/$rb"))
+                    }
                     applyTransportConfig(cmd, remoteUrl)
                     val results = cmd.call()
                     val rejected = results.flatMap { it.remoteUpdates }

@@ -26,6 +26,7 @@ to any third-party server other than the git remote you configure.
   storage for per-host HTTPS personal access tokens, a single SSH private key + passphrase,
   and an optional OpenPGP secret key for commit signing
 - **GPG signing** — sign commits with an imported armored secret key (Bouncy Castle / JGit); toggle in Settings
+- **Large screens / Chromebooks** — resizeable multi-window and freeform support; Material3 window size classes; adaptive content width and padding on tablets, Chromebooks, and desktop-class windows (touchscreen not required)
 
 ## Architecture
 
