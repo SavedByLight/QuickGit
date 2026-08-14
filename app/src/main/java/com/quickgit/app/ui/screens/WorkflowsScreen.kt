@@ -910,6 +910,63 @@ private fun LiveJobWebContent(
         else mapOf("Authorization" to "Bearer $token")
     }
 
+    /** Injects the app's PAT into fetch / XHR so the Actions SPA can call GitHub APIs
+     *  as the linked account without a separate web login. WebSockets still rely on
+     *  cookies if present; CookieManager keeps any session from a one-time sign-in. */
+    fun injectAuthScript(view: WebView?) {
+        if (view == null || token.isNullOrBlank()) return
+        // Escape for a single-quoted JS string (token is base64-ish / alphanumeric + _-)
+        val safeToken = token
+            .replace("\\", "\\\\")
+            .replace("'", "\\'")
+            .replace("\n", "")
+            .replace("\r", "")
+        val script = """
+            (function() {
+              if (window.__quickgitAuthInjected) return;
+              window.__quickgitAuthInjected = true;
+              var token = '$safeToken';
+              function needsAuth(url) {
+                if (!url) return false;
+                try {
+                  var u = new URL(url, location.href);
+                  return u.hostname === 'api.github.com' ||
+                         u.hostname === 'github.com' ||
+                         u.hostname.endsWith('.github.com');
+                } catch (e) { return false; }
+              }
+              var origFetch = window.fetch;
+              window.fetch = function(input, init) {
+                init = init || {};
+                var url = (typeof input === 'string') ? input : (input && input.url);
+                if (needsAuth(url)) {
+                  var headers = new Headers(init.headers || {});
+                  if (!headers.has('Authorization')) {
+                    headers.set('Authorization', 'Bearer ' + token);
+                  }
+                  init = Object.assign({}, init, { headers: headers });
+                }
+                return origFetch.call(this, input, init);
+              };
+              var origOpen = XMLHttpRequest.prototype.open;
+              var origSend = XMLHttpRequest.prototype.send;
+              XMLHttpRequest.prototype.open = function(method, url) {
+                this.__qgUrl = url;
+                return origOpen.apply(this, arguments);
+              };
+              XMLHttpRequest.prototype.send = function(body) {
+                try {
+                  if (needsAuth(this.__qgUrl) && this.setRequestHeader) {
+                    this.setRequestHeader('Authorization', 'Bearer ' + token);
+                  }
+                } catch (e) {}
+                return origSend.apply(this, arguments);
+              };
+            })();
+        """.trimIndent()
+        view.evaluateJavascript(script, null)
+    }
+
     BackHandler {
         val wv = webView
         if (wv != null && wv.canGoBack()) wv.goBack() else onBack()
@@ -923,7 +980,7 @@ private fun LiveJobWebContent(
                     Column {
                         Text(pageTitle, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text(
-                            if (!token.isNullOrBlank()) "Live feed · signed in with app token"
+                            if (!token.isNullOrBlank()) "Live feed · using linked GitHub account"
                             else "Live feed · connect GitHub in Settings for auth",
                             style = MaterialTheme.typography.bodySmall
                         )
@@ -953,6 +1010,13 @@ private fun LiveJobWebContent(
             if (token.isNullOrBlank()) {
                 Text(
                     "No GitHub token in the app. Open Settings → connect GitHub, or sign in inside this page once (session is saved).",
+                    Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                Text(
+                    "Authenticated with the account linked in QuickGit. Job data and API calls use your token; for full live streaming you can also sign in once on this page (cookies are kept).",
                     Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -1012,14 +1076,15 @@ private fun LiveJobWebContent(
                                     }
                                     val host = request.url.host.orEmpty()
                                     val path = request.url.path.orEmpty()
-                                    // Only proxy API-style requests. Static assets and the HTML
-                                    // document stay on WebView's stack so streaming/WebSocket work.
+                                    // Proxy API-style GETs. Static assets and the HTML document
+                                    // stay on WebView's stack so streaming/WebSocket work.
                                     val isApi =
                                         host == "api.github.com" ||
                                             (host == "github.com" && (
                                                 path.startsWith("/api/") ||
                                                     path.startsWith("/graphql") ||
-                                                    path.contains("/_graphql")
+                                                    path.contains("/_graphql") ||
+                                                    path.startsWith("/login/oauth")
                                             ))
                                     if (!isApi || request.method != "GET") {
                                         return super.shouldInterceptRequest(view, request)
@@ -1087,6 +1152,13 @@ private fun LiveJobWebContent(
                                 override fun onPageFinished(view: WebView?, finishedUrl: String?) {
                                     loading = false
                                     CookieManager.getInstance().flush()
+                                    // Re-inject after every navigation so SPA route changes keep the token.
+                                    injectAuthScript(view)
+                                }
+
+                                override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+                                    // Inject early so the first SPA bootstrap requests are covered.
+                                    injectAuthScript(view)
                                 }
                             }
                             if (authHeaders.isNotEmpty()) loadUrl(url, authHeaders)
