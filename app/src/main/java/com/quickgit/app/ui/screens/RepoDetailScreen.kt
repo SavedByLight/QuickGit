@@ -16,6 +16,7 @@ import androidx.compose.ui.unit.dp
 import com.quickgit.app.data.models.ChangeType
 import com.quickgit.app.data.models.FileChange
 import com.quickgit.app.data.models.GitOpResult
+import com.quickgit.app.ui.adaptive.AdaptiveContent
 import com.quickgit.app.ui.components.PullToRefreshBox
 import com.quickgit.app.ui.theme.GitAmber
 import com.quickgit.app.ui.theme.GitGreen
@@ -62,7 +63,8 @@ fun RepoDetailScreen(
         snackbarHost = { SnackbarHost(snackbarHost) }
     ) { padding ->
         val status = state.status
-        Column(Modifier.padding(padding).fillMaxSize()) {
+        AdaptiveContent(Modifier.padding(padding)) {
+        Column(Modifier.fillMaxSize()) {
 
             // Back (left) + centered repo name / branch + History (right, icon only)
             Box(
@@ -490,6 +492,7 @@ fun RepoDetailScreen(
                 }
             }
         }
+        } // AdaptiveContent
     }
 }
 

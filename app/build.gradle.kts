@@ -85,6 +85,8 @@ dependencies {
     // Stay on BOM material3 — 1.5.x alpha requires AGP 8.6+/compileSdk 35–37.
     // M3E-style theming is implemented in Theme.kt (dynamic color, shapes, type).
     implementation("androidx.compose.material3:material3")
+    // Window size classes for tablets / Chromebooks / multi-window (Material3 adaptive)
+    implementation("androidx.compose.material3:material3-window-size-class")
     implementation("androidx.compose.material:material-icons-extended")
     // Avatar images (GitHub user/profile pictures)
     implementation("io.coil-kt:coil-compose:2.6.0")    // Pull-to-refresh (androidx.compose.material.pullrefresh) still lives in the M2 "material"
