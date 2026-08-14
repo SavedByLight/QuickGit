@@ -101,6 +101,32 @@ fun CloneScreen(
                 Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
             }
             Spacer(Modifier.height(20.dp))
+            Text("History depth", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "Shallow clones download less data and use less memory on mobile. Full history is needed for complete git log / blame.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(
+                    selected = state.depth == 1,
+                    onClick = { vm.setDepth(1) },
+                    label = { Text("Shallow (1)") }
+                )
+                FilterChip(
+                    selected = state.depth == 50,
+                    onClick = { vm.setDepth(50) },
+                    label = { Text("50 commits") }
+                )
+                FilterChip(
+                    selected = state.depth == 0,
+                    onClick = { vm.setDepth(0) },
+                    label = { Text("Full history") }
+                )
+            }
+            Spacer(Modifier.height(20.dp))
             Button(
                 onClick = { vm.clone(url.trim()) },
                 enabled = url.isNotBlank() && !state.inProgress,

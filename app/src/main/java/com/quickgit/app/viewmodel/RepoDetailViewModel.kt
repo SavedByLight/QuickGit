@@ -22,15 +22,25 @@ data class RepoDetailUiState(
     /** True only while a pull-to-refresh (or the initial load) is in flight — drives the refresh indicator. */
     val refreshing: Boolean = false,
     val commitMessage: String = "",
+    /** Suggested GitHub-style message from staged/unstaged changes. */
+    val suggestedCommitMessage: String = "",
     val lastResult: GitOpResult? = null,
     val statusMessage: String? = null,
+    /** Full multi-line status text shown on a dedicated status sheet (not a snackbar). */
+    val statusDetail: String? = null,
     val authorName: String = "",
     val authorEmail: String = "",
     /** Append Signed-off-by trailer on commit (git commit -s). */
     val signOff: Boolean = false,
+    /** Amend the previous commit (git commit --amend). */
+    val amend: Boolean = false,
     val remoteUrl: String? = null,
     /** True when origin is GitLab (gitlab.com or self-hosted) — use MR/CI/Issues labels. */
-    val isGitLabRemote: Boolean = false
+    val isGitLabRemote: Boolean = false,
+    val remotes: Map<String, String> = emptyMap(),
+    val pushRemote: String = "origin",
+    val pushLocalBranch: String = "",
+    val pushRemoteBranch: String = ""
 )
 
 class RepoDetailViewModel(
@@ -45,12 +55,30 @@ class RepoDetailViewModel(
 
     fun init(repoPath: String) {
         this.repoPath = repoPath
+        val draft = loadCommitDraft(repoPath)
         _state.value = _state.value.copy(
             authorName = repoManager.getCommitAuthorName(),
             authorEmail = repoManager.getCommitAuthorEmail(),
-            signOff = repoManager.isSignOffEnabled()
+            signOff = repoManager.isSignOffEnabled(),
+            commitMessage = draft
         )
         loadStatus(showRefreshing = true)
+    }
+
+    private fun draftPrefs() =
+        app.getSharedPreferences("quickgit_commit_drafts", android.content.Context.MODE_PRIVATE)
+
+    private fun draftKey(path: String) = "draft:" + path.hashCode()
+
+    private fun loadCommitDraft(path: String): String =
+        draftPrefs().getString(draftKey(path), "") ?: ""
+
+    private fun saveCommitDraft(path: String, message: String) {
+        draftPrefs().edit().putString(draftKey(path), message).apply()
+    }
+
+    private fun clearCommitDraft(path: String) {
+        draftPrefs().edit().remove(draftKey(path)).apply()
     }
 
     /** Pull-to-refresh entry point — reloads status and shows the refresh indicator while doing so. */
@@ -68,11 +96,21 @@ class RepoDetailViewModel(
                 }
             }
             val isGitLab = isGitLabRemoteUrl(remoteUrl)
+            val remotes = withContext(Dispatchers.IO) { repoManager.listRemotes(repoPath) }
+            val suggestion = withContext(Dispatchers.IO) { repoManager.suggestCommitMessage(repoPath) }
+            val branchName = branch ?: ""
             _state.value = _state.value.copy(
                 status = status,
-                branch = branch ?: "",
+                branch = branchName,
                 remoteUrl = remoteUrl,
                 isGitLabRemote = isGitLab,
+                remotes = remotes,
+                suggestedCommitMessage = suggestion,
+                pushLocalBranch = _state.value.pushLocalBranch.ifBlank { branchName },
+                pushRemoteBranch = _state.value.pushRemoteBranch.ifBlank { branchName },
+                pushRemote = _state.value.pushRemote.ifBlank {
+                    if (remotes.containsKey("origin")) "origin" else remotes.keys.firstOrNull() ?: "origin"
+                },
                 refreshing = if (showRefreshing) false else _state.value.refreshing
             )
         }
@@ -129,7 +167,45 @@ class RepoDetailViewModel(
         }
     }
 
-    fun setCommitMessage(msg: String) { _state.value = _state.value.copy(commitMessage = msg) }
+    fun setCommitMessage(msg: String) {
+        _state.value = _state.value.copy(commitMessage = msg)
+        if (::repoPath.isInitialized) saveCommitDraft(repoPath, msg)
+    }
+
+    fun applySuggestedCommitMessage() {
+        val s = _state.value.suggestedCommitMessage
+        if (s.isNotBlank()) setCommitMessage(s)
+    }
+
+    fun setAmend(enabled: Boolean) {
+        _state.value = _state.value.copy(amend = enabled)
+    }
+
+    fun setPushTarget(remote: String, localBranch: String, remoteBranch: String) {
+        _state.value = _state.value.copy(
+            pushRemote = remote,
+            pushLocalBranch = localBranch,
+            pushRemoteBranch = remoteBranch
+        )
+    }
+
+    fun addRemote(name: String, url: String) {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(busy = true)
+            val result = withContext(Dispatchers.IO) { repoManager.addOrSetRemote(repoPath, name, url) }
+            _state.value = _state.value.copy(busy = false, lastResult = result)
+            if (result is GitOpResult.Success) loadStatus(showRefreshing = false)
+        }
+    }
+
+    fun removeRemote(name: String) {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(busy = true)
+            val result = withContext(Dispatchers.IO) { repoManager.removeRemote(repoPath, name) }
+            _state.value = _state.value.copy(busy = false, lastResult = result)
+            if (result is GitOpResult.Success) loadStatus(showRefreshing = false)
+        }
+    }
 
     fun setSignOff(enabled: Boolean) {
         repoManager.setSignOffEnabled(enabled)
@@ -147,10 +223,21 @@ class RepoDetailViewModel(
                     msg,
                     _state.value.authorName,
                     _state.value.authorEmail,
-                    signOff = _state.value.signOff
+                    signOff = _state.value.signOff,
+                    amend = _state.value.amend
                 )
             }
-            _state.value = _state.value.copy(busy = false, lastResult = result, commitMessage = "")
+            if (result is GitOpResult.Success) {
+                clearCommitDraft(repoPath)
+                _state.value = _state.value.copy(
+                    busy = false,
+                    lastResult = result,
+                    commitMessage = "",
+                    amend = false
+                )
+            } else {
+                _state.value = _state.value.copy(busy = false, lastResult = result)
+            }
             loadStatus(showRefreshing = false)
         }
     }
@@ -159,8 +246,18 @@ class RepoDetailViewModel(
         viewModelScope.launch {
             _state.value = _state.value.copy(busy = true)
             notifier.start(GitProgressNotifier.Kind.PUSH, "Pushing…", "Starting…")
+            val remote = _state.value.pushRemote.ifBlank { "origin" }
+            val lb = _state.value.pushLocalBranch.ifBlank { null }
+            val rb = _state.value.pushRemoteBranch.ifBlank { null }
             val result = withContext(Dispatchers.IO) {
-                repoManager.push(repoPath, force = force, forceWithLease = forceWithLease) { progress ->
+                repoManager.push(
+                    repoPath,
+                    force = force,
+                    forceWithLease = forceWithLease,
+                    remote = remote,
+                    localBranch = lb,
+                    remoteBranch = rb
+                ) { progress ->
                     val percent = parsePercent(progress)
                     notifier.update(GitProgressNotifier.Kind.PUSH, progress, percent)
                 }
@@ -267,7 +364,7 @@ class RepoDetailViewModel(
                     e.message ?: "Status failed"
                 }
             }
-            _state.value = _state.value.copy(busy = false, statusMessage = msg, lastResult = null)
+            _state.value = _state.value.copy(busy = false, statusDetail = msg, lastResult = null)
         }
     }
 
@@ -277,21 +374,12 @@ class RepoDetailViewModel(
             _state.value = _state.value.copy(busy = true)
             val msg = withContext(Dispatchers.IO) {
                 try {
-                    val git = repoManager.gitStatusSummary(repoPath)
-                    val (lfs, _) = repoManager.lfsStatus(repoPath)
-                    buildString {
-                        append(git)
-                        append("\n\n— LFS —\n")
-                        append(lfs?.message ?: "LFS status unavailable")
-                        lfs?.trackedPatterns?.takeIf { it.isNotEmpty() }?.let {
-                            append("\nPatterns: ${it.joinToString()}")
-                        }
-                    }
+                    repoManager.gitStatusSummary(repoPath)
                 } catch (e: Exception) {
                     e.message ?: "Status failed"
                 }
             }
-            _state.value = _state.value.copy(busy = false, statusMessage = msg, lastResult = null)
+            _state.value = _state.value.copy(busy = false, statusDetail = msg, lastResult = null)
         }
     }
 
@@ -355,7 +443,9 @@ class RepoDetailViewModel(
         }
     }
 
-    fun consumeResult() { _state.value = _state.value.copy(lastResult = null, statusMessage = null) }
+    fun consumeResult() { _state.value = _state.value.copy(lastResult = null, statusMessage = null, statusDetail = null) }
+
+    fun dismissStatusDetail() { _state.value = _state.value.copy(statusDetail = null) }
 
     private fun isGitLabRemoteUrl(url: String?): Boolean {
         if (url.isNullOrBlank()) return false
