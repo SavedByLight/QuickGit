@@ -2,6 +2,10 @@ package com.quickgit.app.ui.screens
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
@@ -16,6 +20,7 @@ import androidx.compose.ui.unit.dp
 import com.quickgit.app.data.models.ChangeType
 import com.quickgit.app.data.models.FileChange
 import com.quickgit.app.data.models.GitOpResult
+import com.quickgit.app.ui.adaptive.AdaptiveContent
 import com.quickgit.app.ui.components.PullToRefreshBox
 import com.quickgit.app.ui.theme.GitAmber
 import com.quickgit.app.ui.theme.GitGreen
@@ -62,7 +67,8 @@ fun RepoDetailScreen(
         snackbarHost = { SnackbarHost(snackbarHost) }
     ) { padding ->
         val status = state.status
-        Column(Modifier.padding(padding).fillMaxSize()) {
+        AdaptiveContent(Modifier.padding(padding)) {
+        Column(Modifier.fillMaxSize()) {
 
             // Back (left) + centered repo name / branch + History (right, icon only)
             Box(
@@ -282,6 +288,43 @@ fun RepoDetailScreen(
                 }
             }
 
+            // Full status page (colorized) instead of a short snackbar
+            state.statusDetail?.let { detail ->
+                AlertDialog(
+                    onDismissRequest = { vm.dismissStatusDetail() },
+                    title = { Text("Git status") },
+                    text = {
+                        SelectionContainer {
+                            Column(Modifier.verticalScroll(rememberScrollState()).heightIn(max = 480.dp)) {
+                                detail.lines().forEach { line ->
+                                    val color = when {
+                                        line.startsWith("  new file:") || line.trimStart().startsWith("new file") -> GitGreen
+                                        line.contains("modified:") -> GitAmber
+                                        line.contains("deleted:") || line.contains("both modified") -> GitRed
+                                        line.startsWith("  ") && line.trim().isNotEmpty() &&
+                                            !line.contains(":") -> Color.Gray // untracked
+                                        line.startsWith("Changes to be committed") -> GitGreen
+                                        line.startsWith("Changes not staged") -> GitAmber
+                                        line.startsWith("Untracked") -> Color.Gray
+                                        line.startsWith("Unmerged") -> GitRed
+                                        else -> MaterialTheme.colorScheme.onSurface
+                                    }
+                                    Text(
+                                        line.ifEmpty { " " },
+                                        color = color,
+                                        fontFamily = FontFamily.Monospace,
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
+                                }
+                            }
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(onClick = { vm.dismissStatusDetail() }) { Text("Close") }
+                    }
+                )
+            }
+
             if (showStatusOptions) {
                 androidx.compose.ui.window.Dialog(onDismissRequest = { showStatusOptions = false }) {
                     Surface(
@@ -479,17 +522,22 @@ fun RepoDetailScreen(
                         CommitBar(
                             message = state.commitMessage,
                             onMessageChange = vm::setCommitMessage,
+                            suggestedMessage = state.suggestedCommitMessage,
+                            onUseSuggested = vm::applySuggestedCommitMessage,
                             signOff = state.signOff,
                             onSignOffChange = vm::setSignOff,
+                            amend = state.amend,
+                            onAmendChange = vm::setAmend,
                             authorName = state.authorName,
                             authorEmail = state.authorEmail,
-                            enabled = status.staged.isNotEmpty() && !state.busy,
+                            enabled = (status.staged.isNotEmpty() || state.amend) && !state.busy,
                             onCommit = vm::commit
                         )
                     }
                 }
             }
         }
+        } // AdaptiveContent
     }
 }
 
@@ -605,14 +653,23 @@ private fun ChangeType.color() = when (this) {
 private fun CommitBar(
     message: String,
     onMessageChange: (String) -> Unit,
+    suggestedMessage: String = "",
+    onUseSuggested: () -> Unit = {},
     signOff: Boolean,
     onSignOffChange: (Boolean) -> Unit,
+    amend: Boolean = false,
+    onAmendChange: (Boolean) -> Unit = {},
     authorName: String,
     authorEmail: String,
     enabled: Boolean,
     onCommit: () -> Unit
 ) {
-    Surface(shadowElevation = 8.dp, modifier = Modifier.fillMaxWidth()) {
+    Surface(
+        shadowElevation = 8.dp,
+        modifier = Modifier
+            .fillMaxWidth()
+            .imePadding()
+    ) {
         Column(Modifier.padding(16.dp)) {
             OutlinedTextField(
                 value = message,
@@ -622,15 +679,27 @@ private fun CommitBar(
                 minLines = 2,
                 maxLines = 4
             )
+            if (suggestedMessage.isNotBlank() && message.isBlank()) {
+                TextButton(
+                    onClick = onUseSuggested,
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                ) {
+                    Text("Use suggested: $suggestedMessage", maxLines = 1)
+                }
+            } else if (suggestedMessage.isNotBlank()) {
+                TextButton(
+                    onClick = onUseSuggested,
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                ) {
+                    Text("Replace with suggested message")
+                }
+            }
             Spacer(Modifier.height(4.dp))
             Row(
                 Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Checkbox(
-                    checked = signOff,
-                    onCheckedChange = onSignOffChange
-                )
+                Checkbox(checked = signOff, onCheckedChange = onSignOffChange)
                 Column(Modifier.weight(1f).clickableSimple { onSignOffChange(!signOff) }) {
                     Text("Sign-off", style = MaterialTheme.typography.bodyMedium)
                     Text(
@@ -641,9 +710,34 @@ private fun CommitBar(
                     )
                 }
             }
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Checkbox(checked = amend, onCheckedChange = onAmendChange)
+                Column(Modifier.weight(1f).clickableSimple { onAmendChange(!amend) }) {
+                    Text("Amend previous commit", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "Rewrites the last commit (git commit --amend)",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1
+                    )
+                }
+            }
             Spacer(Modifier.height(8.dp))
-            Button(onClick = onCommit, enabled = enabled && message.isNotBlank(), modifier = Modifier.fillMaxWidth()) {
-                Text(if (signOff) "Commit (signed-off)" else "Commit to current branch")
+            Button(
+                onClick = onCommit,
+                enabled = enabled && message.isNotBlank(),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                val label = when {
+                    amend && signOff -> "Amend (signed-off)"
+                    amend -> "Amend previous commit"
+                    signOff -> "Commit (signed-off)"
+                    else -> "Commit to current branch"
+                }
+                Text(label)
             }
         }
     }

@@ -10,11 +10,15 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
+import androidx.compose.material3.windowsizeclass.ExperimentalMaterial3WindowSizeClassApi
+import androidx.compose.material3.windowsizeclass.calculateWindowSizeClass
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
 import com.quickgit.app.data.AppLog
 import com.quickgit.app.data.GitProgressNotifier
 import com.quickgit.app.navigation.QuickGitNavGraph
+import com.quickgit.app.ui.adaptive.LocalWindowSizeClass
 import com.quickgit.app.ui.components.AutoUpdateHost
 import com.quickgit.app.ui.theme.QuickGitTheme
 
@@ -32,16 +36,22 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    @OptIn(ExperimentalMaterial3WindowSizeClassApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         GitProgressNotifier.ensureChannel(this)
         requestPermissionsIfNeeded()
         setContent {
+            // Recalculated on every recomposition when the window is resized
+            // (tablets, Chromebook freeform, multi-window, foldables).
+            val windowSizeClass = calculateWindowSizeClass(this)
             QuickGitTheme {
-                Surface(modifier = Modifier.fillMaxSize()) {
-                    AutoUpdateHost {
-                        QuickGitNavGraph()
+                CompositionLocalProvider(LocalWindowSizeClass provides windowSizeClass) {
+                    Surface(modifier = Modifier.fillMaxSize()) {
+                        AutoUpdateHost {
+                            QuickGitNavGraph()
+                        }
                     }
                 }
             }

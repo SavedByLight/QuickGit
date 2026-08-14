@@ -179,6 +179,11 @@ private fun CodeEditor(
 
     Row(modifier.background(MaterialTheme.colorScheme.surface)) {
         // Line-number gutter — fixed width, scrolls with content vertically
+        // Gutter and editor share the same vertical scroll + identical lineHeight so
+        // line numbers stay aligned with the corresponding code lines.
+        val lineHeightDp = with(androidx.compose.ui.platform.LocalDensity.current) {
+            20.sp.toDp()
+        }
         Column(
             Modifier
                 .width(gutterWidth)
@@ -191,8 +196,15 @@ private fun CodeEditor(
             for (i in 1..lineCount) {
                 Text(
                     text = i.toString(),
-                    style = codeStyle.copy(color = gutterFg, fontSize = 11.sp),
-                    modifier = Modifier.padding(vertical = 0.dp)
+                    style = codeStyle.copy(
+                        color = gutterFg,
+                        fontSize = 11.sp,
+                        lineHeight = 20.sp
+                    ),
+                    modifier = Modifier
+                        .height(lineHeightDp)
+                        .wrapContentHeight(align = Alignment.CenterVertically),
+                    maxLines = 1
                 )
             }
         }
