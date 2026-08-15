@@ -54,6 +54,10 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+        // Backports InputStream#readNBytes and other JDK 9+ java.io/java.util APIs to
+        // devices below API 33 (e.g. Amazon Fire tablets, which top out around API 30) —
+        // both JGit's SilentFileInputStream and RepoManager.readTextFile rely on it.
+        isCoreLibraryDesugaringEnabled = true
     }
     kotlinOptions {
         jvmTarget = "17"
@@ -75,6 +79,7 @@ android {
 }
 
 dependencies {
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.4")
     implementation("androidx.activity:activity-compose:1.9.1")
