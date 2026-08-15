@@ -103,10 +103,19 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 
     // JGit core + pure-Java (Apache MINA) SSH transport — works on Android, no native libs
-    implementation("org.eclipse.jgit:org.eclipse.jgit:6.10.0.202406032230-r")
-    implementation("org.eclipse.jgit:org.eclipse.jgit.ssh.apache:6.10.0.202406032230-r")
+    //
+    // Pinned to the last patched 5.x release (not 6.x+) because JGit 6.0 raised its
+    // baseline to Java 11 and started calling InputStream#readNBytes internally
+    // (SilentFileInputStream / IO.readFully) — a method Android didn't add to its
+    // platform InputStream until API 33. Below that (e.g. Amazon Fire tablets, which
+    // top out around API 30 even on current models), any repo config load crashes with
+    // NoSuchMethodError. It's not something app code or core library desugaring can
+    // patch — the call is inside JGit's own compiled bytecode. 5.13.3 backports the
+    // CVE-2023-4759 symlink RCE fix, so it's still a maintained, secure release.
+    implementation("org.eclipse.jgit:org.eclipse.jgit:5.13.3.202401111512-r")
+    implementation("org.eclipse.jgit:org.eclipse.jgit.ssh.apache:5.13.3.202401111512-r")
     // OpenPGP commit signing (Bouncy Castle backend)
-    implementation("org.eclipse.jgit:org.eclipse.jgit.gpg.bc:6.10.0.202406032230-r")
+    implementation("org.eclipse.jgit:org.eclipse.jgit.gpg.bc:5.13.3.202401111512-r")
 
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
