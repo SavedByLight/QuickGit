@@ -1498,6 +1498,33 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         }
     }
 
+    /** Fetches all refs from the named remote, updating its remote-tracking branches. */
+    fun fetchRemote(path: String, remoteName: String, onProgress: (String) -> Unit = {}): GitOpResult {
+        AppLog.i(TAG, "fetchRemote: $remoteName")
+        return try {
+            openGit(path).use { git ->
+                val remoteUrl = git.repository.config.getString("remote", remoteName, "url") ?: ""
+                onProgress("Fetching $remoteName…")
+                val fetchCmd = git.fetch()
+                    .setRemote(remoteName)
+                    .setProgressMonitor(TextProgress(onProgress))
+                applyTransportConfig(fetchCmd, remoteUrl)
+                fetchCmd.call()
+            }
+            AppLog.i(TAG, "fetchRemote succeeded: $remoteName")
+            GitOpResult.Success
+        } catch (e: org.eclipse.jgit.api.errors.TransportException) {
+            AppLog.e(TAG, "fetchRemote failed (transport): $remoteName", e)
+            if (isAuthFailure(e)) {
+                val url = openGit(path).use { it.repository.config.getString("remote", remoteName, "url") } ?: ""
+                GitOpResult.AuthRequired(url)
+            } else GitOpResult.Error(e.message ?: "Fetch failed", e)
+        } catch (e: Exception) {
+            AppLog.e(TAG, "fetchRemote failed: $remoteName", e)
+            GitOpResult.Error(e.message ?: "Fetch failed", e)
+        }
+    }
+
     // ---------------- Branches ----------------
 
     fun listBranches(path: String): List<BranchInfo> {
@@ -1615,9 +1642,15 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
 
     // ---------------- History ----------------
 
-    fun getLog(path: String, maxCount: Int = 100): List<CommitInfo> {
+    fun getLog(path: String, maxCount: Int = 100, startRef: String? = null): List<CommitInfo> {
         openGit(path).use { git ->
-            return git.log().setMaxCount(maxCount).call().map { it.toCommitInfo() }
+            val log = git.log().setMaxCount(maxCount)
+            if (startRef != null) {
+                val start = git.repository.resolve(startRef)
+                    ?: throw IllegalArgumentException("Ref not found: $startRef")
+                log.add(start)
+            }
+            return log.call().map { it.toCommitInfo() }
         }
     }
 
@@ -1672,6 +1705,46 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     } catch (e: Exception) {
         AppLog.e(TAG, "revert failed: $commitHash", e)
         GitOpResult.Error(e.message ?: "Revert failed", e)
+    }
+
+    /**
+     * Cherry-picks a single commit onto the current branch. Surfaces a [GitOpResult.Conflict]
+     * with the affected paths if the cherry-pick cannot be applied cleanly.
+     */
+    fun cherryPick(path: String, commitHash: String): GitOpResult = try {
+        AppLog.i(TAG, "cherryPick: $commitHash")
+        openGit(path).use { git ->
+            val repository = git.repository
+            val objectId = repository.resolve(commitHash)
+                ?: return GitOpResult.Error("Commit not found: $commitHash")
+
+            RevWalk(repository).use { walk ->
+                val commit = walk.parseCommit(objectId)
+                val result = git.cherryPick().include(commit).call()
+
+                when (result.status) {
+                    org.eclipse.jgit.api.CherryPickResult.CherryPickStatus.OK -> {
+                        AppLog.i(TAG, "cherryPick succeeded: $commitHash")
+                        GitOpResult.Success
+                    }
+                    org.eclipse.jgit.api.CherryPickResult.CherryPickStatus.CONFLICTING -> {
+                        val conflicts = git.status().call().conflicting.toList().sorted()
+                        AppLog.w(TAG, "cherryPick conflict: $commitHash, ${conflicts.size} path(s)")
+                        GitOpResult.Conflict(conflicts)
+                    }
+                    else -> {
+                        AppLog.w(TAG, "cherryPick failed: $commitHash, status=${result.status}")
+                        GitOpResult.Error("Could not cherry-pick commit ${commitHash.take(7)}")
+                    }
+                }
+            }
+        }
+    } catch (e: GitAPIException) {
+        AppLog.e(TAG, "cherryPick failed: $commitHash", e)
+        GitOpResult.Error(e.message ?: "Cherry-pick failed", e)
+    } catch (e: Exception) {
+        AppLog.e(TAG, "cherryPick failed: $commitHash", e)
+        GitOpResult.Error(e.message ?: "Cherry-pick failed", e)
     }
 
     // ---------------- Diff ----------------
@@ -2118,13 +2191,13 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     }
 
     private class TextProgress(val onProgress: (String) -> Unit) : org.eclipse.jgit.lib.BatchingProgressMonitor() {
-        override fun onUpdate(taskName: String?, workCurr: Int, duration: java.time.Duration?) {
+        override fun onUpdate(taskName: String?, workCurr: Int) {
             onProgress("$taskName: $workCurr")
         }
-        override fun onUpdate(taskName: String?, workCurr: Int, workTotal: Int, percentDone: Int, duration: java.time.Duration?) {
+        override fun onUpdate(taskName: String?, workCurr: Int, workTotal: Int, percentDone: Int) {
             onProgress("$taskName: $percentDone%")
         }
-        override fun onEndTask(taskName: String?, workCurr: Int, duration: java.time.Duration?) {}
-        override fun onEndTask(taskName: String?, workCurr: Int, workTotal: Int, percentDone: Int, duration: java.time.Duration?) {}
+        override fun onEndTask(taskName: String?, workCurr: Int) {}
+        override fun onEndTask(taskName: String?, workCurr: Int, workTotal: Int, percentDone: Int) {}
     }
 }
