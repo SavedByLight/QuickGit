@@ -519,7 +519,10 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                             .setNoCheckout(true)
                             .setProgressMonitor(TextProgress(onProgress))
                         if (depth > 0) {
-                            cmd.setDepth(depth)
+                            // NOTE: CloneCommand.setDepth() doesn't exist until JGit 6.3; this
+                            // project is pinned to 5.13.3, which has no shallow-clone support in
+                            // the fluent API for clone or fetch. Falling back to a full clone.
+                            AppLog.i(TAG, "shallow clone requested (depth=$depth) but unsupported on JGit 5.13.3 — doing full clone")
                         }
                         applyTransportConfig(cmd, cloneUrl)
                         cmd.call()
