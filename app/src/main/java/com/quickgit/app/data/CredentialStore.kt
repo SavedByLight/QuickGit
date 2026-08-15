@@ -1,22 +1,19 @@
 package com.quickgit.app.data
 
 import android.content.Context
+import android.net.Uri
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKeys
-import com.google.crypto.tink.Aead
-import com.google.crypto.tink.KeysetHandle
-import com.google.crypto.tink.integration.android.AndroidKeysetManager
-import java.io.File
 
 /**
- * All sensitive data (GPG secret key, GitHub token, commit draft, etc.)
- * is stored using Tink + Android Keystore (no plaintext backup).
- * The master key lives only inside the Android Keystore.
+ * All sensitive data (HTTPS tokens per host, SSH key + passphrase, GPG secret key +
+ * passphrase, commit drafts, etc.) is stored in an [EncryptedSharedPreferences] instance
+ * whose master key lives only inside the Android Keystore.
  */
 class CredentialStore private constructor(private val context: Context) {
 
     companion object {
-        private const val MASTER_KEY_ALIAS = "QuickGitMasterKeyV2"
+        private const val PREFS_NAME = "tink_keyset_pref"
 
         private val masterKey = MasterKeys.getOrCreate(
             MasterKeys.AES256_GCM_SPEC
@@ -31,107 +28,119 @@ class CredentialStore private constructor(private val context: Context) {
             }
         }
 
+        private fun prefsFor(context: Context) = EncryptedSharedPreferences.create(
+            PREFS_NAME,
+            masterKey,
+            context,
+            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+        )
+
         /** Delete everything (for debug / data wipe) */
         fun clear(context: Context) {
-            val prefs = EncryptedSharedPreferences.create(
-                "tink_keyset_pref",
-                masterKey,
-                context,
-                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-            )
-            prefs.edit().clear().apply()
+            prefsFor(context).edit().clear().apply()
             INSTANCE = null
+        }
+
+        /**
+         * Extracts a normalized host (e.g. "github.com") from a git remote URL, whether it's
+         * an https:// URL, an ssh:// URL, or scp-like syntax (git@host:owner/repo.git).
+         */
+        fun hostOf(url: String): String {
+            val trimmed = url.trim()
+            val host = try {
+                when {
+                    trimmed.startsWith("http://") || trimmed.startsWith("https://") ||
+                        trimmed.startsWith("ssh://") -> Uri.parse(trimmed).host
+                    trimmed.contains("@") && trimmed.contains(":") ->
+                        trimmed.substringAfter("@").substringBefore(":").substringBefore("/")
+                    else -> null
+                }
+            } catch (e: Exception) {
+                null
+            } ?: trimmed
+            return host.lowercase()
         }
     }
 
-    // ==================== GPG ====================
-    fun getGpgSecretKey(): String? {
-        val keysetHandle = AndroidKeysetManager
-            .withKeysetUri("android-keystore://$MASTER_KEY_ALIAS")
-            .build()
-            .keysetHandle
+    private val prefs get() = prefsFor(context)
 
-        val aead = keysetHandle.getPrimitive(Aead::class.java)
-        return aead.decrypt("gpg_secret_key".toByteArray(), null)
-            ?.decodeToString()
+    // ==================== HTTPS credentials (per host) ====================
+    fun getHttpsUsername(host: String): String? =
+        prefs.getString("https_user_${host.lowercase()}", null)
+
+    fun getHttpsToken(host: String): String? =
+        prefs.getString("https_token_${host.lowercase()}", null)
+
+    fun saveHttpsToken(host: String, username: String, token: String) {
+        prefs.edit()
+            .putString("https_user_${host.lowercase()}", username)
+            .putString("https_token_${host.lowercase()}", token)
+            .apply()
     }
 
-    fun saveGpgSecretKey(key: String) {
-        val keysetHandle = AndroidKeysetManager
-            .withKeysetUri("android-keystore://$MASTER_KEY_ALIAS")
-            .build()
-            .keysetHandle
-
-        val aead = keysetHandle.getPrimitive(Aead::class.java)
-        aead.encrypt(key.toByteArray(), null)
-
-        // Persist keyset (required by Tink)
-        val prefs = EncryptedSharedPreferences.create(
-            "tink_keyset_pref",
-            masterKey,
-            context,
-            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-        )
-        prefs.edit().putString("gpg_secret_key", key).apply()
+    fun clearHttpsToken(host: String) {
+        prefs.edit()
+            .remove("https_user_${host.lowercase()}")
+            .remove("https_token_${host.lowercase()}")
+            .apply()
     }
 
-    // ==================== GitHub token ====================
-    fun getGitHubToken(): String? {
-        val prefs = EncryptedSharedPreferences.create(
-            "tink_keyset_pref",
-            masterKey,
-            context,
-            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-        )
-        return prefs.getString("github_token", null)
+    // ==================== SSH key ====================
+    fun hasSshKey(): Boolean = !prefs.getString("ssh_private_key", null).isNullOrBlank()
+
+    fun getSshPrivateKey(): String? = prefs.getString("ssh_private_key", null)
+
+    fun getSshPassphrase(): String? = prefs.getString("ssh_passphrase", null)
+
+    fun saveSshKey(key: String, passphrase: String?) {
+        val editor = prefs.edit().putString("ssh_private_key", key)
+        if (passphrase.isNullOrEmpty()) editor.remove("ssh_passphrase") else editor.putString("ssh_passphrase", passphrase)
+        editor.apply()
     }
 
-    fun saveGitHubToken(token: String) {
-        val prefs = EncryptedSharedPreferences.create(
-            "tink_keyset_pref",
-            masterKey,
-            context,
-            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-        )
-        prefs.edit().putString("github_token", token).apply()
+    fun saveSshPassphrase(passphrase: String?) {
+        val editor = prefs.edit()
+        if (passphrase.isNullOrEmpty()) editor.remove("ssh_passphrase") else editor.putString("ssh_passphrase", passphrase)
+        editor.apply()
+    }
+
+    fun clearSshKey() {
+        prefs.edit().remove("ssh_private_key").remove("ssh_passphrase").apply()
+    }
+
+    // ==================== GPG key ====================
+    fun hasGpgKey(): Boolean = !prefs.getString("gpg_secret_key", null).isNullOrBlank()
+
+    fun getGpgPrivateKey(): String? = prefs.getString("gpg_secret_key", null)
+
+    fun getGpgPassphrase(): String? = prefs.getString("gpg_passphrase", null)
+
+    fun saveGpgKey(key: String, passphrase: String?) {
+        val editor = prefs.edit().putString("gpg_secret_key", key)
+        if (passphrase.isNullOrEmpty()) editor.remove("gpg_passphrase") else editor.putString("gpg_passphrase", passphrase)
+        editor.apply()
+    }
+
+    fun saveGpgPassphrase(passphrase: String?) {
+        val editor = prefs.edit()
+        if (passphrase.isNullOrEmpty()) editor.remove("gpg_passphrase") else editor.putString("gpg_passphrase", passphrase)
+        editor.apply()
+    }
+
+    fun clearGpgKey() {
+        prefs.edit().remove("gpg_secret_key").remove("gpg_passphrase").apply()
     }
 
     // ==================== Commit draft (per-repo) ====================
-    fun getCommitDraft(repoId: String): String? {
-        val prefs = EncryptedSharedPreferences.create(
-            "tink_keyset_pref",
-            masterKey,
-            context,
-            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-        )
-        return prefs.getString("draft_$repoId", null)
-    }
+    fun getCommitDraft(repoId: String): String? = prefs.getString("draft_$repoId", null)
 
     fun saveCommitDraft(repoId: String, message: String) {
-        val prefs = EncryptedSharedPreferences.create(
-            "tink_keyset_pref",
-            masterKey,
-            context,
-            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-        )
         prefs.edit().putString("draft_$repoId", message).apply()
     }
 
     // ==================== Clear ====================
     fun clear() {
-        val prefs = EncryptedSharedPreferences.create(
-            "tink_keyset_pref",
-            masterKey,
-            context,
-            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-        )
         prefs.edit().clear().apply()
         INSTANCE = null
     }
