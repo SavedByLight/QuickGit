@@ -113,7 +113,15 @@ dependencies {
     // patch — the call is inside JGit's own compiled bytecode. 5.13.3 backports the
     // CVE-2023-4759 symlink RCE fix, so it's still a maintained, secure release.
     implementation("org.eclipse.jgit:org.eclipse.jgit:5.13.3.202401111512-r")
-    implementation("org.eclipse.jgit:org.eclipse.jgit.ssh.apache:5.13.3.202401111512-r")
+    // org.eclipse.jgit.ssh.apache's POM pulls in BOTH the individual Apache MINA sshd
+    // jars (sshd-core/sshd-common/sshd-sftp) AND sshd-osgi, which repackages those same
+    // classes into one bundle for OSGi environments. On a plain classpath (not OSGi) that's
+    // a straight duplicate — Android's checkReleaseDuplicateClasses task fails on classes
+    // like org.apache.sshd.server.session.ServerSession existing in both jars. We don't
+    // need the OSGi bundle here, so drop it and keep the individual sshd artifacts.
+    implementation("org.eclipse.jgit:org.eclipse.jgit.ssh.apache:5.13.3.202401111512-r") {
+        exclude(group = "org.apache.sshd", module = "sshd-osgi")
+    }
     // OpenPGP commit signing (Bouncy Castle backend)
     implementation("org.eclipse.jgit:org.eclipse.jgit.gpg.bc:5.13.3.202401111512-r")
 

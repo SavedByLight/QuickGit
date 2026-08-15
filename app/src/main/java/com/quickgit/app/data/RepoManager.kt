@@ -471,16 +471,18 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                         val cmd = Git.cloneRepository()
                             .setURI(cloneUrl)
                             .setDirectory(destination)
-                            // Mobile: single branch; optional shallow depth avoids huge pack inflation
-                            // that triggers "Inflater has been closed" on Android heaps.
-                            // depth <= 0 means full history (no --depth).
+                            // Mobile: single branch to avoid pulling every ref's history.
+                            //
+                            // NOTE: CloneCommand.setDepth() would let us cap pack size further
+                            // (avoiding "Inflater has been closed" on huge repos), but it wasn't
+                            // added until JGit 6.3 — we're pinned to 5.13.3 for Android API 26
+                            // compat (see the dependency comment above), so it isn't available
+                            // here. [depth] is accepted for a future JGit upgrade but currently
+                            // has no effect; every clone is full-history.
                             .setCloneAllBranches(false)
                             .setCloneSubmodules(false)
                             .setNoCheckout(true)
                             .setProgressMonitor(TextProgress(onProgress))
-                        if (depth > 0) {
-                            cmd.setDepth(depth)
-                        }
                         applyTransportConfig(cmd, cloneUrl)
                         cmd.call()
                     }
@@ -2162,14 +2164,18 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
             msg.contains("no CredentialsProvider", true)
     }
 
+    // NOTE: BatchingProgressMonitor's onUpdate/onEndTask overloads that take a
+    // java.time.Duration were only added in JGit 6.3+. We're pinned to 5.13.3
+    // (see the dependency comment above), whose abstract members are still the
+    // plain (taskName, workCurr[, workTotal, percentDone]) signatures below.
     private class TextProgress(val onProgress: (String) -> Unit) : org.eclipse.jgit.lib.BatchingProgressMonitor() {
-        override fun onUpdate(taskName: String?, workCurr: Int, duration: java.time.Duration?) {
+        override fun onUpdate(taskName: String?, workCurr: Int) {
             onProgress("$taskName: $workCurr")
         }
-        override fun onUpdate(taskName: String?, workCurr: Int, workTotal: Int, percentDone: Int, duration: java.time.Duration?) {
+        override fun onUpdate(taskName: String?, workCurr: Int, workTotal: Int, percentDone: Int) {
             onProgress("$taskName: $percentDone%")
         }
-        override fun onEndTask(taskName: String?, workCurr: Int, duration: java.time.Duration?) {}
-        override fun onEndTask(taskName: String?, workCurr: Int, workTotal: Int, percentDone: Int, duration: java.time.Duration?) {}
+        override fun onEndTask(taskName: String?, workCurr: Int) {}
+        override fun onEndTask(taskName: String?, workCurr: Int, workTotal: Int, percentDone: Int) {}
     }
 }
