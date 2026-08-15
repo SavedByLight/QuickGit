@@ -6,28 +6,22 @@ import androidx.security.crypto.MasterKeys
 import com.google.crypto.tink.Aead
 import com.google.crypto.tink.KeysetHandle
 import com.google.crypto.tink.integration.android.AndroidKeysetManager
-import com.google.crypto.tink.aead.AeadKeyTemplates
 import java.io.File
-import java.security.GeneralSecurityException
 
 /**
- * Stores all sensitive data (GPG secret key, GitHub token, commit draft, etc.)
- * using Google Tink + Android Keystore (no plaintext backup).
- *
- * On first run it creates a master key in the Android Keystore and an encrypted
- * keyset. The master key is NEVER backed up to SharedPreferences.
+ * All sensitive data (GPG secret key, GitHub token, commit draft, etc.)
+ * is stored using Tink + Android Keystore (no plaintext backup).
+ * The master key lives only inside the Android Keystore.
  */
 class CredentialStore private constructor(private val context: Context) {
 
     companion object {
         private const val MASTER_KEY_ALIAS = "QuickGitMasterKeyV2"
 
-        // Tink master key (we use it only for AndroidKeysetManager)
         private val masterKey = MasterKeys.getOrCreate(
             MasterKeys.AES256_GCM_SPEC
         )
 
-        /** Singleton instance (per application context) */
         @Volatile
         private var INSTANCE: CredentialStore? = null
 
@@ -37,7 +31,7 @@ class CredentialStore private constructor(private val context: Context) {
             }
         }
 
-        /** Delete everything (including the Tink keyset) – use only for debug / data wipe */
+        /** Delete everything (for debug / data wipe) */
         fun clear(context: Context) {
             val prefs = EncryptedSharedPreferences.create(
                 "tink_keyset_pref",
@@ -51,11 +45,7 @@ class CredentialStore private constructor(private val context: Context) {
         }
     }
 
-    // ------------------------------------------------------------------
-    // Public API (same as before, now backed by Android Keystore)
-    // ------------------------------------------------------------------
-
-    /** Read the GPG secret key (armored) from disk */
+    // ==================== GPG ====================
     fun getGpgSecretKey(): String? {
         val keysetHandle = AndroidKeysetManager
             .withKeysetUri("android-keystore://$MASTER_KEY_ALIAS")
@@ -67,7 +57,6 @@ class CredentialStore private constructor(private val context: Context) {
             ?.decodeToString()
     }
 
-    /** Save a new GPG secret key (armored) */
     fun saveGpgSecretKey(key: String) {
         val keysetHandle = AndroidKeysetManager
             .withKeysetUri("android-keystore://$MASTER_KEY_ALIAS")
@@ -77,7 +66,7 @@ class CredentialStore private constructor(private val context: Context) {
         val aead = keysetHandle.getPrimitive(Aead::class.java)
         aead.encrypt(key.toByteArray(), null)
 
-        // Persist the updated keyset to SharedPreferences (required for Tink)
+        // Persist keyset (required by Tink)
         val prefs = EncryptedSharedPreferences.create(
             "tink_keyset_pref",
             masterKey,
@@ -88,10 +77,7 @@ class CredentialStore private constructor(private val context: Context) {
         prefs.edit().putString("gpg_secret_key", key).apply()
     }
 
-    // ------------------------------------------------------------------
-    // GitHub token (same pattern)
-    // ------------------------------------------------------------------
-
+    // ==================== GitHub token ====================
     fun getGitHubToken(): String? {
         val prefs = EncryptedSharedPreferences.create(
             "tink_keyset_pref",
@@ -114,10 +100,7 @@ class CredentialStore private constructor(private val context: Context) {
         prefs.edit().putString("github_token", token).apply()
     }
 
-    // ------------------------------------------------------------------
-    // Commit draft (per-repo)
-    // ------------------------------------------------------------------
-
+    // ==================== Commit draft (per-repo) ====================
     fun getCommitDraft(repoId: String): String? {
         val prefs = EncryptedSharedPreferences.create(
             "tink_keyset_pref",
@@ -140,10 +123,7 @@ class CredentialStore private constructor(private val context: Context) {
         prefs.edit().putString("draft_$repoId", message).apply()
     }
 
-    // ------------------------------------------------------------------
-    // Clear (for testing / debug)
-    // ------------------------------------------------------------------
-
+    // ==================== Clear ====================
     fun clear() {
         val prefs = EncryptedSharedPreferences.create(
             "tink_keyset_pref",
