@@ -517,7 +517,10 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
      * on the same volume); falls back to a recursive copy + delete for the common case of moving
      * from app-private storage to public/shared storage, which are different volumes. The copy
      * step is plain file writes (no lock-file atomic renames), so it's safe on flaky
-     * scoped-storage stacks even though a live JGit clone there is not.
+     * scoped-storage stacks even though a live JGit clone there is not — but file creation itself
+     * can still spuriously fail there (some devices' scoped-storage FUSE/MediaProvider layer has
+     * known bugs indexing dot-prefixed hidden files/folders like `.git`, throwing EEXIST for a
+     * path that doesn't actually exist yet), so each file copy is retried a few times.
      */
     private fun moveDirectory(src: File, dst: File) {
         dst.parentFile?.mkdirs()
@@ -529,11 +532,38 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
             if (file.isDirectory) {
                 target.mkdirs()
             } else {
-                target.parentFile?.mkdirs()
-                file.copyTo(target, overwrite = true)
+                copyFileWithRetry(file, target)
             }
         }
         src.deleteRecursively()
+    }
+
+    /**
+     * Copies [src] to [dst], retrying on failure. Public/shared storage on some devices spuriously
+     * throws EEXIST (or similar) creating a file that doesn't actually exist yet — a known
+     * scoped-storage FUSE/MediaProvider quirk, worse for dot-prefixed paths like `.git/...`. Each
+     * attempt explicitly clears whatever's at [dst] first in case a prior partial attempt left
+     * something behind.
+     */
+    private fun copyFileWithRetry(src: File, dst: File, maxAttempts: Int = 5) {
+        var lastError: Exception? = null
+        for (attempt in 1..maxAttempts) {
+            try {
+                if (dst.exists() && !dst.delete()) {
+                    AppLog.w(TAG, "copyFileWithRetry: couldn't clear existing $dst before copy (attempt $attempt/$maxAttempts)")
+                }
+                dst.parentFile?.mkdirs()
+                src.copyTo(dst, overwrite = true)
+                return
+            } catch (e: Exception) {
+                lastError = e
+                AppLog.w(TAG, "copyFileWithRetry: attempt $attempt/$maxAttempts failed for $dst: ${e.message}")
+                if (attempt < maxAttempts) {
+                    try { Thread.sleep(150L * attempt) } catch (_: InterruptedException) {}
+                }
+            }
+        }
+        throw lastError ?: java.io.IOException("Failed to copy $src to $dst")
     }
 
     /**
