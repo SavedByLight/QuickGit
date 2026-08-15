@@ -14,6 +14,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.quickgit.app.data.models.BranchInfo
 import com.quickgit.app.data.models.GitOpResult
+import com.quickgit.app.ui.adaptive.AdaptiveContent
 import com.quickgit.app.ui.components.PullToRefreshBox
 import com.quickgit.app.viewmodel.BranchesViewModel
 
@@ -68,10 +69,11 @@ fun BranchesScreen(repoPath: String, vm: BranchesViewModel, onBack: () -> Unit) 
             )
         }
     ) { padding ->
+        AdaptiveContent(Modifier.padding(padding)) {
         PullToRefreshBox(
             isRefreshing = state.refreshing,
             onRefresh = vm::refresh,
-            modifier = Modifier.padding(padding).fillMaxSize()
+            modifier = Modifier.fillMaxSize()
         ) {
             if ((state.busy || state.refreshing) && state.branches.isEmpty() && state.remotes.isEmpty()) {
                 CircularProgressIndicator(Modifier.align(Alignment.Center))
@@ -139,6 +141,7 @@ fun BranchesScreen(repoPath: String, vm: BranchesViewModel, onBack: () -> Unit) 
                 }
             }
         }
+        } // AdaptiveContent
     }
 
     if (showCreate) {

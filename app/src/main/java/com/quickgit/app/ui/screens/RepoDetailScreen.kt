@@ -21,6 +21,9 @@ import com.quickgit.app.data.models.ChangeType
 import com.quickgit.app.data.models.FileChange
 import com.quickgit.app.data.models.GitOpResult
 import com.quickgit.app.ui.adaptive.AdaptiveContent
+import com.quickgit.app.ui.adaptive.LocalWindowSizeClass
+import com.quickgit.app.ui.adaptive.isCompactHeight
+import com.quickgit.app.ui.adaptive.isMediumWidth
 import com.quickgit.app.ui.components.PullToRefreshBox
 import com.quickgit.app.ui.theme.GitAmber
 import com.quickgit.app.ui.theme.GitGreen
@@ -138,38 +141,77 @@ fun RepoDetailScreen(
             var showStatusOptions by remember { mutableStateOf(false) }
             var showLfsOptions by remember { mutableStateOf(false) }
 
-            Row(Modifier.fillMaxWidth().padding(16.dp, 4.dp)) {
-                OutlinedButton(
-                    onClick = { showPullOptions = true },
-                    enabled = !state.busy,
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Icon(Icons.Default.ArrowDownward, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Pull")
+            // Phones (Compact width): keep the original 2×2 button grid.
+            // Tablets / wide windows (Medium+): single row so landscape height is preserved.
+            val wsc = LocalWindowSizeClass.current
+            if (wsc.isMediumWidth) {
+                Row(Modifier.fillMaxWidth().padding(16.dp, 4.dp)) {
+                    OutlinedButton(
+                        onClick = { showPullOptions = true },
+                        enabled = !state.busy,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Default.ArrowDownward, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Pull")
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Button(
+                        onClick = { showPushOptions = true },
+                        enabled = !state.busy,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Default.ArrowUpward, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Push")
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    OutlinedButton(
+                        onClick = { showStatusOptions = true },
+                        enabled = !state.busy,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Default.Info, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Status")
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    OutlinedButton(
+                        onClick = { showLfsOptions = true },
+                        enabled = !state.busy,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("LFS")
+                    }
                 }
-                Spacer(Modifier.width(8.dp))
-                Button(
-                    onClick = { showPushOptions = true },
-                    enabled = !state.busy,
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Icon(Icons.Default.ArrowUpward, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Push")
+            } else {
+                Row(Modifier.fillMaxWidth().padding(16.dp, 4.dp)) {
+                    OutlinedButton(
+                        onClick = { showPullOptions = true },
+                        enabled = !state.busy,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Default.ArrowDownward, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Pull")
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Button(
+                        onClick = { showPushOptions = true },
+                        enabled = !state.busy,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Default.ArrowUpward, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Push")
+                    }
                 }
-            }
-            Row(Modifier.fillMaxWidth().padding(16.dp, 0.dp, 16.dp, 4.dp)) {
-                OutlinedButton(
-                    onClick = { showStatusOptions = true },
-                    enabled = !state.busy,
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Icon(Icons.Default.Info, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Status")
-                }
-                Spacer(Modifier.width(8.dp))
-                OutlinedButton(
-                    onClick = { showLfsOptions = true },
-                    enabled = !state.busy,
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Text("LFS")
+                Row(Modifier.fillMaxWidth().padding(16.dp, 0.dp, 16.dp, 4.dp)) {
+                    OutlinedButton(
+                        onClick = { showStatusOptions = true },
+                        enabled = !state.busy,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Default.Info, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Status")
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    OutlinedButton(
+                        onClick = { showLfsOptions = true },
+                        enabled = !state.busy,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("LFS")
+                    }
                 }
             }
 
@@ -516,7 +558,11 @@ fun RepoDetailScreen(
                                     }
                                 }
                             }
-                            item { Spacer(Modifier.height(140.dp)) }
+                            // Extra scroll room for the commit bar; less on short (landscape) heights.
+                            item {
+                                val spacerH = if (LocalWindowSizeClass.current.isCompactHeight) 72.dp else 140.dp
+                                Spacer(Modifier.height(spacerH))
+                            }
                         }
 
                         CommitBar(

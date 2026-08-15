@@ -2,11 +2,14 @@ package com.quickgit.app.ui.adaptive
 
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.material3.windowsizeclass.WindowHeightSizeClass
 import androidx.compose.material3.windowsizeclass.WindowSizeClass
 import androidx.compose.material3.windowsizeclass.WindowWidthSizeClass
 import androidx.compose.runtime.Composable
@@ -32,16 +35,30 @@ val WindowSizeClass.isMediumWidth: Boolean
 val WindowSizeClass.isExpandedWidth: Boolean
     get() = widthSizeClass == WindowWidthSizeClass.Expanded
 
+/** True when height is Compact (≈ under 480dp) — typical phone landscape / short tablet landscape. */
+val WindowSizeClass.isCompactHeight: Boolean
+    get() = heightSizeClass == WindowHeightSizeClass.Compact
+
+/**
+ * Useful for deciding layout that should only change on real tablets / large windows,
+ * not on phones in landscape. Medium/Expanded width is enough; phones stay Compact width
+ * even when rotated.
+ */
+val WindowSizeClass.isTabletOrWider: Boolean
+    get() = isMediumWidth
+
 /**
  * Horizontal content padding that grows on larger windows so lists and forms
  * don't stretch edge-to-edge on tablets and Chromebooks.
+ * On compact-height landscape, use slightly less padding so vertical space wins.
  */
 @Composable
 fun adaptiveContentPadding(): Dp {
     val wsc = LocalWindowSizeClass.current
-    return when (wsc.widthSizeClass) {
-        WindowWidthSizeClass.Compact -> 0.dp
-        WindowWidthSizeClass.Medium -> 24.dp
+    return when {
+        wsc.widthSizeClass == WindowWidthSizeClass.Compact -> 0.dp
+        wsc.isCompactHeight -> 16.dp
+        wsc.widthSizeClass == WindowWidthSizeClass.Medium -> 24.dp
         else -> 48.dp // Expanded
     }
 }
@@ -64,6 +81,8 @@ fun adaptiveMaxContentWidth(): Dp {
  * Centers children and optionally constrains max width on medium/expanded screens.
  * Use as the outermost content wrapper inside a Scaffold's content slot so lists,
  * detail panes, and forms scale cleanly on tablets, Chromebooks, and freeform windows.
+ *
+ * Phone (Compact width) is unchanged: full width, no extra padding.
  *
  * @param constrainWidth when true (default), apply [adaptiveMaxContentWidth].
  * @param fillHeight when true, child fills available height (useful for LazyColumn).
@@ -112,11 +131,37 @@ fun ListDetailLayout(
 ) {
     val wsc = LocalWindowSizeClass.current
     if (wsc.isMediumWidth && showDetail) {
-        androidx.compose.foundation.layout.Row(modifier.fillMaxSize()) {
+        Row(modifier.fillMaxSize()) {
             Box(Modifier.weight(listWeight).fillMaxHeight()) { list() }
             Box(Modifier.weight(1f - listWeight).fillMaxHeight()) { detail() }
         }
     } else {
         Box(modifier.fillMaxSize()) { list() }
+    }
+}
+
+/**
+ * Lays out action buttons in one horizontal row on tablet/wide windows, and falls
+ * back to the caller's phone layout (typically 2×2) when width is Compact.
+ * Phone portrait and landscape both stay Compact width, so behaviour is unchanged.
+ */
+@Composable
+fun AdaptiveActionRow(
+    modifier: Modifier = Modifier,
+    content: @Composable RowScope.() -> Unit
+) {
+    val wsc = LocalWindowSizeClass.current
+    if (wsc.isMediumWidth) {
+        Row(
+            modifier = modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+            content = content
+        )
+    } else {
+        // Phone: caller should still use its own 2×2 rows; this branch is unused when
+        // screens branch on isMediumWidth themselves. Provided for completeness.
+        Row(
+            modifier = modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+            content = content
+        )
     }
 }

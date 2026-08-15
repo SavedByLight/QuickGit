@@ -19,6 +19,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.quickgit.app.data.AppUpdateConfig
+import com.quickgit.app.ui.adaptive.AdaptiveContent
 import com.quickgit.app.ui.theme.GitGreen
 import com.quickgit.app.viewmodel.SettingsViewModel
 
@@ -45,11 +46,11 @@ fun SettingsScreen(
             navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back") } }
         )
     }) { padding ->
+        AdaptiveContent(Modifier.padding(padding), fillHeight = false) {
         Column(
             Modifier
-                .padding(padding)
                 .padding(16.dp)
-                .fillMaxSize()
+                .fillMaxWidth()
                 .verticalScroll(rememberScrollState())
         ) {
             Text("Repo storage location", style = MaterialTheme.typography.titleMedium)
@@ -576,5 +577,6 @@ fun SettingsScreen(
                 )
             }
         }
+        } // AdaptiveContent
     }
 }

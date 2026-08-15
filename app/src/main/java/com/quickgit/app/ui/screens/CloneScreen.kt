@@ -11,6 +11,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.quickgit.app.data.models.GitOpResult
+import com.quickgit.app.ui.adaptive.AdaptiveContent
 import com.quickgit.app.viewmodel.CloneViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -48,7 +49,8 @@ fun CloneScreen(
             navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back") } }
         )
     }) { padding ->
-        Column(Modifier.padding(padding).padding(16.dp).fillMaxSize()) {
+        AdaptiveContent(Modifier.padding(padding), fillHeight = false) {
+        Column(Modifier.padding(16.dp).fillMaxWidth()) {
             OutlinedTextField(
                 value = url,
                 onValueChange = { url = it },
@@ -146,5 +148,6 @@ fun CloneScreen(
                 Text(error.message, color = MaterialTheme.colorScheme.error)
             }
         }
+        } // AdaptiveContent
     }
 }

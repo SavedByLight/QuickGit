@@ -43,6 +43,7 @@
             android:exported="true"
             android:resizeableActivity="true"
             android:supportsPictureInPicture="false"
+            android:screenOrientation="fullUser"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode"
             android:windowSoftInputMode="adjustResize"
             android:enableOnBackInvokedCallback="false">
@@ -50,7 +51,7 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            <!-- ChromeOS / freeform: allow any aspect ratio and unrestricted window size -->
+            <!-- Tablets / ChromeOS / freeform: any orientation and unrestricted window size -->
             <layout
                 android:defaultWidth="800dp"
                 android:defaultHeight="600dp"

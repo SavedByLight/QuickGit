@@ -48,6 +48,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import com.quickgit.app.ui.adaptive.AdaptiveContent
 import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -159,12 +160,11 @@ fun FilesScreen(
             }
         }
     ) { padding ->
+        AdaptiveContent(Modifier.padding(padding)) {
         PullToRefreshBox(
             isRefreshing = state.loading,
             onRefresh = { vm.openDir(state.currentDir) },
-            modifier = Modifier
-                .padding(padding)
-                .fillMaxSize()
+            modifier = Modifier.fillMaxSize()
         ) {
             when {
                 state.loading && state.entries.isEmpty() && state.currentDir.isBlank() -> {
@@ -261,6 +261,7 @@ fun FilesScreen(
                 }
             }
         }
+        } // AdaptiveContent
     }
 
 
