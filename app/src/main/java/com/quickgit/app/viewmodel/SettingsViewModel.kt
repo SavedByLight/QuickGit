@@ -486,6 +486,13 @@ class SettingsViewModel(
     fun setGpgKey(v: String) { _state.value = _state.value.copy(gpgKey = v) }
     fun setGpgPassphrase(v: String) { _state.value = _state.value.copy(gpgPassphrase = v) }
 
+    fun reportGpgPasteEmpty() {
+        _state.value = _state.value.copy(
+            statusMessage = "Clipboard is empty — copy the armored key first, then tap Paste key from clipboard",
+            isError = true
+        )
+    }
+
     fun setGpgSignEnabled(enabled: Boolean) {
         if (enabled && !credentialStore.hasGpgKey()) {
             _state.value = _state.value.copy(

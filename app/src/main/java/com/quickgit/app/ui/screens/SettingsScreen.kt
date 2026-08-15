@@ -13,6 +13,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -418,6 +419,7 @@ fun SettingsScreen(
                 }
             }
             Spacer(Modifier.height(12.dp))
+            val clipboard = LocalClipboardManager.current
             OutlinedTextField(
                 value = state.gpgKey,
                 onValueChange = vm::setGpgKey,
@@ -428,8 +430,26 @@ fun SettingsScreen(
                     )
                 },
                 placeholder = { Text("-----BEGIN PGP PRIVATE KEY BLOCK-----") },
-                modifier = Modifier.fillMaxWidth().height(160.dp)
+                // minLines instead of fixed height so Chromebook keyboard/paste works more reliably
+                modifier = Modifier.fillMaxWidth(),
+                minLines = 6,
+                maxLines = 12
             )
+            Spacer(Modifier.height(8.dp))
+            // Explicit paste — Ctrl+V / trackpad paste sometimes does not update Compose state on ChromeOS
+            OutlinedButton(
+                onClick = {
+                    val clip = clipboard.getText()?.text
+                    if (!clip.isNullOrBlank()) {
+                        vm.setGpgKey(clip)
+                    } else {
+                        vm.reportGpgPasteEmpty()
+                    }
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Paste key from clipboard")
+            }
             Spacer(Modifier.height(8.dp))
             OutlinedTextField(
                 value = state.gpgPassphrase,
@@ -441,12 +461,25 @@ fun SettingsScreen(
             )
             Spacer(Modifier.height(12.dp))
             Row {
-                Button(
-                    onClick = { vm.saveGpgKey() },
-                    enabled = state.gpgKey.isNotBlank() || state.hasStoredGpgKey
-                ) { Text("Save") }
+                // Always enabled: validation runs on click. Disabled Save was blocking Chromebook
+                // users whose paste did not update the TextField state.
+                Button(onClick = { vm.saveGpgKey() }) { Text("Save") }
                 Spacer(Modifier.width(8.dp))
                 OutlinedButton(onClick = { vm.clearGpgKey() }) { Text("Clear") }
+            }
+            // Show save result next to the GPG controls (not only at the bottom of the page)
+            state.statusMessage?.let { msg ->
+                if (msg.contains("GPG", ignoreCase = true) || msg.contains("Clipboard", ignoreCase = true) ||
+                    msg.contains("key", ignoreCase = true) && state.isError
+                ) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        msg,
+                        color = if (state.isError) MaterialTheme.colorScheme.error
+                        else GitGreen,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
             }
             Spacer(Modifier.height(12.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
