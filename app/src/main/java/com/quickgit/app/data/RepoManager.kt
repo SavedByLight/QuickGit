@@ -97,6 +97,39 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         return false
     }
 
+    /**
+     * JGit's LockFile.commit() does one atomic rename (config.lock -> config, etc.) and, on
+     * Unix/Android (FS_POSIX.retryFailedLockFileCommit() == false), does NOT retry on failure —
+     * unlike Windows, which retries up to 9x to dodge transient AV/indexer locks. On some OEM
+     * storage stacks (seen on Lenovo/MediaTek low-end boards) a single rename can flake, most
+     * often right when CloneCommand writes .git/config at the tail end of a clone. Treat it as
+     * retryable at the clone-attempt level rather than discarding a multi-GB partial download.
+     */
+    private fun isLockFileCommitRace(e: Throwable): Boolean {
+        var t: Throwable? = e
+        while (t != null) {
+            val msg = t.message.orEmpty()
+            if (msg.contains("Cannot commit write to", ignoreCase = true)) return true
+            if (msg.contains("LockFailedException", ignoreCase = true)) return true
+            t = t.cause
+        }
+        return false
+    }
+
+    /** Removes any *.lock files JGit may have left in .git after a failed atomic rename. */
+    private fun clearStaleGitLockFiles(destination: File) {
+        val dotGit = File(destination, ".git")
+        if (!dotGit.isDirectory) return
+        runCatching {
+            dotGit.walkTopDown()
+                .filter { it.isFile && it.name.endsWith(".lock") }
+                .forEach { lock ->
+                    val deleted = lock.delete()
+                    AppLog.w(TAG, "clearStaleGitLockFiles: ${if (deleted) "removed" else "failed to remove"} ${lock.absolutePath}")
+                }
+        }.onFailure { AppLog.w(TAG, "clearStaleGitLockFiles failed: ${it.message}") }
+    }
+
     /** Serializes JGit pack access — concurrent clones can close each other's Inflater. */
     private val jgitIoLock = Any()
 
@@ -448,6 +481,13 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                 onProgress("Retrying clone (attempt $attempt/$maxAttempts)…")
                 AppLog.w(TAG, "clone retry $attempt/$maxAttempts for $label after: ${lastError?.message}")
             } else if (attempt > 1 && hasPartialGit) {
+                // A failed LockFile.commit() (e.g. the config write) can leave a stray *.lock
+                // file behind on the OEM storage stacks that hit this. We keep the downloaded
+                // pack data, but a leftover .lock would make the retry's own lock attempt fail
+                // too, so clear those before trying again.
+                if (lastError != null && isLockFileCommitRace(lastError!!)) {
+                    clearStaleGitLockFiles(destination)
+                }
                 System.gc()
                 try { Thread.sleep(400L * attempt) } catch (_: InterruptedException) {}
                 onProgress("Retrying checkout (attempt $attempt/$maxAttempts)…")
@@ -471,18 +511,16 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                         val cmd = Git.cloneRepository()
                             .setURI(cloneUrl)
                             .setDirectory(destination)
-                            // Mobile: single branch to avoid pulling every ref's history.
-                            //
-                            // NOTE: CloneCommand.setDepth() would let us cap pack size further
-                            // (avoiding "Inflater has been closed" on huge repos), but it wasn't
-                            // added until JGit 6.3 — we're pinned to 5.13.3 for Android API 26
-                            // compat (see the dependency comment above), so it isn't available
-                            // here. [depth] is accepted for a future JGit upgrade but currently
-                            // has no effect; every clone is full-history.
+                            // Mobile: single branch; optional shallow depth avoids huge pack inflation
+                            // that triggers "Inflater has been closed" on Android heaps.
+                            // depth <= 0 means full history (no --depth).
                             .setCloneAllBranches(false)
                             .setCloneSubmodules(false)
                             .setNoCheckout(true)
                             .setProgressMonitor(TextProgress(onProgress))
+                        if (depth > 0) {
+                            cmd.setDepth(depth)
+                        }
                         applyTransportConfig(cmd, cloneUrl)
                         cmd.call()
                     }
@@ -551,6 +589,13 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                 lastError = e
                 if (isInflaterRace(e) && attempt < maxAttempts) {
                     AppLog.w(TAG, "clone inflater race on $label — will retry")
+                    continue
+                }
+                if (isLockFileCommitRace(e) && attempt < maxAttempts) {
+                    // .git/config (or another JGit lock file) failed one non-retried atomic
+                    // rename. hasPartialGit will be true next loop, so we skip the transport
+                    // phase and just resume from the checkout/config step — no re-download.
+                    AppLog.w(TAG, "clone lock-file commit race on $label — will retry")
                     continue
                 }
                 // Fallback: some JGit paths throw "Invalid ref name: HEAD" on truly empty
@@ -1149,7 +1194,7 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                 val cfg = git.repository.config
                 cfg.setString("remote", n, "url", u)
                 if (cfg.getString("remote", n, "fetch") == null) {
-                    cfg.setString("remote", n, "fetch", "+refs/heads/" + "*:refs/remotes/$n/" + "*")
+                    cfg.setString("remote", n, "fetch", "+refs/heads/*:refs/remotes/$n/*")
                 }
                 cfg.save()
             }
@@ -1173,92 +1218,6 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
             GitOpResult.Success
         } catch (e: Exception) {
             GitOpResult.Error(e.message ?: "Failed to remove remote", e)
-        }
-    }
-
-    /**
-     * Fetch all branches from a named remote (e.g. a fork added as "fork" or "contributor").
-     * Updates remote-tracking refs for that remote (refs/remotes/NAME/...).
-     */
-    fun fetchRemote(path: String, remoteName: String, onProgress: (String) -> Unit = {}): GitOpResult {
-        val remote = remoteName.trim().ifBlank { "origin" }
-        AppLog.i(TAG, "fetchRemote: $path remote=$remote")
-        return try {
-            openGit(path).use { git ->
-                val remoteUrl = git.repository.config.getString("remote", remote, "url") ?: ""
-                if (remoteUrl.isBlank()) {
-                    return GitOpResult.Error("No URL configured for remote '$remote'")
-                }
-                onProgress("Fetching $remote…")
-                val cmd = git.fetch()
-                    .setRemote(remote)
-                    .setRemoveDeletedRefs(true)
-                    .setProgressMonitor(TextProgress(onProgress))
-                applyTransportConfig(cmd, remoteUrl)
-                cmd.call()
-                AppLog.i(TAG, "fetchRemote succeeded: $remote")
-                GitOpResult.Success
-            }
-        } catch (e: org.eclipse.jgit.api.errors.TransportException) {
-            AppLog.e(TAG, "fetchRemote failed (transport)", e)
-            if (isAuthFailure(e)) {
-                val url = openGit(path).use {
-                    it.repository.config.getString("remote", remote, "url")
-                } ?: ""
-                GitOpResult.AuthRequired(url)
-            } else GitOpResult.Error(e.message ?: "Fetch failed", e)
-        } catch (e: Exception) {
-            AppLog.e(TAG, "fetchRemote failed", e)
-            GitOpResult.Error(e.message ?: "Fetch failed", e)
-        }
-    }
-
-    /**
-     * Cherry-pick a single commit onto HEAD (e.g. a commit from a fetched fork branch).
-     * [commitHash] may be a full or abbreviated SHA.
-     */
-    fun cherryPick(path: String, commitHash: String): GitOpResult {
-        AppLog.i(TAG, "cherryPick: $commitHash")
-        return try {
-            openGit(path).use { git ->
-                val objectId = git.repository.resolve(commitHash)
-                if (objectId == null) {
-                    return@use GitOpResult.Error(
-                        "Commit not found: $commitHash — fetch the fork remote first"
-                    )
-                }
-                val walk = RevWalk(git.repository)
-                try {
-                    val commit = walk.parseCommit(objectId)
-                    val result = git.cherryPick().include(commit).call()
-                    val status = result.status
-                    when (status) {
-                        org.eclipse.jgit.api.CherryPickResult.CherryPickStatus.OK -> {
-                            AppLog.i(TAG, "cherryPick succeeded: $commitHash")
-                            GitOpResult.Success
-                        }
-                        org.eclipse.jgit.api.CherryPickResult.CherryPickStatus.CONFLICTING -> {
-                            val paths = result.failingPaths?.keys?.toList().orEmpty()
-                            AppLog.w(TAG, "cherryPick conflict: $paths")
-                            GitOpResult.Conflict(paths)
-                        }
-                        else -> {
-                            val failing = result.failingPaths
-                            val msg = if (failing != null && failing.isNotEmpty()) {
-                                failing.entries.joinToString("; ") { "${it.key}: ${it.value}" }
-                            } else {
-                                status?.name ?: "Cherry-pick failed"
-                            }
-                            GitOpResult.Error(msg)
-                        }
-                    }
-                } finally {
-                    walk.close()
-                }
-            }
-        } catch (e: Exception) {
-            AppLog.e(TAG, "cherryPick failed", e)
-            GitOpResult.Error(e.message ?: "Cherry-pick failed", e)
         }
     }
 
@@ -1656,15 +1615,9 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
 
     // ---------------- History ----------------
 
-    fun getLog(path: String, maxCount: Int = 100, startRef: String? = null): List<CommitInfo> {
+    fun getLog(path: String, maxCount: Int = 100): List<CommitInfo> {
         openGit(path).use { git ->
-            val cmd = git.log().setMaxCount(maxCount)
-            if (!startRef.isNullOrBlank()) {
-                val id = git.repository.resolve(startRef)
-                    ?: throw IllegalArgumentException("Ref not found: $startRef")
-                cmd.add(id)
-            }
-            return cmd.call().map { it.toCommitInfo() }
+            return git.log().setMaxCount(maxCount).call().map { it.toCommitInfo() }
         }
     }
 
@@ -2164,18 +2117,14 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
             msg.contains("no CredentialsProvider", true)
     }
 
-    // NOTE: BatchingProgressMonitor's onUpdate/onEndTask overloads that take a
-    // java.time.Duration were only added in JGit 6.3+. We're pinned to 5.13.3
-    // (see the dependency comment above), whose abstract members are still the
-    // plain (taskName, workCurr[, workTotal, percentDone]) signatures below.
     private class TextProgress(val onProgress: (String) -> Unit) : org.eclipse.jgit.lib.BatchingProgressMonitor() {
-        override fun onUpdate(taskName: String?, workCurr: Int) {
+        override fun onUpdate(taskName: String?, workCurr: Int, duration: java.time.Duration?) {
             onProgress("$taskName: $workCurr")
         }
-        override fun onUpdate(taskName: String?, workCurr: Int, workTotal: Int, percentDone: Int) {
+        override fun onUpdate(taskName: String?, workCurr: Int, workTotal: Int, percentDone: Int, duration: java.time.Duration?) {
             onProgress("$taskName: $percentDone%")
         }
-        override fun onEndTask(taskName: String?, workCurr: Int) {}
-        override fun onEndTask(taskName: String?, workCurr: Int, workTotal: Int, percentDone: Int) {}
+        override fun onEndTask(taskName: String?, workCurr: Int, duration: java.time.Duration?) {}
+        override fun onEndTask(taskName: String?, workCurr: Int, workTotal: Int, percentDone: Int, duration: java.time.Duration?) {}
     }
 }
