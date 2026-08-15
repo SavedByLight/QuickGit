@@ -72,6 +72,10 @@ android {
                 "META-INF/NOTICE.txt",
                 // Both org.eclipse.jgit and org.eclipse.jgit.ssh.apache ship this
                 "OSGI-INF/l10n/plugin.properties",
+                // org.eclipse.jgit, .ssh.apache, and .gpg.bc all ship an identical
+                // root-level copy too (OSGi bundle l10n default) — same content,
+                // just at a different path, so it hits mergeReleaseJavaResource too.
+                "plugin.properties",
                 "META-INF/versions/9/OSGI-INF/MANIFEST.MF"
             )
         }
