@@ -541,19 +541,30 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     /**
      * Copies [src] to [dst], retrying on failure. Public/shared storage on some devices spuriously
      * throws EEXIST (or similar) creating a file that doesn't actually exist yet — a known
-     * scoped-storage FUSE/MediaProvider quirk, worse for dot-prefixed paths like `.git/...`. Each
-     * attempt explicitly clears whatever's at [dst] first in case a prior partial attempt left
-     * something behind.
+     * scoped-storage FUSE/MediaProvider quirk, worse for dot-prefixed paths like `.git/...`.
+     *
+     * We deliberately force-overwrite: try a normal delete first, but if the file still exists
+     * (or delete is denied) we open it for write and stream the content over the top. That way
+     * an existing destination file never aborts the staged-clone → Documents move.
      */
     private fun copyFileWithRetry(src: File, dst: File, maxAttempts: Int = 5) {
         var lastError: Exception? = null
         for (attempt in 1..maxAttempts) {
             try {
-                if (dst.exists() && !dst.delete()) {
-                    AppLog.w(TAG, "copyFileWithRetry: couldn't clear existing $dst before copy (attempt $attempt/$maxAttempts)")
-                }
                 dst.parentFile?.mkdirs()
-                src.copyTo(dst, overwrite = true)
+                // Prefer a clean slate, but do not fail if delete is refused.
+                if (dst.exists()) {
+                    if (!dst.delete()) {
+                        AppLog.w(TAG, "copyFileWithRetry: couldn't clear existing $dst before copy (attempt $attempt/$maxAttempts) — will force-overwrite")
+                    }
+                }
+                // Stream overwrite: works even when delete failed or the path is partially
+                // visible to MediaProvider. Truncates/replaces any residual content.
+                src.inputStream().use { input ->
+                    dst.outputStream().use { output ->
+                        input.copyTo(output)
+                    }
+                }
                 return
             } catch (e: Exception) {
                 lastError = e
