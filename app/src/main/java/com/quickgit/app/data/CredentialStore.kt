@@ -10,7 +10,7 @@ import androidx.security.crypto.MasterKeys
  * passphrase, commit drafts, etc.) is stored in an [EncryptedSharedPreferences] instance
  * whose master key lives only inside the Android Keystore.
  */
-class CredentialStore private constructor(private val context: Context) {
+class CredentialStore(private val context: Context) {
 
     companion object {
         private const val PREFS_NAME = "tink_keyset_pref"
@@ -66,6 +66,9 @@ class CredentialStore private constructor(private val context: Context) {
     private val prefs get() = prefsFor(context)
 
     // ==================== HTTPS credentials (per host) ====================
+    fun hasHttpsCredential(host: String): Boolean =
+        !prefs.getString("https_token_${host.lowercase()}", null).isNullOrBlank()
+
     fun getHttpsUsername(host: String): String? =
         prefs.getString("https_user_${host.lowercase()}", null)
 
