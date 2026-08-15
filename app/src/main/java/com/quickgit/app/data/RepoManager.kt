@@ -1174,6 +1174,80 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         }
     }
 
+    /**
+     * Fetch all branches from a named remote (e.g. a fork added as "fork" or "contributor").
+     * Updates refs under refs/remotes/<name>/*.
+     */
+    fun fetchRemote(path: String, remoteName: String, onProgress: (String) -> Unit = {}): GitOpResult {
+        val remote = remoteName.trim().ifBlank { "origin" }
+        AppLog.i(TAG, "fetchRemote: $path remote=$remote")
+        return try {
+            openGit(path).use { git ->
+                val remoteUrl = git.repository.config.getString("remote", remote, "url") ?: ""
+                if (remoteUrl.isBlank()) {
+                    return GitOpResult.Error("No URL configured for remote '$remote'")
+                }
+                onProgress("Fetching $remote…")
+                val cmd = git.fetch()
+                    .setRemote(remote)
+                    .setRemoveDeletedRefs(true)
+                    .setProgressMonitor(TextProgress(onProgress))
+                applyTransportConfig(cmd, remoteUrl)
+                cmd.call()
+                AppLog.i(TAG, "fetchRemote succeeded: $remote")
+                GitOpResult.Success
+            }
+        } catch (e: org.eclipse.jgit.api.errors.TransportException) {
+            AppLog.e(TAG, "fetchRemote failed (transport)", e)
+            if (isAuthFailure(e)) {
+                val url = openGit(path).use {
+                    it.repository.config.getString("remote", remote, "url")
+                } ?: ""
+                GitOpResult.AuthRequired(url)
+            } else GitOpResult.Error(e.message ?: "Fetch failed", e)
+        } catch (e: Exception) {
+            AppLog.e(TAG, "fetchRemote failed", e)
+            GitOpResult.Error(e.message ?: "Fetch failed", e)
+        }
+    }
+
+    /**
+     * Cherry-pick a single commit onto HEAD (e.g. a commit from a fetched fork branch).
+     * [commitHash] may be a full or abbreviated SHA.
+     */
+    fun cherryPick(path: String, commitHash: String): GitOpResult = try {
+        AppLog.i(TAG, "cherryPick: $commitHash")
+        openGit(path).use { git ->
+            val objectId = git.repository.resolve(commitHash)
+                ?: return GitOpResult.Error("Commit not found: $commitHash — fetch the fork remote first")
+            RevWalk(git.repository).use { walk ->
+                val commit = walk.parseCommit(objectId)
+                val result = git.cherryPick().include(commit).call()
+                when (result.status) {
+                    org.eclipse.jgit.api.CherryPickResult.CherryPickStatus.OK -> {
+                        AppLog.i(TAG, "cherryPick succeeded: $commitHash")
+                        GitOpResult.Success
+                    }
+                    org.eclipse.jgit.api.CherryPickResult.CherryPickStatus.CONFLICTING -> {
+                        val paths = result.failingPaths?.keys?.toList() ?: emptyList()
+                        AppLog.w(TAG, "cherryPick conflict: $paths")
+                        GitOpResult.Conflict(paths)
+                    }
+                    else -> {
+                        val msg = result.failingPaths?.entries
+                            ?.joinToString("; ") { "${it.key}: ${it.value}" }
+                            ?: result.status?.name
+                            ?: "Cherry-pick failed"
+                        GitOpResult.Error(msg)
+                    }
+                }
+            }
+        }
+    } catch (e: Exception) {
+        AppLog.e(TAG, "cherryPick failed", e)
+        GitOpResult.Error(e.message ?: "Cherry-pick failed", e)
+    }
+
     /** Appends a Signed-off-by trailer if one is not already present (DCO / git commit -s). */
     private fun appendSignOff(message: String, name: String, email: String): String {
         val trailer = "Signed-off-by: $name <$email>"
@@ -1568,9 +1642,15 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
 
     // ---------------- History ----------------
 
-    fun getLog(path: String, maxCount: Int = 100): List<CommitInfo> {
+    fun getLog(path: String, maxCount: Int = 100, startRef: String? = null): List<CommitInfo> {
         openGit(path).use { git ->
-            return git.log().setMaxCount(maxCount).call().map { it.toCommitInfo() }
+            val cmd = git.log().setMaxCount(maxCount)
+            if (!startRef.isNullOrBlank()) {
+                val id = git.repository.resolve(startRef)
+                    ?: throw IllegalArgumentException("Ref not found: $startRef")
+                cmd.add(id)
+            }
+            return cmd.call().map { it.toCommitInfo() }
         }
     }
 

@@ -14,6 +14,10 @@ import kotlinx.coroutines.withContext
 
 data class HistoryUiState(
     val commits: List<CommitInfo> = emptyList(),
+    /** null = current HEAD / default log; otherwise a ref like "fork/main". */
+    val logRef: String? = null,
+    /** Remote-tracking branches available for viewing (for cherry-pick from forks). */
+    val remoteBranches: List<String> = emptyList(),
     val loading: Boolean = false,
     val errorMessage: String? = null,
     val statusMessage: String? = null,
@@ -37,13 +41,75 @@ class HistoryViewModel(private val repoManager: RepoManager) : ViewModel() {
         viewModelScope.launch {
             _state.value = _state.value.copy(loading = true, errorMessage = null, statusMessage = null)
             try {
-                val commits = withContext(Dispatchers.IO) { repoManager.getLog(repoPath) }
-                _state.value = _state.value.copy(commits = commits, loading = false)
+                val ref = _state.value.logRef
+                val commits = withContext(Dispatchers.IO) {
+                    repoManager.getLog(repoPath, startRef = ref)
+                }
+                val remoteBranches = withContext(Dispatchers.IO) {
+                    repoManager.listBranches(repoPath)
+                        .filter { it.isRemote }
+                        .map { it.name }
+                        .sorted()
+                }
+                _state.value = _state.value.copy(
+                    commits = commits,
+                    remoteBranches = remoteBranches,
+                    loading = false
+                )
             } catch (e: Exception) {
                 _state.value = _state.value.copy(
                     loading = false,
                     errorMessage = e.message ?: "Failed to load history"
                 )
+            }
+        }
+    }
+
+    /** Show commits reachable from [ref] (e.g. "fork/feature") or HEAD if null. */
+    fun setLogRef(ref: String?) {
+        _state.value = _state.value.copy(logRef = ref?.takeIf { it.isNotBlank() })
+        refreshHistory()
+    }
+
+    fun cherryPick(commitHash: String) {
+        if (!::repoPath.isInitialized) return
+        viewModelScope.launch {
+            _state.value = _state.value.copy(loading = true, errorMessage = null, statusMessage = null)
+            val result = withContext(Dispatchers.IO) { repoManager.cherryPick(repoPath, commitHash) }
+            when (result) {
+                is GitOpResult.Success -> {
+                    // After cherry-pick, show current branch history so the new commit is visible
+                    val commits = withContext(Dispatchers.IO) {
+                        repoManager.getLog(repoPath, startRef = null)
+                    }
+                    _state.value = _state.value.copy(
+                        commits = commits,
+                        logRef = null,
+                        loading = false,
+                        statusMessage = "Cherry-picked ${commitHash.take(7)} onto current branch",
+                        lastResult = result
+                    )
+                }
+                is GitOpResult.Conflict -> {
+                    _state.value = _state.value.copy(
+                        loading = false,
+                        errorMessage = "Cherry-pick conflict in: ${result.paths.joinToString()}. Resolve in the repo screen.",
+                        lastResult = result
+                    )
+                }
+                is GitOpResult.Error -> {
+                    _state.value = _state.value.copy(
+                        loading = false,
+                        errorMessage = result.message,
+                        lastResult = result
+                    )
+                }
+                else -> {
+                    _state.value = _state.value.copy(
+                        loading = false,
+                        lastResult = result
+                    )
+                }
             }
         }
     }
@@ -54,8 +120,6 @@ class HistoryViewModel(private val repoManager: RepoManager) : ViewModel() {
             _state.value = _state.value.copy(loading = true, errorMessage = null, statusMessage = null)
             val result = withContext(Dispatchers.IO) { repoManager.revertCommit(repoPath, commitHash, message) }
             if (result is GitOpResult.Success) {
-                // Pull the new revert commit into the list; otherwise the screen looks
-                // like nothing happened until the user manually refreshes.
                 val commits = withContext(Dispatchers.IO) { repoManager.getLog(repoPath) }
                 _state.value = _state.value.copy(commits = commits)
             }

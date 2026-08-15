@@ -9,6 +9,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.quickgit.app.data.models.BranchInfo
@@ -23,21 +24,47 @@ fun BranchesScreen(repoPath: String, vm: BranchesViewModel, onBack: () -> Unit) 
     val state by vm.state.collectAsState()
     val snackbarHost = remember { SnackbarHostState() }
     var showCreate by remember { mutableStateOf(false) }
+    var showAddRemote by remember { mutableStateOf(false) }
     var branchToDelete by remember { mutableStateOf<BranchInfo?>(null) }
+    var remoteToDelete by remember { mutableStateOf<String?>(null) }
 
-    LaunchedEffect(state.lastResult) {
-        val r = state.lastResult
-        if (r is GitOpResult.Error) { snackbarHost.showSnackbar(r.message); vm.consumeResult() }
-        else if (r != null) vm.consumeResult()
+    LaunchedEffect(state.lastResult, state.statusMessage) {
+        state.statusMessage?.let {
+            snackbarHost.showSnackbar(it)
+            vm.consumeResult()
+        }
+        when (val r = state.lastResult) {
+            is GitOpResult.Error -> {
+                snackbarHost.showSnackbar(r.message)
+                vm.consumeResult()
+            }
+            is GitOpResult.AuthRequired -> {
+                snackbarHost.showSnackbar("Auth required for ${r.remoteUrl}")
+                vm.consumeResult()
+            }
+            is GitOpResult.Conflict -> {
+                snackbarHost.showSnackbar("Conflict: ${r.paths.joinToString()}")
+                vm.consumeResult()
+            }
+            is GitOpResult.Success, is GitOpResult.UpToDate -> vm.consumeResult()
+            null -> {}
+        }
     }
 
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHost) },
         topBar = {
             TopAppBar(
-                title = { Text("Branches") },
+                title = { Text("Branches & remotes") },
                 navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back") } },
-                actions = { IconButton(onClick = { showCreate = true }) { Icon(Icons.Default.Add, "New branch") } }
+                actions = {
+                    IconButton(onClick = { showAddRemote = true }) {
+                        Icon(Icons.Default.CloudUpload, "Add remote")
+                    }
+                    IconButton(onClick = { showCreate = true }) {
+                        Icon(Icons.Default.Add, "New branch")
+                    }
+                }
             )
         }
     ) { padding ->
@@ -46,10 +73,60 @@ fun BranchesScreen(repoPath: String, vm: BranchesViewModel, onBack: () -> Unit) 
             onRefresh = vm::refresh,
             modifier = Modifier.padding(padding).fillMaxSize()
         ) {
-            if ((state.busy || state.refreshing) && state.branches.isEmpty()) {
+            if ((state.busy || state.refreshing) && state.branches.isEmpty() && state.remotes.isEmpty()) {
                 CircularProgressIndicator(Modifier.align(Alignment.Center))
             } else {
                 LazyColumn(Modifier.fillMaxSize()) {
+                    // ---- Remotes ----
+                    item {
+                        Text(
+                            "Remotes",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
+                        )
+                    }
+                    if (state.remotes.isEmpty()) {
+                        item {
+                            Text(
+                                "No remotes configured. Add a fork URL to fetch and cherry-pick from it.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                            )
+                        }
+                    } else {
+                        items(state.remotes.entries.toList(), key = { it.key }) { (name, url) ->
+                            RemoteRow(
+                                name = name,
+                                url = url,
+                                busy = state.busy,
+                                onFetch = { vm.fetchRemote(name) },
+                                onDelete = { remoteToDelete = name }
+                            )
+                            HorizontalDivider()
+                        }
+                    }
+                    item {
+                        TextButton(
+                            onClick = { showAddRemote = true },
+                            modifier = Modifier.padding(horizontal = 8.dp)
+                        ) {
+                            Icon(Icons.Default.Add, null, Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Add remote (e.g. a fork)")
+                        }
+                    }
+
+                    // ---- Branches ----
+                    item {
+                        Text(
+                            "Branches",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
+                        )
+                    }
                     items(state.branches, key = { (if (it.isRemote) "r_" else "l_") + it.name }) { b ->
                         BranchRow(
                             b,
@@ -58,6 +135,7 @@ fun BranchesScreen(repoPath: String, vm: BranchesViewModel, onBack: () -> Unit) 
                         )
                         HorizontalDivider()
                     }
+                    item { Spacer(Modifier.height(24.dp)) }
                 }
             }
         }
@@ -69,14 +147,70 @@ fun BranchesScreen(repoPath: String, vm: BranchesViewModel, onBack: () -> Unit) 
             onDismissRequest = { showCreate = false },
             title = { Text("New branch") },
             text = {
-                OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Branch name") }, singleLine = true)
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Branch name") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
             },
             confirmButton = {
-                TextButton(onClick = { vm.createBranch(name.trim(), checkout = true); showCreate = false }, enabled = name.isNotBlank()) {
-                    Text("Create & checkout")
-                }
+                TextButton(
+                    onClick = {
+                        vm.createBranch(name.trim(), checkout = true)
+                        showCreate = false
+                    },
+                    enabled = name.isNotBlank()
+                ) { Text("Create & checkout") }
             },
             dismissButton = { TextButton(onClick = { showCreate = false }) { Text("Cancel") } }
+        )
+    }
+
+    if (showAddRemote) {
+        var remoteName by remember { mutableStateOf("") }
+        var remoteUrl by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { showAddRemote = false },
+            title = { Text("Add remote") },
+            text = {
+                Column {
+                    Text(
+                        "Point at a fork to fetch its branches, then cherry-pick commits from History.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = remoteName,
+                        onValueChange = { remoteName = it },
+                        label = { Text("Name (e.g. fork)") },
+                        placeholder = { Text("fork") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = remoteUrl,
+                        onValueChange = { remoteUrl = it },
+                        label = { Text("URL") },
+                        placeholder = { Text("https://github.com/user/repo.git") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        vm.addRemote(remoteName.trim(), remoteUrl.trim())
+                        showAddRemote = false
+                    },
+                    enabled = remoteName.isNotBlank() && remoteUrl.isNotBlank() && !state.busy
+                ) { Text("Add") }
+            },
+            dismissButton = { TextButton(onClick = { showAddRemote = false }) { Text("Cancel") } }
         )
     }
 
@@ -89,6 +223,54 @@ fun BranchesScreen(repoPath: String, vm: BranchesViewModel, onBack: () -> Unit) 
             },
             dismissButton = { TextButton(onClick = { branchToDelete = null }) { Text("Cancel") } }
         )
+    }
+
+    remoteToDelete?.let { name ->
+        AlertDialog(
+            onDismissRequest = { remoteToDelete = null },
+            title = { Text("Remove remote '$name'?") },
+            text = {
+                Text("This only removes the remote configuration. Local branches are kept.")
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    vm.removeRemote(name)
+                    remoteToDelete = null
+                }) { Text("Remove") }
+            },
+            dismissButton = { TextButton(onClick = { remoteToDelete = null }) { Text("Cancel") } }
+        )
+    }
+}
+
+@Composable
+private fun RemoteRow(
+    name: String,
+    url: String,
+    busy: Boolean,
+    onFetch: () -> Unit,
+    onDelete: () -> Unit
+) {
+    Row(
+        Modifier.fillMaxWidth().padding(16.dp, 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(Icons.Default.Cloud, null, tint = MaterialTheme.colorScheme.primary)
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(name, fontWeight = FontWeight.Medium)
+            Text(
+                url,
+                style = MaterialTheme.typography.bodySmall,
+                fontFamily = FontFamily.Monospace,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2
+            )
+        }
+        TextButton(onClick = onFetch, enabled = !busy) { Text("Fetch") }
+        IconButton(onClick = onDelete, enabled = !busy) {
+            Icon(Icons.Default.Delete, "Remove remote")
+        }
     }
 }
 
@@ -103,7 +285,11 @@ private fun BranchRow(b: BranchInfo, onCheckout: () -> Unit, onDelete: (() -> Un
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text(b.name, fontWeight = if (b.isCurrent) FontWeight.Bold else FontWeight.Normal)
-            if (b.isCurrent) Text("current", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+            if (b.isCurrent) {
+                Text("current", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+            } else if (b.isRemote) {
+                Text("remote", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
         if (!b.isCurrent) {
             TextButton(onClick = onCheckout) { Text("Checkout") }
