@@ -100,10 +100,12 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     /**
      * JGit's LockFile.commit() does one atomic rename (config.lock -> config, etc.) and, on
      * Unix/Android (FS_POSIX.retryFailedLockFileCommit() == false), does NOT retry on failure —
-     * unlike Windows, which retries up to 9x to dodge transient AV/indexer locks. On some OEM
-     * storage stacks (seen on Lenovo/MediaTek low-end boards) a single rename can flake, most
-     * often right when CloneCommand writes .git/config at the tail end of a clone. Treat it as
-     * retryable at the clone-attempt level rather than discarding a multi-GB partial download.
+     * unlike Windows, which retries up to 9x to dodge transient AV/indexer locks. This is usually
+     * transient OEM storage-stack flakiness, retryable at the clone-attempt level. But on some
+     * devices (MIUI in particular) the underlying public/shared-storage path is FUSE-emulated and
+     * doesn't support atomic rename reliably at all, so the same commit fails on every attempt —
+     * see [cloneRepo], which now clones into app-private storage first and moves the finished
+     * repo into place, avoiding lock-file commits on that kind of path entirely.
      */
     private fun isLockFileCommitRace(e: Throwable): Boolean {
         var t: Throwable? = e
@@ -463,8 +465,91 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         }
         val alreadyExisted = destination.exists()
         val cloneUrl = normalizeCloneUrl(url)
-        AppLog.i(TAG, "clone: $cloneUrl -> ${destination.absolutePath}")
 
+        // Clone into app-private storage first, then move the finished repo into place as a
+        // single step. Public/shared storage (Documents/... etc.) goes through Android's
+        // FUSE-based scoped-storage emulation on many OEM stacks (MIUI in particular): plain
+        // writes succeed, but the atomic write-lock-file-then-rename pattern JGit uses for
+        // every commit of config/refs/HEAD is not reliably atomic there — clones can fail
+        // deterministically (not just flakily) with "Cannot commit write to .../.git/config".
+        // App-private storage (context.filesDir) is a real filesystem with normal POSIX
+        // semantics, so all of JGit's lock-file commits happen safely there; only a plain
+        // file copy (no atomic renames) touches the public path, at the very end.
+        val staging = newStagingDir(label)
+        AppLog.i(TAG, "clone: $cloneUrl -> staging ${staging.absolutePath} (final: ${destination.absolutePath})")
+
+        val result = cloneIntoStaging(cloneUrl, staging, depth, onProgress)
+        if (result !is GitOpResult.Success) {
+            staging.deleteRecursively()
+            return result
+        }
+
+        onProgress("Moving repository into place…")
+        return try {
+            moveDirectory(staging, destination)
+            rememberExternalRepoPath(destination)
+            AppLog.i(TAG, "clone: moved staged clone into place: ${destination.absolutePath}")
+            GitOpResult.Success
+        } catch (e: Exception) {
+            AppLog.e(TAG, "clone: failed to move staged clone into place: ${destination.absolutePath}", e)
+            staging.deleteRecursively()
+            if (!alreadyExisted) destination.deleteRecursively()
+            GitOpResult.Error("Clone succeeded but couldn't move it into place: ${e.message}", e)
+        }
+    }
+
+    /** Creates a fresh, empty app-private directory to clone into before the final move. */
+    private fun newStagingDir(label: String): File {
+        val root = File(context.filesDir, "clone_staging").apply { mkdirs() }
+        val safeLabel = label.ifBlank { "repo" }.replace(Regex("[^A-Za-z0-9._-]"), "_")
+        var dir = File(root, "$safeLabel-${System.currentTimeMillis()}")
+        var suffix = 0
+        while (dir.exists()) {
+            suffix++
+            dir = File(root, "$safeLabel-${System.currentTimeMillis()}-$suffix")
+        }
+        dir.mkdirs()
+        return dir
+    }
+
+    /**
+     * Moves [src] into [dst]. Tries a plain rename first (fast path, works if both happen to be
+     * on the same volume); falls back to a recursive copy + delete for the common case of moving
+     * from app-private storage to public/shared storage, which are different volumes. The copy
+     * step is plain file writes (no lock-file atomic renames), so it's safe on flaky
+     * scoped-storage stacks even though a live JGit clone there is not.
+     */
+    private fun moveDirectory(src: File, dst: File) {
+        dst.parentFile?.mkdirs()
+        if (src.renameTo(dst)) return
+        dst.mkdirs()
+        src.walkTopDown().forEach { file ->
+            val relative = file.relativeTo(src).path
+            val target = if (relative.isEmpty()) dst else File(dst, relative)
+            if (file.isDirectory) {
+                target.mkdirs()
+            } else {
+                target.parentFile?.mkdirs()
+                file.copyTo(target, overwrite = true)
+            }
+        }
+        src.deleteRecursively()
+    }
+
+    /**
+     * Does the actual JGit clone + checkout + LFS fetch into [destination], which the caller
+     * guarantees is a fresh, empty, app-private directory (see [cloneRepo]). Retry logic here
+     * handles genuinely transient issues (Inflater races under memory pressure, occasional
+     * lock-file commit races); it no longer needs to work around structurally non-atomic public
+     * storage, since that's now handled by staging + a single move in [cloneRepo].
+     */
+    private fun cloneIntoStaging(
+        cloneUrl: String,
+        destination: File,
+        depth: Int,
+        onProgress: (String) -> Unit
+    ): GitOpResult {
+        val label = destination.name
         var lastError: Exception? = null
         // More attempts for large packs / LFS-heavy repos where Android GC closes Inflater mid-read.
         val maxAttempts = 5
@@ -474,7 +559,7 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
             // multi-GB downloads (Android kernel trees) and start over.
             val hasPartialGit = isValidGitDir(destination)
             if (attempt > 1 && !hasPartialGit) {
-                cleanUpFailedCloneDestination(destination, alreadyExisted)
+                cleanUpFailedCloneDestination(destination, alreadyExisted = true)
                 // Give the GC time to release SoftReferences holding stale WindowCache entries.
                 System.gc()
                 try { Thread.sleep(800L * attempt) } catch (_: InterruptedException) {}
@@ -482,9 +567,8 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                 AppLog.w(TAG, "clone retry $attempt/$maxAttempts for $label after: ${lastError?.message}")
             } else if (attempt > 1 && hasPartialGit) {
                 // A failed LockFile.commit() (e.g. the config write) can leave a stray *.lock
-                // file behind on the OEM storage stacks that hit this. We keep the downloaded
-                // pack data, but a leftover .lock would make the retry's own lock attempt fail
-                // too, so clear those before trying again.
+                // file behind. We keep the downloaded pack data, but a leftover .lock would make
+                // the retry's own lock attempt fail too, so clear those before trying again.
                 if (lastError != null && isLockFileCommitRace(lastError!!)) {
                     clearStaleGitLockFiles(destination)
                 }
@@ -563,7 +647,6 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                         git.close()
                     }
                 }
-                rememberExternalRepoPath(destination)
                 ensureMobileRepoConfig(destination.absolutePath)
                 val lfsMsg = maybeFetchLfs(destination.absolutePath, cloneUrl, onProgress)
                 logIfDirtyAfterClone(destination.absolutePath)
@@ -576,12 +659,12 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                     AppLog.w(TAG, "clone inflater race (transport) on $label — will retry")
                     continue
                 }
-                cleanUpFailedCloneDestination(destination, alreadyExisted)
+                cleanUpFailedCloneDestination(destination, alreadyExisted = true)
                 AppLog.e(TAG, "clone failed (transport): $label", e)
                 return if (isAuthFailure(e)) GitOpResult.AuthRequired(cloneUrl)
                 else GitOpResult.Error(e.message ?: "Transport error", e)
             } catch (e: OutOfMemoryError) {
-                cleanUpFailedCloneDestination(destination, alreadyExisted)
+                cleanUpFailedCloneDestination(destination, alreadyExisted = true)
                 System.gc()
                 AppLog.e(TAG, "clone OOM: $label", e)
                 return GitOpResult.Error(
@@ -605,17 +688,16 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                 // remotes. If a .git directory was created, treat it as a successful empty clone
                 // instead of wiping the destination.
                 if (isEmptyRepoCloneError(e) && isValidGitDir(destination)) {
-                    rememberExternalRepoPath(destination)
                     ensureMobileRepoConfig(destination.absolutePath)
                     AppLog.i(TAG, "clone of empty repo (via exception fallback): ${destination.absolutePath}")
                     return GitOpResult.Success
                 }
-                cleanUpFailedCloneDestination(destination, alreadyExisted)
+                cleanUpFailedCloneDestination(destination, alreadyExisted = true)
                 AppLog.e(TAG, "clone failed: $label", e)
                 return GitOpResult.Error(e.message ?: "Clone failed", e)
             }
         }
-        cleanUpFailedCloneDestination(destination, alreadyExisted)
+        cleanUpFailedCloneDestination(destination, alreadyExisted = true)
         return GitOpResult.Error(
             lastError?.message
                 ?: "Clone failed after $maxAttempts attempts (often memory pressure on large repos)",
