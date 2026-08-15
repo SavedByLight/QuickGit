@@ -1147,7 +1147,7 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                 val cfg = git.repository.config
                 cfg.setString("remote", n, "url", u)
                 if (cfg.getString("remote", n, "fetch") == null) {
-                    cfg.setString("remote", n, "fetch", "+refs/heads/*:refs/remotes/$n/*")
+                    cfg.setString("remote", n, "fetch", "+refs/heads/" + "*:refs/remotes/$n/" + "*")
                 }
                 cfg.save()
             }
@@ -1176,7 +1176,7 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
 
     /**
      * Fetch all branches from a named remote (e.g. a fork added as "fork" or "contributor").
-     * Updates refs under refs/remotes/<name>/*.
+     * Updates remote-tracking refs for that remote (refs/remotes/NAME/...).
      */
     fun fetchRemote(path: String, remoteName: String, onProgress: (String) -> Unit = {}): GitOpResult {
         val remote = remoteName.trim().ifBlank { "origin" }
@@ -1215,37 +1215,49 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
      * Cherry-pick a single commit onto HEAD (e.g. a commit from a fetched fork branch).
      * [commitHash] may be a full or abbreviated SHA.
      */
-    fun cherryPick(path: String, commitHash: String): GitOpResult = try {
+    fun cherryPick(path: String, commitHash: String): GitOpResult {
         AppLog.i(TAG, "cherryPick: $commitHash")
-        openGit(path).use { git ->
-            val objectId = git.repository.resolve(commitHash)
-                ?: return GitOpResult.Error("Commit not found: $commitHash — fetch the fork remote first")
-            RevWalk(git.repository).use { walk ->
-                val commit = walk.parseCommit(objectId)
-                val result = git.cherryPick().include(commit).call()
-                when (result.status) {
-                    org.eclipse.jgit.api.CherryPickResult.CherryPickStatus.OK -> {
-                        AppLog.i(TAG, "cherryPick succeeded: $commitHash")
-                        GitOpResult.Success
+        return try {
+            openGit(path).use { git ->
+                val objectId = git.repository.resolve(commitHash)
+                if (objectId == null) {
+                    return@use GitOpResult.Error(
+                        "Commit not found: $commitHash — fetch the fork remote first"
+                    )
+                }
+                val walk = RevWalk(git.repository)
+                try {
+                    val commit = walk.parseCommit(objectId)
+                    val result = git.cherryPick().include(commit).call()
+                    val status = result.status
+                    when (status) {
+                        org.eclipse.jgit.api.CherryPickResult.CherryPickStatus.OK -> {
+                            AppLog.i(TAG, "cherryPick succeeded: $commitHash")
+                            GitOpResult.Success
+                        }
+                        org.eclipse.jgit.api.CherryPickResult.CherryPickStatus.CONFLICTING -> {
+                            val paths = result.failingPaths?.keys?.toList().orEmpty()
+                            AppLog.w(TAG, "cherryPick conflict: $paths")
+                            GitOpResult.Conflict(paths)
+                        }
+                        else -> {
+                            val failing = result.failingPaths
+                            val msg = if (failing != null && failing.isNotEmpty()) {
+                                failing.entries.joinToString("; ") { "${it.key}: ${it.value}" }
+                            } else {
+                                status?.name ?: "Cherry-pick failed"
+                            }
+                            GitOpResult.Error(msg)
+                        }
                     }
-                    org.eclipse.jgit.api.CherryPickResult.CherryPickStatus.CONFLICTING -> {
-                        val paths = result.failingPaths?.keys?.toList() ?: emptyList()
-                        AppLog.w(TAG, "cherryPick conflict: $paths")
-                        GitOpResult.Conflict(paths)
-                    }
-                    else -> {
-                        val msg = result.failingPaths?.entries
-                            ?.joinToString("; ") { "${it.key}: ${it.value}" }
-                            ?: result.status?.name
-                            ?: "Cherry-pick failed"
-                        GitOpResult.Error(msg)
-                    }
+                } finally {
+                    walk.close()
                 }
             }
+        } catch (e: Exception) {
+            AppLog.e(TAG, "cherryPick failed", e)
+            GitOpResult.Error(e.message ?: "Cherry-pick failed", e)
         }
-    } catch (e: Exception) {
-        AppLog.e(TAG, "cherryPick failed", e)
-        GitOpResult.Error(e.message ?: "Cherry-pick failed", e)
     }
 
     /** Appends a Signed-off-by trailer if one is not already present (DCO / git commit -s). */
