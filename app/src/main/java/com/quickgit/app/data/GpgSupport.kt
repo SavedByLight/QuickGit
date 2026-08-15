@@ -51,13 +51,46 @@ object GpgSupport {
         }
     }
 
-    /** Validates that the armored blob parses as a secret key ring with at least one signing-capable key. */
+    /**
+     * Validates that the armored blob parses as a secret key ring with at least one
+     * usable secret key, and that the passphrase (if any) unlocks it.
+     * @return hex key id of the signing key
+     */
     fun validateArmoredSecretKey(armored: String, passphrase: String?): String {
-        val secretKey = findSigningSecretKey(armored)
-            ?: throw IllegalArgumentException("No signing-capable secret key found in the armored key")
-        extractPrivateKey(secretKey, passphrase) // fails if passphrase wrong / key unreadable
-        val id = java.lang.Long.toHexString(secretKey.keyID).uppercase()
-        return id
+        val cleaned = armored.trim()
+        if (cleaned.isEmpty()) {
+            throw IllegalArgumentException("Key is empty")
+        }
+        if (!cleaned.contains("-----BEGIN") || !cleaned.contains("-----END")) {
+            throw IllegalArgumentException(
+                "Not an ASCII-armored key. Export with: gpg --armor --export-secret-keys YOUR_KEY_ID"
+            )
+        }
+        if (cleaned.contains("PUBLIC KEY")) {
+            throw IllegalArgumentException(
+                "This looks like a public key. Paste the SECRET / PRIVATE key block instead."
+            )
+        }
+        val secretKey = try {
+            findSigningSecretKey(cleaned)
+        } catch (e: Exception) {
+            throw IllegalArgumentException(
+                "Could not parse armored key: ${e.message ?: e.javaClass.simpleName}. " +
+                    "Export with: gpg --armor --export-secret-keys YOUR_KEY_ID",
+                e
+            )
+        } ?: throw IllegalArgumentException(
+            "No usable secret key found in the armored block. " +
+                "Make sure you exported a secret key (not public) and that it includes a signing subkey."
+        )
+        try {
+            extractPrivateKey(secretKey, passphrase)
+        } catch (e: PGPException) {
+            throw e
+        } catch (e: Exception) {
+            throw PGPException("Could not unlock GPG key: ${e.message ?: e.javaClass.simpleName}", e)
+        }
+        return java.lang.Long.toHexString(secretKey.keyID).uppercase()
     }
 
     private class StoredKeyGpgSigner(
@@ -108,19 +141,26 @@ object GpgSupport {
         return out.toByteArray()
     }
 
+    /**
+     * Prefer a non-empty signing-capable secret key; fall back to any non-empty secret key
+     * (some exports mark the primary key oddly, or only include a signing subkey).
+     */
     private fun findSigningSecretKey(armored: String): PGPSecretKey? {
         val input = PGPUtil.getDecoderStream(ByteArrayInputStream(armored.toByteArray(Charsets.UTF_8)))
         val rings = PGPSecretKeyRingCollection(input, JcaKeyFingerprintCalculator())
+        var fallback: PGPSecretKey? = null
         val ringIt = rings.keyRings
         while (ringIt.hasNext()) {
             val keyRing = ringIt.next() as PGPSecretKeyRing
             val keyIt = keyRing.secretKeys
             while (keyIt.hasNext()) {
                 val key = keyIt.next() as PGPSecretKey
-                if (!key.isPrivateKeyEmpty && key.isSigningKey) return key
+                if (key.isPrivateKeyEmpty) continue
+                if (key.isSigningKey) return key
+                if (fallback == null) fallback = key
             }
         }
-        return null
+        return fallback
     }
 
     private fun extractPrivateKey(secretKey: PGPSecretKey, passphrase: String?): PGPPrivateKey {
@@ -131,7 +171,10 @@ object GpgSupport {
             secretKey.extractPrivateKey(decryptorBuilder.build(chars))
         } catch (e: PGPException) {
             if (chars.isEmpty()) {
-                throw PGPException("GPG key is encrypted — provide the passphrase in Settings", e)
+                throw PGPException(
+                    "GPG key is encrypted — enter the passphrase in Settings and tap Save again",
+                    e
+                )
             }
             throw PGPException("Could not unlock GPG key — check the passphrase", e)
         }

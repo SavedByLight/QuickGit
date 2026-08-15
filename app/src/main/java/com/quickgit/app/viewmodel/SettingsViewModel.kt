@@ -3,6 +3,7 @@ package com.quickgit.app.viewmodel
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.quickgit.app.data.AppLog
 import com.quickgit.app.data.CredentialStore
 import com.quickgit.app.data.GitHubAccountManager
 import com.quickgit.app.data.GitLabAccountManager
@@ -507,9 +508,14 @@ class SettingsViewModel(
         val pass = s.gpgPassphrase.trim().ifBlank { null }
         try {
             if (key.isNotBlank()) {
-                // Validate before persisting
+                // Validate before persisting so we never store a key we cannot unlock
                 val keyId = com.quickgit.app.data.GpgSupport.validateArmoredSecretKey(key, pass)
                 credentialStore.saveGpgKey(key, pass)
+                // Confirm it is readable from storage
+                val stored = credentialStore.getGpgPrivateKey()
+                if (stored.isNullOrBlank()) {
+                    throw IllegalStateException("Key write reported success but nothing is stored — try again")
+                }
                 _state.value = s.copy(
                     gpgKey = "",
                     gpgPassphrase = "",
@@ -520,8 +526,8 @@ class SettingsViewModel(
                 refreshGpg()
             } else if (s.hasStoredGpgKey) {
                 credentialStore.saveGpgPassphrase(pass)
-                // Re-validate existing key with new passphrase
-                val stored = credentialStore.getGpgPrivateKey()!!
+                val stored = credentialStore.getGpgPrivateKey()
+                    ?: throw IllegalStateException("Stored GPG key is missing — paste the secret key again")
                 com.quickgit.app.data.GpgSupport.validateArmoredSecretKey(stored, pass)
                 _state.value = s.copy(
                     gpgPassphrase = "",
@@ -530,16 +536,29 @@ class SettingsViewModel(
                 )
             } else {
                 _state.value = s.copy(
-                    statusMessage = "Paste an armored GPG secret key first",
+                    statusMessage = "Paste an armored GPG secret key first (BEGIN PGP PRIVATE/SECRET KEY BLOCK)",
                     isError = true
                 )
             }
         } catch (e: Exception) {
+            val msg = deepestMessage(e)
+            AppLog.e("SettingsViewModel", "saveGpgKey failed: $msg", e)
             _state.value = s.copy(
-                statusMessage = "GPG key error: ${e.message ?: e.javaClass.simpleName}",
+                // Keep gpgKey / passphrase in the fields so the user can fix and retry
+                statusMessage = "GPG key error: $msg",
                 isError = true
             )
         }
+    }
+
+    private fun deepestMessage(e: Throwable): String {
+        var cur: Throwable? = e
+        var last = e.message?.takeIf { it.isNotBlank() }
+        while (cur != null) {
+            cur.message?.takeIf { it.isNotBlank() }?.let { last = it }
+            cur = cur.cause
+        }
+        return last ?: e.javaClass.simpleName
     }
 
     fun clearGpgKey() {

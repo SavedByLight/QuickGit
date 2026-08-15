@@ -398,7 +398,10 @@ fun SettingsScreen(
             Spacer(Modifier.height(4.dp))
             Text(
                 "Import an armored OpenPGP secret key to sign commits. Add the matching public key " +
-                    "to your GitHub account (Settings → SSH and GPG keys) so GitHub shows Verified.",
+                    "to your GitHub account (Settings → SSH and GPG keys) so GitHub shows Verified.\n\n" +
+                    "Export on a computer:\n" +
+                    "  gpg --armor --export-secret-keys YOUR_KEY_ID\n" +
+                    "Paste the full block including BEGIN/END lines. If the key is encrypted, enter the passphrase below before Save.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
