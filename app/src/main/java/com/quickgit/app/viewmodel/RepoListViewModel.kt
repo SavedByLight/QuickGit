@@ -15,6 +15,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 enum class CreateRepoProvider {
+    /** Local-only git repo (no remote until the user adds one and pushes). */
+    LOCAL,
     GITHUB,
     GITLAB
 }
@@ -79,6 +81,7 @@ class RepoListViewModel(
     }
 
     fun availableCreateProviders(): List<CreateRepoProvider> = buildList {
+        add(CreateRepoProvider.LOCAL)
         if (isGitHubConnected()) add(CreateRepoProvider.GITHUB)
         if (isGitLabConnected()) add(CreateRepoProvider.GITLAB)
     }
@@ -92,8 +95,32 @@ class RepoListViewModel(
         provider: CreateRepoProvider
     ) {
         when (provider) {
+            CreateRepoProvider.LOCAL -> createLocal(name)
             CreateRepoProvider.GITHUB -> createOnGitHub(name, description, isPrivate)
             CreateRepoProvider.GITLAB -> createOnGitLab(name, description, isPrivate)
+        }
+    }
+
+    private fun createLocal(name: String) {
+        viewModelScope.launch {
+            _creating.value = true
+            _errorMessage.value = null
+            val result = withContext(Dispatchers.IO) {
+                repoManager.initLocalRepo(name.trim(), initialBranch = "main")
+            }
+            _creating.value = false
+            when (result) {
+                is com.quickgit.app.data.models.GitOpResult.Success -> {
+                    _statusMessage.value = "Created local repository '${name.trim()}' (branch main)"
+                    refresh()
+                }
+                is com.quickgit.app.data.models.GitOpResult.Error -> {
+                    _errorMessage.value = result.message
+                }
+                else -> {
+                    _errorMessage.value = "Could not create local repository"
+                }
+            }
         }
     }
 

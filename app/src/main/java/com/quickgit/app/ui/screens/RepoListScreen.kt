@@ -279,7 +279,7 @@ private fun CreateRepoFromListDialog(
     var provider by remember {
         mutableStateOf(
             availableProviders.firstOrNull()
-                ?: com.quickgit.app.viewmodel.CreateRepoProvider.GITHUB
+                ?: com.quickgit.app.viewmodel.CreateRepoProvider.LOCAL
         )
     }
 
@@ -290,7 +290,7 @@ private fun CreateRepoFromListDialog(
             Column {
                 if (availableProviders.size > 1) {
                     Text(
-                        "Host",
+                        "Where",
                         style = MaterialTheme.typography.labelLarge,
                         modifier = Modifier.padding(bottom = 8.dp)
                     )
@@ -306,6 +306,7 @@ private fun CreateRepoFromListDialog(
                                 label = {
                                     Text(
                                         when (p) {
+                                            com.quickgit.app.viewmodel.CreateRepoProvider.LOCAL -> "Local"
                                             com.quickgit.app.viewmodel.CreateRepoProvider.GITHUB -> "GitHub"
                                             com.quickgit.app.viewmodel.CreateRepoProvider.GITLAB -> "GitLab"
                                         }
@@ -318,6 +319,7 @@ private fun CreateRepoFromListDialog(
                 } else if (availableProviders.size == 1) {
                     Text(
                         when (availableProviders.first()) {
+                            com.quickgit.app.viewmodel.CreateRepoProvider.LOCAL -> "Local only (no remote until you push)"
                             com.quickgit.app.viewmodel.CreateRepoProvider.GITHUB -> "Creating on GitHub"
                             com.quickgit.app.viewmodel.CreateRepoProvider.GITLAB -> "Creating on GitLab"
                         },
@@ -334,26 +336,35 @@ private fun CreateRepoFromListDialog(
                     enabled = !creating,
                     modifier = Modifier.fillMaxWidth()
                 )
-                Spacer(Modifier.height(12.dp))
-                OutlinedTextField(
-                    value = description,
-                    onValueChange = { description = it },
-                    label = { Text("Description (optional)") },
-                    enabled = !creating,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Spacer(Modifier.height(8.dp))
-                Row(
-                    Modifier.fillMaxWidth().clickable(enabled = !creating) { isPrivate = !isPrivate },
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Checkbox(checked = isPrivate, onCheckedChange = { isPrivate = it }, enabled = !creating)
+                if (provider == com.quickgit.app.viewmodel.CreateRepoProvider.LOCAL) {
+                    Spacer(Modifier.height(8.dp))
                     Text(
-                        if (provider == com.quickgit.app.viewmodel.CreateRepoProvider.GITLAB)
-                            "Private project"
-                        else
-                            "Private repository"
+                        "Creates a local git repo on branch main. Add a remote later and push when you're ready — nothing is uploaded until then.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                } else {
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = description,
+                        onValueChange = { description = it },
+                        label = { Text("Description (optional)") },
+                        enabled = !creating,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        Modifier.fillMaxWidth().clickable(enabled = !creating) { isPrivate = !isPrivate },
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Checkbox(checked = isPrivate, onCheckedChange = { isPrivate = it }, enabled = !creating)
+                        Text(
+                            if (provider == com.quickgit.app.viewmodel.CreateRepoProvider.GITLAB)
+                                "Private project"
+                            else
+                                "Private repository"
+                        )
+                    }
                 }
             }
         },

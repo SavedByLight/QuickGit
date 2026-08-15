@@ -689,6 +689,9 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                     }
                 }
                 ensureMobileRepoConfig(destination.absolutePath)
+                // Prefer the remote's actual default branch (origin/HEAD) over JGit/legacy
+                // fallbacks like "master" when that branch doesn't exist on the remote.
+                alignToRemoteDefaultBranch(destination)
                 val lfsMsg = maybeFetchLfs(destination.absolutePath, cloneUrl, onProgress)
                 logIfDirtyAfterClone(destination.absolutePath)
                 AppLog.i(TAG, "clone succeeded: ${destination.absolutePath}" + (lfsMsg?.let { " ($it)" } ?: ""))
@@ -730,6 +733,7 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                 // instead of wiping the destination.
                 if (isEmptyRepoCloneError(e) && isValidGitDir(destination)) {
                     ensureMobileRepoConfig(destination.absolutePath)
+                    alignToRemoteDefaultBranch(destination)
                     AppLog.i(TAG, "clone of empty repo (via exception fallback): ${destination.absolutePath}")
                     return GitOpResult.Success
                 }
@@ -1400,11 +1404,15 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                     val cmd = git.push()
                         .setRemote(remoteName)
                         .setProgressMonitor(TextProgress(onProgress))
-                    val lb = localBranch?.takeIf { it.isNotBlank() }
+                    // Always push a single branch — never all local branches. Local-only
+                    // branches stay local until the user explicitly pushes them.
+                    val current = try { git.repository.branch } catch (_: Exception) { null }
+                    val lb = localBranch?.takeIf { it.isNotBlank() } ?: current
                     val rb = remoteBranch?.takeIf { it.isNotBlank() } ?: lb
-                    if (lb != null && rb != null) {
-                        cmd.setRefSpecs(org.eclipse.jgit.transport.RefSpec("refs/heads/$lb:refs/heads/$rb"))
+                    if (lb.isNullOrBlank()) {
+                        return@use GitOpResult.Error("Detached HEAD — check out a branch before push")
                     }
+                    cmd.setRefSpecs(org.eclipse.jgit.transport.RefSpec("refs/heads/$lb:refs/heads/$rb"))
                     applyTransportConfig(cmd, remoteUrl)
                     val results = cmd.call()
                     val rejected = results.flatMap { it.remoteUpdates }
@@ -1715,6 +1723,112 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         }
     }
 
+    /**
+     * After a clone, make sure the local HEAD is the remote's real default branch.
+     *
+     * JGit (and some remotes) still fall back to `master` when advertising is incomplete
+     * or the remote is empty. GitHub/GitLab default to `main`. This:
+     * 1) Reads `refs/remotes/origin/HEAD` (symbolic) when present and checks out that branch.
+     * 2) For empty repos with no commits, rewrites unborn HEAD from `master` → `main`.
+     * 3) Never invents a `master` branch that does not exist on the remote.
+     */
+    private fun alignToRemoteDefaultBranch(destination: File) {
+        try {
+            openGit(destination.absolutePath).use { git ->
+                val repo = git.repository
+                val originHead = repo.findRef("refs/remotes/origin/HEAD")
+                val remoteDefault = when {
+                    originHead != null && originHead.isSymbolic ->
+                        originHead.target.name.removePrefix("refs/remotes/origin/")
+                    originHead != null ->
+                        originHead.name.removePrefix("refs/remotes/origin/")
+                    else -> null
+                }?.takeIf { it.isNotBlank() && it != "HEAD" }
+
+                if (remoteDefault != null) {
+                    val localRef = repo.findRef("refs/heads/$remoteDefault")
+                    val remoteRef = repo.findRef("refs/remotes/origin/$remoteDefault")
+                    val current = try { repo.branch } catch (_: Exception) { null }
+                    if (current != remoteDefault) {
+                        when {
+                            localRef != null -> {
+                                git.checkout().setName(remoteDefault).call()
+                                AppLog.i(TAG, "clone: checked out remote default branch '$remoteDefault'")
+                            }
+                            remoteRef != null -> {
+                                git.checkout()
+                                    .setCreateBranch(true)
+                                    .setName(remoteDefault)
+                                    .setUpstreamMode(CreateBranchCommand.SetupUpstreamMode.TRACK)
+                                    .setStartPoint(remoteRef.name)
+                                    .call()
+                                AppLog.i(TAG, "clone: created tracking branch for remote default '$remoteDefault'")
+                            }
+                            else -> {
+                                // Remote advertised default name but no objects yet (empty repo).
+                                setUnbornHead(repo, remoteDefault)
+                                AppLog.i(TAG, "clone: empty repo — unborn HEAD set to '$remoteDefault'")
+                            }
+                        }
+                    }
+                    return
+                }
+
+                // No origin/HEAD. Empty clone often leaves "ref: refs/heads/master" with no
+                // master ref — prefer modern default `main`.
+                val headId = try { repo.resolve(org.eclipse.jgit.lib.Constants.HEAD) } catch (_: Exception) { null }
+                if (headId == null) {
+                    val headRef = repo.exactRef(org.eclipse.jgit.lib.Constants.HEAD)
+                    val target = headRef?.target?.name ?: ""
+                    if (target.endsWith("/master") || target.isBlank()) {
+                        setUnbornHead(repo, "main")
+                        AppLog.i(TAG, "clone: empty repo with no origin/HEAD — unborn HEAD set to 'main'")
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            AppLog.w(TAG, "alignToRemoteDefaultBranch failed (non-fatal): ${e.message}")
+        }
+    }
+
+    /** Points HEAD at an unborn branch (no commits yet), e.g. `ref: refs/heads/main`. */
+    private fun setUnbornHead(repo: Repository, branchName: String) {
+        val safe = branchName.trim().ifBlank { "main" }
+        val refUpdate = repo.updateRef(org.eclipse.jgit.lib.Constants.HEAD)
+        refUpdate.link("refs/heads/$safe")
+    }
+
+    /**
+     * Creates a **local-only** git repository under [reposRoot] (no remote).
+     * Initial branch defaults to `main`. Nothing is pushed until the user adds a remote and pushes.
+     */
+    fun initLocalRepo(folderName: String, initialBranch: String = "main"): GitOpResult {
+        val name = folderName.trim().ifBlank { return GitOpResult.Error("Folder name required") }
+        val branch = initialBranch.trim().ifBlank { "main" }
+        val destination = File(reposRoot, name)
+        if (destination.exists() && destination.listFiles()?.isNotEmpty() == true) {
+            return GitOpResult.Error("'$name' already exists and isn't empty")
+        }
+        return try {
+            destination.mkdirs()
+            Git.init().setDirectory(destination).call().use { git ->
+                applyMobileRepoConfig(git)
+                setUnbornHead(git.repository, branch)
+            }
+            ensureMobileRepoConfig(destination.absolutePath)
+            AppLog.i(TAG, "initLocalRepo: ${destination.absolutePath} branch=$branch")
+            GitOpResult.Success
+        } catch (e: Exception) {
+            AppLog.e(TAG, "initLocalRepo failed: $name", e)
+            destination.deleteRecursively()
+            GitOpResult.Error(e.message ?: "Failed to create local repository", e)
+        }
+    }
+
+    /**
+     * Creates a **local** branch only. It is not published to any remote until the user pushes.
+     * Optional [checkout] switches HEAD to the new branch after creation.
+     */
     fun createBranch(path: String, name: String, checkout: Boolean): GitOpResult = withRepoLock(path) {
         openGit(path).use { git ->
             git.branchCreate().setName(name).call()
