@@ -90,6 +90,7 @@ when the public location is used.
  - Samsung Galaxy A20e (Exynos)
  - Samsung Galaxy A12 (Mediatek)
  - Samsung Galaxy A12 Nacho (Exynos)
+ - Google Pixel 9a (Tensor G4)
  - Google Pixel 10a (Tensor G4)
  - Amazon Fire 10 13th gen (Mediatek)
  - Samsung Chromebook 4 (Intel)

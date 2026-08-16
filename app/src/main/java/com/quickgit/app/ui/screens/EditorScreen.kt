@@ -55,7 +55,11 @@ fun EditorScreen(
         }
     }
 
+    // enableEdgeToEdge() means adjustResize alone does not lift content above the
+    // IME. imePadding() on the Scaffold shrinks the layout when the keyboard is
+    // visible so the bottom of the text and the save bar stay reachable.
     Scaffold(
+        modifier = Modifier.imePadding(),
         snackbarHost = { SnackbarHost(snackbarHost) },
         topBar = {
             TopAppBar(
