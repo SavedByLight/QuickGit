@@ -96,3 +96,4 @@ when the public location is used.
  - Amazon Fire 10 13th gen (Mediatek)
  - Samsung Chromebook 4 (Intel)
  - Honor Pad 10 (Snapdragon)
+ - Xiaomi Mi A2 Lite (Snapdragon)
