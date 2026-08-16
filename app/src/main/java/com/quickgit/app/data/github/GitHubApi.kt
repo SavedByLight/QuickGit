@@ -102,6 +102,16 @@ class GitHubApi(private val token: String?) {
         }
     }
 
+    /** Global repository search (GitHub Search API). [page] is 1-based. */
+    fun searchRepositories(query: String, perPage: Int = 30, page: Int = 1): Result<List<GitHubRemoteRepo>> = runCatching {
+        val q = query.trim()
+        if (q.isEmpty()) return@runCatching emptyList()
+        val encoded = java.net.URLEncoder.encode(q, "UTF-8")
+        val arr = (request("GET", "/search/repositories?q=$encoded&per_page=$perPage&page=$page&sort=updated") as JSONObject)
+            .getJSONArray("items")
+        (0 until arr.length()).map { i -> arr.getJSONObject(i).toRemoteRepo() }
+    }
+
     /** Public repos for a user (or the authenticated user when login matches). */
     fun listPublicRepos(login: String, perPage: Int = 30, page: Int = 1): Result<List<GitHubRemoteRepo>> = runCatching {
         val path = "/users/${login.trim()}/repos?sort=updated&direction=desc&per_page=$perPage&page=$page&type=owner"

@@ -437,7 +437,8 @@ class ProfileViewModel(
                 )
                 result is PrOpResult.AuthRequired -> _state.value = _state.value.copy(
                     forkingRepoId = null,
-                    authRequired = true
+                    authRequired = true,
+                    forkError = "Connect GitHub in Credentials to fork"
                 )
                 else -> _state.value = _state.value.copy(forkingRepoId = null, forkError = "Fork failed")
             }
