@@ -53,6 +53,55 @@ class AppUpdateManager(
 ) {
     private val TAG = "AppUpdateManager"
 
+    companion object {
+        private const val PREFS_NAME = "app_update_prefs"
+        private const val KEY_SNOOZE_UNTIL_MS = "snooze_until_ms"
+        private const val KEY_NEVER = "never_prompt"
+    }
+
+    private val prefs by lazy {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    }
+
+    /**
+     * True when the user asked not to be auto-prompted for updates right now
+     * (timed snooze still active, or "never").
+     * Manual "Check for updates" in Settings ignores this.
+     */
+    fun isAutoPromptSuppressed(): Boolean {
+        if (prefs.getBoolean(KEY_NEVER, false)) return true
+        val until = prefs.getLong(KEY_SNOOZE_UNTIL_MS, 0L)
+        return until > System.currentTimeMillis()
+    }
+
+    /** Suppress auto prompts for [days] days from now. */
+    fun snoozeForDays(days: Int) {
+        require(days > 0)
+        val until = System.currentTimeMillis() + days * 24L * 60L * 60L * 1000L
+        prefs.edit()
+            .putLong(KEY_SNOOZE_UNTIL_MS, until)
+            .putBoolean(KEY_NEVER, false)
+            .apply()
+        AppLog.i(TAG, "Update prompt snoozed for $days days (until $until)")
+    }
+
+    /** Never auto-prompt again (until the user clears it via a future Settings option). */
+    fun snoozeNever() {
+        prefs.edit()
+            .putBoolean(KEY_NEVER, true)
+            .remove(KEY_SNOOZE_UNTIL_MS)
+            .apply()
+        AppLog.i(TAG, "Update auto-prompt disabled permanently")
+    }
+
+    /** Clear any snooze / never so the next launch can prompt again. */
+    fun clearSnooze() {
+        prefs.edit()
+            .remove(KEY_SNOOZE_UNTIL_MS)
+            .remove(KEY_NEVER)
+            .apply()
+    }
+
     fun currentVersion(): AppVersionInfo {
         val pm = context.packageManager
         val pkg = context.packageName
