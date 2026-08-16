@@ -503,6 +503,11 @@ class ProfileViewModel(
     }
 
     fun consumeMessages() {
-        _state.value = _state.value.copy(statusMessage = null, forkError = null, forkedRepo = null)
+        _state.value = _state.value.copy(
+            statusMessage = null,
+            forkError = null,
+            forkedRepo = null,
+            authRequired = false
+        )
     }
 }

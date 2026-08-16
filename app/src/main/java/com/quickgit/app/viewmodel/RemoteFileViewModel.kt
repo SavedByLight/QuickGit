@@ -40,4 +40,9 @@ class RemoteFileViewModel(
             }
         }
     }
+
+    /** Clear the one-shot auth signal so returning from Settings does not re-navigate. */
+    fun consumeAuthRequired() {
+        _state.value = _state.value.copy(authRequired = false)
+    }
 }

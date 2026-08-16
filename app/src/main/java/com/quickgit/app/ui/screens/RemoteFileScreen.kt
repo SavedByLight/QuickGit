@@ -50,7 +50,11 @@ fun RemoteFileScreen(
     val snackbarHostState = remember { SnackbarHostState() }
 
     LaunchedEffect(state.authRequired) {
-        if (state.authRequired) onNeedsAuth()
+        if (state.authRequired) {
+            // Consume first so Back from Credentials does not re-open Settings in a loop.
+            vm.consumeAuthRequired()
+            onNeedsAuth()
+        }
     }
 
     LaunchedEffect(state.error) {

@@ -62,4 +62,9 @@ class RemoteBrowseViewModel(
     fun consumeError() {
         _state.value = _state.value.copy(error = null)
     }
+
+    /** Clear the one-shot auth signal so returning from Settings does not re-navigate. */
+    fun consumeAuthRequired() {
+        _state.value = _state.value.copy(authRequired = false)
+    }
 }

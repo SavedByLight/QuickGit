@@ -29,7 +29,7 @@ fun QuickGitNavGraph() {
                 onBrowseGitHub = { navController.navigate(Dest.BROWSE_GITHUB) },
                 onOpenProfile = { navController.navigate(Dest.profile()) },
                 onSearchPeople = { navController.navigate(Dest.USER_SEARCH) },
-                onSettings = { navController.navigate(Dest.SETTINGS) },
+                onSettings = { navController.navigate(Dest.SETTINGS) { launchSingleTop = true } },
                 onLogs = { navController.navigate(Dest.LOGS) }
             )
         }
@@ -44,7 +44,7 @@ fun QuickGitNavGraph() {
                 vm = vm,
                 onBack = { navController.popBackStack() },
                 onUserClick = { login -> navController.navigate(Dest.profile(login)) },
-                onNeedsAuth = { navController.navigate(Dest.SETTINGS) }
+                onNeedsAuth = { navController.navigate(Dest.SETTINGS) { launchSingleTop = true } }
             )
         }
 
@@ -59,7 +59,7 @@ fun QuickGitNavGraph() {
                 onOpenRepo = { repo ->
                     navController.navigate(Dest.remoteBrowse(repo.ownerLogin, repo.name, repo.defaultBranch))
                 },
-                onNeedsAuth = { navController.navigate(Dest.SETTINGS) }
+                onNeedsAuth = { navController.navigate(Dest.SETTINGS) { launchSingleTop = true } }
             )
         }
 
@@ -78,7 +78,7 @@ fun QuickGitNavGraph() {
                 onOpenRepo = { repo ->
                     navController.navigate(Dest.remoteBrowse(repo.ownerLogin, repo.name, repo.defaultBranch))
                 },
-                onNeedsAuth = { navController.navigate(Dest.SETTINGS) }
+                onNeedsAuth = { navController.navigate(Dest.SETTINGS) { launchSingleTop = true } }
             )
         }
 
@@ -108,7 +108,7 @@ fun QuickGitNavGraph() {
                 vm = vm,
                 onBack = { navController.popBackStack() },
                 onOpenFile = { filePath -> navController.navigate(Dest.remoteFile(owner, repo, ref, filePath)) },
-                onNeedsAuth = { navController.navigate(Dest.SETTINGS) }
+                onNeedsAuth = { navController.navigate(Dest.SETTINGS) { launchSingleTop = true } }
             )
         }
 
@@ -137,7 +137,7 @@ fun QuickGitNavGraph() {
                 path = path,
                 vm = vm,
                 onBack = { navController.popBackStack() },
-                onNeedsAuth = { navController.navigate(Dest.SETTINGS) }
+                onNeedsAuth = { navController.navigate(Dest.SETTINGS) { launchSingleTop = true } }
             )
         }
 
@@ -152,7 +152,7 @@ fun QuickGitNavGraph() {
                 vm = vm,
                 onBack = { navController.popBackStack() },
                 onCloned = { navController.popBackStack() },
-                onNeedsAuth = { url -> navController.navigate(Dest.SETTINGS) },
+                onNeedsAuth = { url -> navController.navigate(Dest.SETTINGS) { launchSingleTop = true } },
                 onBrowseGitHub = { navController.navigate(Dest.BROWSE_GITHUB) }
             )
         }
@@ -165,7 +165,7 @@ fun QuickGitNavGraph() {
                 onCloned = {
                     navController.popBackStack(Dest.REPO_LIST, inclusive = false)
                 },
-                onNeedsAuth = { navController.navigate(Dest.SETTINGS) }
+                onNeedsAuth = { navController.navigate(Dest.SETTINGS) { launchSingleTop = true } }
             )
         }
 
@@ -194,7 +194,7 @@ fun QuickGitNavGraph() {
                 onOpenWorkflows = { navController.navigate(Dest.workflows(repoPath)) },
                 onOpenReleases = { navController.navigate(Dest.releases(repoPath)) },
                 onConflicts = { navController.navigate(Dest.merge(repoPath)) },
-                onNeedsAuth = { _ -> navController.navigate(Dest.SETTINGS) }
+                onNeedsAuth = { _ -> navController.navigate(Dest.SETTINGS) { launchSingleTop = true } }
             )
         }
 
@@ -291,7 +291,7 @@ fun QuickGitNavGraph() {
             IssuesScreen(
                 vm = vm,
                 onBack = { navController.popBackStack() },
-                onNeedsAuth = { navController.navigate(Dest.SETTINGS) }
+                onNeedsAuth = { navController.navigate(Dest.SETTINGS) { launchSingleTop = true } }
             )
         }
 
@@ -305,7 +305,7 @@ fun QuickGitNavGraph() {
             WorkflowsScreen(
                 vm = vm,
                 onBack = { navController.popBackStack() },
-                onNeedsAuth = { navController.navigate(Dest.SETTINGS) }
+                onNeedsAuth = { navController.navigate(Dest.SETTINGS) { launchSingleTop = true } }
             )
         }
 
@@ -319,7 +319,7 @@ fun QuickGitNavGraph() {
             ReleasesScreen(
                 vm = vm,
                 onBack = { navController.popBackStack() },
-                onNeedsAuth = { navController.navigate(Dest.SETTINGS) }
+                onNeedsAuth = { navController.navigate(Dest.SETTINGS) { launchSingleTop = true } }
             )
         }
 
@@ -333,7 +333,7 @@ fun QuickGitNavGraph() {
             PullRequestsScreen(
                 vm = vm,
                 onBack = { navController.popBackStack() },
-                onNeedsAuth = { navController.navigate(Dest.SETTINGS) }
+                onNeedsAuth = { navController.navigate(Dest.SETTINGS) { launchSingleTop = true } }
             )
         }
 

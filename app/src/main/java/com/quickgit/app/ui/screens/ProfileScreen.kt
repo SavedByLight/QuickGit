@@ -40,9 +40,10 @@ fun ProfileScreen(
 
     LaunchedEffect(login) { vm.load(login) }
 
-    LaunchedEffect(state.authRequired) {
-        if (state.authRequired) onNeedsAuth()
-    }
+    // Do NOT auto-navigate to Settings when authRequired is true.
+    // Auto-nav + uncleared flag caused an infinite back loop (Profile → Settings →
+    // back → Profile → Settings…) especially noticeable with predictive back on
+    // Samsung devices. Show an in-place CTA instead; only user taps open Settings.
 
     LaunchedEffect(state.statusMessage, state.forkError) {
         state.statusMessage?.let { snackbarHost.showSnackbar(it) }
@@ -79,12 +80,23 @@ fun ProfileScreen(
                 }
             }
             state.user == null && state.connectedProviders.isEmpty() -> {
-                Box(Modifier.padding(padding).fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
+                Column(
+                    Modifier
+                        .padding(padding)
+                        .fillMaxSize()
+                        .padding(32.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
                     Text(
                         state.errorMessage ?: "Connect GitHub or GitLab in Settings.",
                         textAlign = TextAlign.Center,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                    Spacer(Modifier.height(16.dp))
+                    Button(onClick = onNeedsAuth) {
+                        Text("Open Credentials")
+                    }
                 }
             }
             state.user == null -> {
