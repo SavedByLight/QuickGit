@@ -84,3 +84,13 @@ under **Documents/QuickGit** on shared storage. On newer Android versions the ap
 tries `Documents/QuickGit` first and falls back to app-specific external storage if the
 public folder is not writable. Uninstalling the app does **not** delete `Documents/QuickGit`
 when the public location is used.
+
+## Tested on
+ - Samsung Galaxy A52s (Snapdragon)
+ - Samsung Galaxy A20e (Exynos)
+ - Samsung Galaxy A12 (Mediatek)
+ - Samsung Galaxy A12 Nacho (Exynos)
+ - Google Pixel 10a (Tensor G4)
+ - Amazon Fire 10 13th gen (Mediatek)
+ - Samsung Chromebook 4 (Intel)
+ - Honor Pad 10 (Snapdragon)
