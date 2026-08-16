@@ -2142,8 +2142,14 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         val file = File(repoPath, relativePath)
         if (!file.isFile) throw IllegalArgumentException("Not a file: $relativePath")
         if (file.length() > maxBytes) throw IllegalArgumentException("File too large to edit in-app (${file.length()} bytes)")
-        // Reject obvious binaries by sampling NUL bytes
-        val sample = file.inputStream().use { it.readNBytes(8192) }
+        // Reject obvious binaries by sampling NUL bytes.
+        // Avoid FileInputStream.readNBytes() — it requires API 33 and crashes on
+        // older devices (e.g. Amazon Fire tablets on API 30).
+        val sample = file.inputStream().use { input ->
+            val buf = ByteArray(8192)
+            val n = input.read(buf)
+            if (n <= 0) ByteArray(0) else if (n == buf.size) buf else buf.copyOf(n)
+        }
         if (sample.any { it == 0.toByte() }) throw IllegalArgumentException("Binary file — cannot edit as text")
         return file.readText(Charsets.UTF_8)
     }
