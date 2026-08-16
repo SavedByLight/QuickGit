@@ -2,8 +2,9 @@ name: Build and Release
 
 # Runs on every push to main — i.e. after every commit that lands on main
 # (including merged PRs). Each run gets its own monotonically increasing
-# version number derived from the workflow run number, builds the app,
-# tags the commit, and publishes a GitHub Release with the APK attached.
+# version number derived from the workflow run number, builds the phone
+# and Wear OS apps, tags the commit, and publishes a GitHub Release with
+# both APKs attached.
 on:
   push:
     branches: [ main ]
@@ -52,11 +53,13 @@ jobs:
           echo "name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
-      - name: Stamp version into build.gradle.kts
+      - name: Stamp version into phone and Wear build.gradle.kts
         run: |
-          sed -i "s/versionCode = [0-9]\+/versionCode = ${{ steps.version.outputs.code }}/" app/build.gradle.kts
-          sed -i "s/versionName = \"[^\"]*\"/versionName = \"${{ steps.version.outputs.name }}\"/" app/build.gradle.kts
-      
+          for f in app/build.gradle.kts wear/build.gradle.kts; do
+            sed -i "s/versionCode = [0-9]\+/versionCode = ${{ steps.version.outputs.code }}/" "$f"
+            sed -i "s/versionName = \"[^\"]*\"/versionName = \"${{ steps.version.outputs.name }}\"/" "$f"
+          done
+
       - name: Decode keystore
         run: |
           echo "${{ secrets.SIGNING_KEYSTORE_BASE64 }}" | base64 -d > "$RUNNER_TEMP/quickgit-release.jks"
@@ -65,15 +68,31 @@ jobs:
           echo "SIGNING_KEY_ALIAS=${{ secrets.SIGNING_KEY_ALIAS }}" >> "$GITHUB_ENV"
           echo "SIGNING_KEY_PASSWORD=${{ secrets.SIGNING_KEY_PASSWORD }}" >> "$GITHUB_ENV"
 
-      - name: Build release APK
-        run: gradle :app:assembleRelease --no-daemon
+      - name: Build phone + Wear release APKs
+        run: gradle :app:assembleRelease :wear:assembleRelease --no-daemon
 
-      - name: Locate APK
+      - name: Locate and rename APKs
         id: apk
         run: |
-          APK_PATH=$(find app/build/outputs/apk/release -name '*.apk' | head -n 1)
-          echo "path=$APK_PATH" >> "$GITHUB_OUTPUT"
-          cp "$APK_PATH" "quickgit-${{ steps.version.outputs.name }}.apk"
+          set -euo pipefail
+          PHONE_APK=$(find app/build/outputs/apk/release -name '*.apk' | head -n 1)
+          WEAR_APK=$(find wear/build/outputs/apk/release -name '*.apk' | head -n 1)
+          if [ -z "$PHONE_APK" ] || [ ! -f "$PHONE_APK" ]; then
+            echo "Phone release APK not found under app/build/outputs/apk/release" >&2
+            exit 1
+          fi
+          if [ -z "$WEAR_APK" ] || [ ! -f "$WEAR_APK" ]; then
+            echo "Wear release APK not found under wear/build/outputs/apk/release" >&2
+            exit 1
+          fi
+          PHONE_OUT="quickgit-${{ steps.version.outputs.name }}.apk"
+          WEAR_OUT="quickgit-wear-${{ steps.version.outputs.name }}.apk"
+          cp "$PHONE_APK" "$PHONE_OUT"
+          cp "$WEAR_APK" "$WEAR_OUT"
+          echo "phone_path=$PHONE_OUT" >> "$GITHUB_OUTPUT"
+          echo "wear_path=$WEAR_OUT" >> "$GITHUB_OUTPUT"
+          echo "Phone APK: $PHONE_OUT ($(stat -c%s "$PHONE_OUT") bytes)"
+          echo "Wear APK:  $WEAR_OUT ($(stat -c%s "$WEAR_OUT") bytes)"
 
       - name: Tag the release commit
         run: |
@@ -90,7 +109,12 @@ jobs:
           body: |
             Automated build from commit ${{ github.sha }}.
 
+            **Artifacts**
+            - `quickgit-${{ steps.version.outputs.name }}.apk` — phone / tablet
+            - `quickgit-wear-${{ steps.version.outputs.name }}.apk` — Wear OS
+
             **Commit message:**
             ${{ github.event.head_commit.message }}
-          files: quickgit-${{ steps.version.outputs.name }}.apk
-          
+          files: |
+            quickgit-${{ steps.version.outputs.name }}.apk
+            quickgit-wear-${{ steps.version.outputs.name }}.apk
