@@ -379,8 +379,8 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     fun isExternalRepo(dir: File): Boolean {
         val d = runCatching { dir.canonicalFile }.getOrElse { dir.absoluteFile }
         val extras = prefs.getStringSet(PREF_EXTRA_REPO_PATHS, emptySet()) ?: emptySet()
-        return extras.any {
-            val e = runCatching { File(it).canonicalFile }.getOrElse { File(it).absoluteFile }
+        return extras.any { path ->
+            val e = runCatching { File(path).canonicalFile }.getOrElse { File(path).absoluteFile }
             e.absolutePath == d.absolutePath
         }
     }
