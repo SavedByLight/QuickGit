@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -13,12 +15,34 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "0.1.0"
-        // Same applicationId as phone app so updates share identity; Wear uses
-        // a distinct activity + feature filter so Play delivers the right APK.
+        // Distinct from the phone app so both can install during development.
+        // For Play multi-APK you may unify under com.quickgit.app later.
+    }
+
+    signingConfigs {
+        create("release") {
+            // Prefer env vars (CI). Fall back to local.properties for local builds.
+            val propsFile = rootProject.file("local.properties")
+            val props = Properties()
+            if (propsFile.exists()) {
+                propsFile.inputStream().use { props.load(it) }
+            }
+            fun prop(name: String): String? =
+                System.getenv(name) ?: props.getProperty(name)
+
+            val store = prop("SIGNING_STORE_FILE")
+            if (store != null) {
+                storeFile = file(store)
+                storePassword = prop("SIGNING_STORE_PASSWORD")
+                keyAlias = prop("SIGNING_KEY_ALIAS")
+                keyPassword = prop("SIGNING_KEY_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
         release {
+            signingConfig = signingConfigs.getByName("release")
             isMinifyEnabled = false
         }
     }
