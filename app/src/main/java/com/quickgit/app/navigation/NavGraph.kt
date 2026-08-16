@@ -88,13 +88,17 @@ fun QuickGitNavGraph() {
                 navArgument("owner") { type = NavType.StringType },
                 navArgument("repo") { type = NavType.StringType },
                 navArgument("ref") { type = NavType.StringType },
-                navArgument("path") { type = NavType.StringType }
+                navArgument("path") {
+                    type = NavType.StringType
+                    defaultValue = ""
+                    nullable = true
+                }
             )
         ) { backStackEntry ->
             val owner = Dest.decode(backStackEntry.arguments!!.getString("owner")!!)
             val repo = Dest.decode(backStackEntry.arguments!!.getString("repo")!!)
             val ref = Dest.decode(backStackEntry.arguments!!.getString("ref")!!)
-            val path = Dest.decodePath(backStackEntry.arguments!!.getString("path")!!)
+            val path = Dest.decode(backStackEntry.arguments?.getString("path").orEmpty())
             val vm: RemoteBrowseViewModel = viewModel(factory = factory)
             RemoteBrowseScreen(
                 owner = owner,
@@ -114,13 +118,17 @@ fun QuickGitNavGraph() {
                 navArgument("owner") { type = NavType.StringType },
                 navArgument("repo") { type = NavType.StringType },
                 navArgument("ref") { type = NavType.StringType },
-                navArgument("path") { type = NavType.StringType }
+                navArgument("path") {
+                    type = NavType.StringType
+                    defaultValue = ""
+                    nullable = true
+                }
             )
         ) { backStackEntry ->
             val owner = Dest.decode(backStackEntry.arguments!!.getString("owner")!!)
             val repo = Dest.decode(backStackEntry.arguments!!.getString("repo")!!)
             val ref = Dest.decode(backStackEntry.arguments!!.getString("ref")!!)
-            val path = Dest.decodePath(backStackEntry.arguments!!.getString("path")!!)
+            val path = Dest.decode(backStackEntry.arguments?.getString("path").orEmpty())
             val vm: RemoteFileViewModel = viewModel(factory = factory)
             RemoteFileScreen(
                 owner = owner,
