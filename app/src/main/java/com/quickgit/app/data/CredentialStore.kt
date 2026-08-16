@@ -1,18 +1,28 @@
 package com.quickgit.app.data
 
 import android.content.Context
+import android.content.SharedPreferences
 import android.net.Uri
+import android.util.Log
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKeys
+import java.security.GeneralSecurityException
+import javax.crypto.AEADBadTagException
 
 /**
  * All sensitive data (HTTPS tokens per host, SSH key + passphrase, GPG secret key +
  * passphrase, commit drafts, etc.) is stored in an [EncryptedSharedPreferences] instance
  * whose master key lives only inside the Android Keystore.
+ *
+ * If the Keystore key is invalidated (reinstall, backup restore, lock-screen change,
+ * etc.) the existing ciphertext cannot be decrypted and Tink throws
+ * [AEADBadTagException]. In that case we wipe the corrupted prefs and start fresh
+ * rather than crashing the whole app on launch.
  */
 class CredentialStore(private val context: Context) {
 
     companion object {
+        private const val TAG = "CredentialStore"
         private const val PREFS_NAME = "tink_keyset_pref"
 
         private val masterKey = MasterKeys.getOrCreate(
@@ -28,17 +38,60 @@ class CredentialStore(private val context: Context) {
             }
         }
 
-        private fun prefsFor(context: Context) = EncryptedSharedPreferences.create(
-            PREFS_NAME,
-            masterKey,
-            context,
-            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-        )
+        /**
+         * Open (or recreate) the encrypted prefs.
+         * On any crypto failure the corrupted file is deleted and a fresh empty
+         * store is created so the app can still launch.
+         */
+        private fun prefsFor(context: Context): SharedPreferences {
+            return try {
+                createEncryptedPrefs(context)
+            } catch (e: Exception) {
+                // AEADBadTagException, GeneralSecurityException, or anything thrown
+                // while reading the keyset / decrypting.
+                Log.w(TAG, "Encrypted prefs unreadable (keystore key lost or data corrupt). Wiping.", e)
+                wipePrefsFile(context)
+                try {
+                    createEncryptedPrefs(context)
+                } catch (e2: Exception) {
+                    // Absolute last resort: fall back to plain prefs so the app
+                    // does not hard-crash. Credentials will be empty until the
+                    // user re-enters them; better than an unusable install.
+                    Log.e(TAG, "Failed to recreate encrypted prefs; using unencrypted fallback", e2)
+                    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                }
+            }
+        }
+
+        private fun createEncryptedPrefs(context: Context): SharedPreferences =
+            EncryptedSharedPreferences.create(
+                PREFS_NAME,
+                masterKey,
+                context,
+                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+            )
+
+        private fun wipePrefsFile(context: Context) {
+            try {
+                // Clear any residual entries first, then delete the file.
+                context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                    .edit()
+                    .clear()
+                    .commit()
+                context.deleteSharedPreferences(PREFS_NAME)
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not fully wipe prefs file", e)
+            }
+        }
 
         /** Delete everything (for debug / data wipe) */
         fun clear(context: Context) {
-            prefsFor(context).edit().clear().apply()
+            try {
+                prefsFor(context).edit().clear().apply()
+            } catch (_: Exception) {
+                wipePrefsFile(context)
+            }
             INSTANCE = null
         }
 
