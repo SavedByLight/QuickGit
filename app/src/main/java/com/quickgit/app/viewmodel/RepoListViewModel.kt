@@ -1,5 +1,6 @@
 package com.quickgit.app.viewmodel
 
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.quickgit.app.data.GitHubAccountManager
@@ -192,10 +193,53 @@ class RepoListViewModel(
         _authRequired.value = false
     }
 
+    /**
+     * Import an existing Git folder the user picked via SAF (`OpenDocumentTree`).
+     * The folder must contain a `.git` directory and resolve to local storage.
+     */
+    fun importFromTree(treeUri: Uri) {
+        viewModelScope.launch {
+            _errorMessage.value = null
+            val result = withContext(Dispatchers.IO) {
+                repoManager.importLocalRepoFromTree(treeUri)
+            }
+            when (result) {
+                is RepoManager.ImportRepoResult.Success -> {
+                    _statusMessage.value = "Imported '${result.name}'"
+                    refresh()
+                }
+                is RepoManager.ImportRepoResult.Error -> {
+                    _errorMessage.value = result.message
+                }
+            }
+        }
+    }
+
+    fun isExternalRepo(repo: RepoInfo): Boolean =
+        repoManager.isExternalRepo(java.io.File(repo.localPath))
+
     fun deleteRepo(repo: RepoInfo) {
-        viewModelScope.launch(Dispatchers.IO) {
-            repo.dir.deleteRecursively()
-            withContext(Dispatchers.Main) { refresh() }
+        viewModelScope.launch {
+            val wasExternal = withContext(Dispatchers.IO) {
+                repoManager.isExternalRepo(java.io.File(repo.localPath))
+            }
+            val result = withContext(Dispatchers.IO) {
+                repoManager.removeFromList(java.io.File(repo.localPath))
+            }
+            when (result) {
+                is com.quickgit.app.data.models.GitOpResult.Success -> {
+                    _statusMessage.value = if (wasExternal) {
+                        "Removed '${repo.name}' from the list (files left on disk)"
+                    } else {
+                        "Deleted '${repo.name}'"
+                    }
+                    refresh()
+                }
+                is com.quickgit.app.data.models.GitOpResult.Error -> {
+                    _errorMessage.value = result.message
+                }
+                else -> refresh()
+            }
         }
     }
 }

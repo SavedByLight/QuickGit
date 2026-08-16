@@ -10,12 +10,15 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Create
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
@@ -60,6 +63,12 @@ fun RepoListScreen(
     val errorMessage by vm.errorMessage.collectAsState()
     val authRequired by vm.authRequired.collectAsState()
     val snackbarHost = remember { SnackbarHostState() }
+
+    val importFolderLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        uri?.let { vm.importFromTree(it) }
+    }
 
     // Re-scan after clone/settings: ViewModel stays alive on the back stack, so init{}
     // only runs once. Refresh whenever this screen is shown again.
@@ -182,6 +191,15 @@ fun RepoListScreen(
                             }
                         )
                         Spacer(Modifier.height(12.dp))
+                        FabMenuItem(
+                            label = "Import folder",
+                            icon = Icons.Default.FolderOpen,
+                            onClick = {
+                                fabExpanded = false
+                                importFolderLauncher.launch(null)
+                            }
+                        )
+                        Spacer(Modifier.height(12.dp))
                     }
                 }
                 FloatingActionButton(
@@ -221,7 +239,7 @@ fun RepoListScreen(
                             Text("No repositories yet", style = MaterialTheme.typography.titleMedium)
                             Spacer(Modifier.height(8.dp))
                             Text(
-                                "Tap + to clone a URL or browse GitHub or GitLab.",
+                                "Tap + to clone a URL, browse GitHub/GitLab, or import an existing folder.",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -241,10 +259,19 @@ fun RepoListScreen(
     }
 
     repoToDelete?.let { repo ->
+        val external = vm.isExternalRepo(repo)
         AlertDialog(
             onDismissRequest = { repoToDelete = null },
             title = { Text("Remove ${repo.name}?") },
-            text = { Text("This deletes the local clone from this device. It won't affect the remote.") },
+            text = {
+                Text(
+                    if (external) {
+                        "This removes the repo from QuickGit's list only. Files on disk are not deleted."
+                    } else {
+                        "This deletes the local clone from this device. It won't affect the remote."
+                    }
+                )
+            },
             confirmButton = {
                 TextButton(onClick = { vm.deleteRepo(repo); repoToDelete = null }) { Text("Remove") }
             },

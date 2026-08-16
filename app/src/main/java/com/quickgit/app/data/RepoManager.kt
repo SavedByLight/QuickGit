@@ -366,6 +366,123 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         }
     }
 
+    private fun forgetExternalRepoPath(dir: File) {
+        val d = runCatching { dir.canonicalFile }.getOrElse { dir.absoluteFile }
+        val current = (prefs.getStringSet(PREF_EXTRA_REPO_PATHS, emptySet()) ?: emptySet()).toMutableSet()
+        if (current.remove(d.absolutePath)) {
+            prefs.edit().putStringSet(PREF_EXTRA_REPO_PATHS, current).commit()
+            AppLog.i(TAG, "forgetExternalRepoPath: stopped tracking ${d.absolutePath}")
+        }
+    }
+
+    /** True when [dir] is tracked outside [reposRoot] (imported / clone-to-folder). */
+    fun isExternalRepo(dir: File): Boolean {
+        val d = runCatching { dir.canonicalFile }.getOrElse { dir.absoluteFile }
+        val extras = prefs.getStringSet(PREF_EXTRA_REPO_PATHS, emptySet()) ?: emptySet()
+        return extras.any {
+            val e = runCatching { File(it).canonicalFile }.getOrElse { File(it).absoluteFile }
+            e.absolutePath == d.absolutePath
+        }
+    }
+
+    sealed class ImportRepoResult {
+        data class Success(val path: File, val name: String) : ImportRepoResult()
+        data class Error(val message: String) : ImportRepoResult()
+    }
+
+    /**
+     * Registers an existing local Git repository (folder containing `.git`) so it
+     * appears in the repo list. Used when the user already has a clone on disk
+     * (Termux, another app, PC sync, etc.) and wants QuickGit to manage it.
+     *
+     * [treeUri] is a SAF tree from `OpenDocumentTree`. The folder must resolve to
+     * a real path on device storage (same limitation as [setReposRootFromTree]).
+     */
+    fun importLocalRepoFromTree(treeUri: Uri): ImportRepoResult {
+        val resolved = filePathForTreeUri(treeUri)
+            ?: return ImportRepoResult.Error(
+                "That folder isn't on local device storage, so QuickGit can't open it " +
+                    "(this happens with cloud-backed providers like Drive). Pick a folder " +
+                    "on your phone's internal storage or an SD card."
+            )
+        return importLocalRepo(resolved, treeUri)
+    }
+
+    /**
+     * Same as [importLocalRepoFromTree] when you already have a filesystem [dir].
+     * Optionally pass [treeUri] so read/write access is persisted.
+     */
+    fun importLocalRepo(dir: File, treeUri: Uri? = null): ImportRepoResult {
+        val resolved = runCatching { dir.canonicalFile }.getOrElse { dir.absoluteFile }
+        if (!resolved.isDirectory) {
+            return ImportRepoResult.Error("Not a folder: ${resolved.absolutePath}")
+        }
+        val gitDir = File(resolved, ".git")
+        if (!gitDir.exists()) {
+            return ImportRepoResult.Error(
+                "'${resolved.name}' is not a Git repository (no .git folder). " +
+                    "Pick the repo root — the folder that contains .git."
+            )
+        }
+        // Already listed?
+        val already = listLocalRepos().any {
+            runCatching { File(it.localPath).canonicalPath }.getOrDefault(it.localPath) ==
+                resolved.absolutePath
+        }
+        if (already) {
+            return ImportRepoResult.Error("'${resolved.name}' is already in your repo list.")
+        }
+        try {
+            // Verify JGit can open it before we track it.
+            Git.open(resolved).use { /* ok */ }
+        } catch (e: Exception) {
+            AppLog.e(TAG, "importLocalRepo: cannot open ${resolved.absolutePath}", e)
+            return ImportRepoResult.Error(
+                "Couldn't open that Git repository: ${e.message ?: "unknown error"}"
+            )
+        }
+        if (treeUri != null) {
+            try {
+                context.contentResolver.takePersistableUriPermission(
+                    treeUri,
+                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                        android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                )
+            } catch (e: Exception) {
+                AppLog.w(TAG, "importLocalRepo: could not persist URI permission: ${e.message}")
+            }
+        }
+        rememberExternalRepoPath(resolved)
+        // Under reposRoot the scan finds it without extra tracking; still apply mobile config.
+        ensureMobileRepoConfig(resolved.absolutePath)
+        AppLog.i(TAG, "importLocalRepo: ${resolved.absolutePath}")
+        return ImportRepoResult.Success(resolved, resolved.name)
+    }
+
+    /**
+     * Removes a repo from the list. Clones under [reposRoot] are deleted from disk.
+     * Imported / external paths are only untracked (files left on disk).
+     */
+    fun removeFromList(dir: File): GitOpResult {
+        return try {
+            val resolved = runCatching { dir.canonicalFile }.getOrElse { dir.absoluteFile }
+            val root = runCatching { reposRoot.canonicalFile }.getOrElse { reposRoot.absoluteFile }
+            val underRoot = resolved.absolutePath == root.absolutePath ||
+                resolved.absolutePath.startsWith(root.absolutePath + File.separator)
+            if (underRoot) {
+                if (!resolved.deleteRecursively()) {
+                    return GitOpResult.Error("Could not delete ${resolved.name}")
+                }
+            } else {
+                forgetExternalRepoPath(resolved)
+            }
+            GitOpResult.Success
+        } catch (e: Exception) {
+            AppLog.e(TAG, "removeFromList failed", e)
+            GitOpResult.Error(e.message ?: "Could not remove repository", e)
+        }
+    }
+
     private fun resolveReposRoot(): File {
         val publicRoot = File(
             Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS),
