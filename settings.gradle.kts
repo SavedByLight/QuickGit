@@ -15,3 +15,4 @@ dependencyResolutionManagement {
 }
 rootProject.name = "QuickGit"
 include(":app")
+include(":wear")
