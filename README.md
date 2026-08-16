@@ -87,6 +87,7 @@ when the public location is used.
 
 ## Tested on
  - Samsung Galaxy A52s (Snapdragon)
+ - Samsung Galaxy A25 (Exynos)
  - Samsung Galaxy A20e (Exynos)
  - Samsung Galaxy A12 (Mediatek)
  - Samsung Galaxy A12 Nacho (Exynos)
