@@ -94,6 +94,8 @@ fun QuickGitDesktopApp(
                 when (currentScreen) {
                     DesktopScreen.RepoList -> RepoListScreen(
                         repoManager = repoManager,
+                        credentialStore = credentialStore,
+                        githubApi = githubApi(),
                         onSelect = {
                             selectedRepoPath = it
                             currentScreen = DesktopScreen.RepoDetail
@@ -171,11 +173,15 @@ private fun NavRailItem(icon: ImageVector, label: String, selected: Boolean, onC
 @Composable
 fun RepoListScreen(
     repoManager: DesktopRepoManager,
+    credentialStore: DesktopCredentialStore,
+    githubApi: GitHubApi,
     onSelect: (String) -> Unit,
     onMessage: (String) -> Unit
 ) {
     var repos by remember { mutableStateOf(emptyList<DesktopRepoManager.LocalRepo>()) }
     var loading by remember { mutableStateOf(true) }
+    var showCreate by remember { mutableStateOf(false) }
+    var busy by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
     fun reload() {
@@ -188,40 +194,281 @@ fun RepoListScreen(
     LaunchedEffect(Unit) { reload() }
 
     Column(Modifier.fillMaxSize().padding(16.dp)) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
             Text("Local repositories", style = MaterialTheme.typography.titleLarge)
-            TextButton(onClick = { reload() }) {
-                Icon(Icons.Default.Refresh, null, Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text("Refresh")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Button(onClick = { showCreate = true }, enabled = !busy) {
+                    Icon(Icons.Default.Add, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("New repository")
+                }
+                TextButton(onClick = { reload() }) {
+                    Icon(Icons.Default.Refresh, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Refresh")
+                }
             }
         }
-        Text("Root: ${repoManager.getReposRoot().absolutePath}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(
+            "Root: ${repoManager.getReposRoot().absolutePath}",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
         Spacer(Modifier.height(12.dp))
         if (loading) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
         } else if (repos.isEmpty()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("No local repos — clone one or browse your GitHub account", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        "No local repos yet",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Create a new one, clone a URL, or browse your GitHub account",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Button(onClick = { showCreate = true }) {
+                        Icon(Icons.Default.Add, null, Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("New repository")
+                    }
+                }
             }
         } else {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(repos) { repo ->
-                    Card(Modifier.fillMaxWidth().clickable { onSelect(repo.path) }, elevation = CardDefaults.cardElevation(2.dp)) {
-                        Row(Modifier.padding(16.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                items(repos, key = { it.path }) { repo ->
+                    Card(
+                        Modifier.fillMaxWidth().clickable { onSelect(repo.path) },
+                        elevation = CardDefaults.cardElevation(2.dp)
+                    ) {
+                        Row(
+                            Modifier.padding(16.dp).fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
                             Icon(Icons.Default.Folder, null, tint = MaterialTheme.colorScheme.primary)
                             Spacer(Modifier.width(12.dp))
                             Column(Modifier.weight(1f)) {
-                                Text(repo.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                                Text(repo.branch ?: "(no branch)", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                repo.remoteUrl?.let { Text(it, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                                Text(
+                                    repo.name,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Text(
+                                    repo.branch ?: "(no branch)",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                repo.remoteUrl?.let {
+                                    Text(
+                                        it,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
                             }
                             if (repo.isDirty) {
-                                Box(Modifier.size(10.dp).background(Color(0xFFFF9800), shape = MaterialTheme.shapes.small))
+                                Box(
+                                    Modifier
+                                        .size(10.dp)
+                                        .background(Color(0xFFFF9800), shape = MaterialTheme.shapes.small)
+                                )
                             }
                         }
                     }
                 }
             }
         }
+    }
+
+    if (showCreate) {
+        var name by remember { mutableStateOf("") }
+        var description by remember { mutableStateOf("") }
+        var branch by remember { mutableStateOf("main") }
+        var onGitHub by remember { mutableStateOf(false) }
+        var isPrivate by remember { mutableStateOf(true) }
+        var alsoClone by remember { mutableStateOf(true) }
+
+        AlertDialog(
+            onDismissRequest = { if (!busy) showCreate = false },
+            title = { Text("New repository") },
+            text = {
+                Column(
+                    Modifier.fillMaxWidth().heightIn(max = 480.dp).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    OutlinedTextField(
+                        value = name,
+                        onValueChange = { name = it.filter { c -> c != '/' && c != '\\' } },
+                        label = { Text("Name") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        supportingText = { Text("Folder under ${repoManager.getReposRoot().name}/") }
+                    )
+                    OutlinedTextField(
+                        value = branch,
+                        onValueChange = { branch = it },
+                        label = { Text("Initial branch") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(checked = onGitHub, onCheckedChange = { onGitHub = it })
+                        Column {
+                            Text("Also create on GitHub")
+                            Text(
+                                "Requires a GitHub token in Credentials",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    if (onGitHub) {
+                        OutlinedTextField(
+                            value = description,
+                            onValueChange = { description = it },
+                            label = { Text("Description (optional)") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked = isPrivate, onCheckedChange = { isPrivate = it })
+                            Text("Private repository")
+                        }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked = alsoClone, onCheckedChange = { alsoClone = it })
+                            Text("Clone locally after create")
+                        }
+                    } else {
+                        Text(
+                            "Creates an empty local git repo (no remote). Add a remote later from Branches.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val n = name.trim()
+                        if (n.isBlank()) return@TextButton
+                        scope.launch {
+                            busy = true
+                            try {
+                                if (onGitHub) {
+                                    val token = withContext(Dispatchers.IO) {
+                                        credentialStore.getGithubToken()
+                                            ?: credentialStore.getHttpsToken("github.com")
+                                    }
+                                    if (token.isNullOrBlank()) {
+                                        onMessage("Add a GitHub token in Credentials first")
+                                        return@launch
+                                    }
+                                    val created = withContext(Dispatchers.IO) {
+                                        githubApi.createRepo(
+                                            n,
+                                            description.trim().ifBlank { null },
+                                            isPrivate
+                                        )
+                                    }
+                                    created.fold(
+                                        onSuccess = { remote ->
+                                            if (alsoClone) {
+                                                val cloneUrl = remote.cloneUrl.ifBlank {
+                                                    "https://github.com/${remote.fullName}.git"
+                                                }
+                                                val cloneResult = withContext(Dispatchers.IO) {
+                                                    repoManager.cloneRepo(cloneUrl, n) { }
+                                                }
+                                                cloneResult.fold(
+                                                    onSuccess = { dir ->
+                                                        showCreate = false
+                                                        onMessage("Created GitHub repo ${remote.fullName} and cloned")
+                                                        onSelect(dir.absolutePath)
+                                                    },
+                                                    onFailure = {
+                                                        onMessage(
+                                                            "GitHub repo created (${remote.fullName}) but clone failed: ${it.message}"
+                                                        )
+                                                        showCreate = false
+                                                        reload()
+                                                    }
+                                                )
+                                            } else {
+                                                // Local empty repo pointing at the new remote is still useful
+                                                val local = withContext(Dispatchers.IO) {
+                                                    repoManager.initLocalRepo(n, branch.trim().ifBlank { "main" })
+                                                }
+                                                local.fold(
+                                                    onSuccess = { dir ->
+                                                        // Set origin if possible
+                                                        withContext(Dispatchers.IO) {
+                                                            try {
+                                                                val url = remote.cloneUrl.ifBlank {
+                                                                    "https://github.com/${remote.fullName}.git"
+                                                                }
+                                                                org.eclipse.jgit.api.Git.open(dir).use { git ->
+                                                                    git.remoteAdd()
+                                                                        .setName("origin")
+                                                                        .setUri(org.eclipse.jgit.transport.URIish(url))
+                                                                        .call()
+                                                                }
+                                                            } catch (_: Exception) { }
+                                                        }
+                                                        showCreate = false
+                                                        onMessage("Created ${remote.fullName} on GitHub + local folder")
+                                                        onSelect(dir.absolutePath)
+                                                    },
+                                                    onFailure = {
+                                                        onMessage(
+                                                            "GitHub repo created (${remote.fullName}); local init failed: ${it.message}"
+                                                        )
+                                                        showCreate = false
+                                                        reload()
+                                                    }
+                                                )
+                                            }
+                                        },
+                                        onFailure = {
+                                            onMessage("GitHub create failed: ${it.message}")
+                                        }
+                                    )
+                                } else {
+                                    val local = withContext(Dispatchers.IO) {
+                                        repoManager.initLocalRepo(n, branch.trim().ifBlank { "main" })
+                                    }
+                                    local.fold(
+                                        onSuccess = { dir ->
+                                            showCreate = false
+                                            onMessage("Created local repository ${dir.name}")
+                                            onSelect(dir.absolutePath)
+                                        },
+                                        onFailure = {
+                                            onMessage("Create failed: ${it.message}")
+                                        }
+                                    )
+                                }
+                            } finally {
+                                busy = false
+                            }
+                        }
+                    },
+                    enabled = name.isNotBlank() && !busy
+                ) { Text(if (busy) "Creating…" else "Create") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCreate = false }, enabled = !busy) { Text("Cancel") }
+            }
+        )
     }
 }
 
@@ -236,7 +483,8 @@ fun RepoDetailScreen(
     onMessage: (String) -> Unit
 ) {
     var tabIndex by remember { mutableStateOf(0) }
-    val tabs = listOf("Changes", "History", "Branches", "Files", "Issues", "PRs")
+    // Files → Branches → Issues → PRs → History last (Changes kept after Files for day-to-day work)
+    val tabs = listOf("Files", "Changes", "Branches", "Issues", "PRs", "History")
     val scope = rememberCoroutineScope()
     var busy by remember { mutableStateOf(false) }
 
@@ -267,12 +515,12 @@ fun RepoDetailScreen(
             tabs.forEachIndexed { i, title -> Tab(selected = tabIndex == i, onClick = { tabIndex = i }, text = { Text(title) }) }
         }
         when (tabIndex) {
-            0 -> ChangesTab(repoPath, repoManager, onMessage)
-            1 -> HistoryTab(repoPath, repoManager, onMessage)
+            0 -> FilesEditorTab(repoPath, repoManager, onMessage)
+            1 -> ChangesTab(repoPath, repoManager, onMessage)
             2 -> BranchesTab(repoPath, repoManager, onMessage)
-            3 -> FilesEditorTab(repoPath, repoManager, onMessage)
-            4 -> IssuesTab(repoPath, repoManager, credentialStore, githubApi, onMessage)
-            5 -> PullRequestsTab(repoPath, repoManager, credentialStore, githubApi, onMessage)
+            3 -> IssuesTab(repoPath, repoManager, credentialStore, githubApi, onMessage)
+            4 -> PullRequestsTab(repoPath, repoManager, credentialStore, githubApi, onMessage)
+            5 -> HistoryTab(repoPath, repoManager, onMessage)
         }
     }
 }

@@ -150,6 +150,41 @@ class DesktopRepoManager(
         }
     }
 
+    /**
+     * Create a new local-only git repository under [getReposRoot].
+     * Initial branch defaults to `main`. Nothing is pushed until a remote is added.
+     * @return absolute path of the new repo on success
+     */
+    fun initLocalRepo(folderName: String, initialBranch: String = "main"): Result<File> {
+        val name = folderName.trim()
+        if (name.isBlank()) return Result.failure(IllegalArgumentException("Folder name required"))
+        if (name.contains('/') || name.contains('\\') || name.contains("..")) {
+            return Result.failure(IllegalArgumentException("Invalid folder name"))
+        }
+        val branch = initialBranch.trim().ifBlank { "main" }
+        val destination = File(getReposRoot(), name)
+        if (destination.exists() && (destination.listFiles()?.isNotEmpty() == true || File(destination, ".git").exists())) {
+            return Result.failure(IllegalStateException("'$name' already exists under ${getReposRoot().absolutePath}"))
+        }
+        return try {
+            destination.mkdirs()
+            Git.init().setDirectory(destination).call().use { git ->
+                // Point HEAD at unborn branch (no commits yet)
+                val refUpdate = git.repository.updateRef(org.eclipse.jgit.lib.Constants.HEAD)
+                refUpdate.link("refs/heads/$branch")
+                // Sensible desktop defaults
+                val cfg = git.repository.config
+                cfg.setBoolean("core", null, "filemode", true)
+                cfg.setString("init", null, "defaultBranch", branch)
+                cfg.save()
+            }
+            Result.success(destination)
+        } catch (e: Exception) {
+            destination.deleteRecursively()
+            Result.failure(e)
+        }
+    }
+
     // ---------- Open / helpers ----------
 
     private fun open(dir: File): Git {
