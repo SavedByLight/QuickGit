@@ -2645,7 +2645,11 @@ fun ProfileScreen(
         Text("GitHub profile", style = MaterialTheme.typography.titleLarge)
         Spacer(Modifier.height(8.dp))
         when {
-            loading -> CircularProgressIndicator()
+            loading -> {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator()
+                }
+            }
             error != null -> Text(error!!, color = MaterialTheme.colorScheme.error)
             user != null -> {
                 val u = user!!
@@ -2658,12 +2662,15 @@ fun ProfileScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Spacer(Modifier.height(12.dp))
-                Text("Your repositories", style = MaterialTheme.typography.titleMedium)
+                Text("Your repositories (${repos.size})", style = MaterialTheme.typography.titleMedium)
                 Spacer(Modifier.height(8.dp))
                 if (repos.isEmpty()) {
                     Text("No repositories found", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 } else {
-                    LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    LazyColumn(
+                        Modifier.fillMaxWidth().weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
                         items(repos, key = { it.id }) { repo ->
                             RemoteRepoCard(
                                 repo = repo,
@@ -2701,24 +2708,51 @@ fun UserSearchScreen(
     var query by remember { mutableStateOf("") }
     var results by remember { mutableStateOf<List<GitHubApi.GitHubUserSummary>>(emptyList()) }
     var loading by remember { mutableStateOf(false) }
+    var searchError by remember { mutableStateOf<String?>(null) }
     var selectedLogin by remember { mutableStateOf<String?>(null) }
     var profile by remember { mutableStateOf<GitHubApi.GitHubUser?>(null) }
     var repos by remember { mutableStateOf<List<GitHubRemoteRepo>>(emptyList()) }
     var profileLoading by remember { mutableStateOf(false) }
+    var profileError by remember { mutableStateOf<String?>(null) }
+    var reposError by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
     var browseRepo by remember { mutableStateOf<GitHubRemoteRepo?>(null) }
     val scope = rememberCoroutineScope()
 
     fun openUser(login: String) {
-        selectedLogin = login
+        val clean = login.trim().trimStart('@')
+        if (clean.isEmpty()) return
+        selectedLogin = clean
+        profile = null
+        repos = emptyList()
+        profileError = null
+        reposError = null
         scope.launch {
             profileLoading = true
-            profile = null
-            repos = emptyList()
-            val u = withContext(Dispatchers.IO) { githubApi.getUser(login) }
-            u.fold(onSuccess = { profile = it }, onFailure = { onMessage("Profile: ${it.message}") })
-            val r = withContext(Dispatchers.IO) { githubApi.listPublicRepos(login, perPage = 100) }
-            r.fold(onSuccess = { repos = it }, onFailure = { onMessage("Repos: ${it.message}") })
+            // 1) Profile
+            val u = withContext(Dispatchers.IO) { githubApi.getUser(clean) }
+            u.fold(
+                onSuccess = { profile = it },
+                onFailure = {
+                    profileError = it.message ?: "Failed to load profile"
+                    onMessage("Profile: ${it.message}")
+                }
+            )
+            // 2) Repos (always attempt, even if profile failed)
+            val r = withContext(Dispatchers.IO) {
+                githubApi.listPublicRepos(clean, perPage = 100)
+            }
+            r.fold(
+                onSuccess = {
+                    repos = it
+                    if (it.isEmpty()) reposError = null
+                },
+                onFailure = {
+                    repos = emptyList()
+                    reposError = it.message ?: "Failed to load repositories"
+                    onMessage("Repos: ${it.message}")
+                }
+            )
             profileLoading = false
         }
     }
@@ -2754,66 +2788,133 @@ fun UserSearchScreen(
         if (selectedLogin == null) {
             Text("Search GitHub users", style = MaterialTheme.typography.titleLarge)
             Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 OutlinedTextField(
                     value = query,
                     onValueChange = { query = it },
                     label = { Text("Username or name") },
                     modifier = Modifier.weight(1f),
-                    singleLine = true
+                    singleLine = true,
+                    enabled = !loading
                 )
                 Button(
                     onClick = {
-                        if (query.isBlank()) return@Button
+                        val q = query.trim()
+                        if (q.isBlank()) return@Button
+                        // Exact login: open profile directly
+                        if (!q.contains(' ') && !q.contains(',')) {
+                            // Still run search, but also allow Enter-style direct open via View
+                        }
                         scope.launch {
                             loading = true
-                            val r = withContext(Dispatchers.IO) { githubApi.searchUsers(query) }
+                            searchError = null
+                            results = emptyList()
+                            val r = withContext(Dispatchers.IO) { githubApi.searchUsers(q) }
                             r.fold(
-                                onSuccess = { results = it },
-                                onFailure = { onMessage("Search failed: ${it.message}") }
+                                onSuccess = {
+                                    results = it
+                                    if (it.isEmpty()) searchError = "No users found for \"$q\""
+                                },
+                                onFailure = {
+                                    searchError = it.message ?: "Search failed"
+                                    onMessage("Search failed: ${it.message}")
+                                }
                             )
                             loading = false
                         }
                     },
                     enabled = query.isNotBlank() && !loading
-                ) { Text("Search") }
+                ) { Text(if (loading) "…" else "Search") }
+                // Open exact username without waiting for search results
+                OutlinedButton(
+                    onClick = {
+                        val q = query.trim().trimStart('@')
+                        if (q.isNotBlank()) openUser(q)
+                    },
+                    enabled = query.isNotBlank() && !loading
+                ) { Text("Open") }
             }
             Spacer(Modifier.height(12.dp))
-            if (loading) CircularProgressIndicator()
-            else LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                items(results, key = { it.login }) { u ->
-                    Card(
-                        Modifier.fillMaxWidth().clickable { openUser(u.login) }
-                    ) {
-                        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.Person, null)
-                            Spacer(Modifier.width(12.dp))
-                            Column(Modifier.weight(1f)) {
-                                Text(u.login, fontWeight = FontWeight.Medium)
-                                Text(
-                                    u.htmlUrl,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
+            if (loading) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator()
+                }
+            } else {
+                searchError?.let {
+                    Text(it, color = MaterialTheme.colorScheme.error)
+                    Spacer(Modifier.height(8.dp))
+                }
+                if (results.isEmpty() && searchError == null) {
+                    Text(
+                        "Search for a user, or type an exact username and press Open.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                LazyColumn(
+                    Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(results, key = { it.login }) { u ->
+                        Card(Modifier.fillMaxWidth()) {
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Default.Person, null, tint = MaterialTheme.colorScheme.primary)
+                                Spacer(Modifier.width(12.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text(u.login, fontWeight = FontWeight.SemiBold)
+                                    Text(
+                                        u.type,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                // Explicit button — more reliable on desktop than Card click alone
+                                Button(onClick = { openUser(u.login) }) {
+                                    Text("View profile")
+                                }
                             }
-                            Text("View →", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                         }
                     }
                 }
             }
         } else {
+            // ---- User profile detail ----
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = {
                     selectedLogin = null
                     profile = null
                     repos = emptyList()
+                    profileError = null
+                    reposError = null
                 }) { Icon(Icons.Default.ArrowBack, "Back") }
-                Text("User profile", style = MaterialTheme.typography.titleLarge)
+                Text(
+                    "User · @$selectedLogin",
+                    style = MaterialTheme.typography.titleLarge,
+                    modifier = Modifier.weight(1f)
+                )
+                TextButton(
+                    onClick = { openUser(selectedLogin!!) },
+                    enabled = !profileLoading
+                ) { Text("Refresh") }
             }
             Spacer(Modifier.height(8.dp))
             if (profileLoading) {
-                CircularProgressIndicator()
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator()
+                }
             } else {
+                // Header (fixed height)
+                profileError?.let {
+                    Text(it, color = MaterialTheme.colorScheme.error)
+                    Spacer(Modifier.height(8.dp))
+                }
                 profile?.let { u ->
                     Text(u.name ?: u.login, style = MaterialTheme.typography.headlineSmall)
                     Text("@${u.login}", color = MaterialTheme.colorScheme.primary)
@@ -2823,14 +2924,33 @@ fun UserSearchScreen(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                    Spacer(Modifier.height(12.dp))
+                } ?: run {
+                    if (profileError == null) {
+                        Text("@$selectedLogin", style = MaterialTheme.typography.headlineSmall)
+                        Spacer(Modifier.height(8.dp))
+                    }
                 }
-                Spacer(Modifier.height(12.dp))
+
                 Text("Public repositories", style = MaterialTheme.typography.titleMedium)
                 Spacer(Modifier.height(8.dp))
-                if (repos.isEmpty()) {
-                    Text("No public repositories", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                reposError?.let {
+                    Text(it, color = MaterialTheme.colorScheme.error)
+                    Spacer(Modifier.height(4.dp))
+                    TextButton(onClick = { openUser(selectedLogin!!) }) { Text("Retry") }
+                    Spacer(Modifier.height(8.dp))
+                }
+                if (repos.isEmpty() && reposError == null) {
+                    Text(
+                        "No public repositories for this user.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 } else {
-                    LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    // weight(1f) so LazyColumn gets a bounded height (was broken before)
+                    LazyColumn(
+                        Modifier.fillMaxWidth().weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
                         items(repos, key = { it.id }) { repo ->
                             RemoteRepoCard(
                                 repo = repo,
