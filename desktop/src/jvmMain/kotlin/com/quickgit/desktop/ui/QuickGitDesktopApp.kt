@@ -483,8 +483,8 @@ fun RepoDetailScreen(
     onMessage: (String) -> Unit
 ) {
     var tabIndex by remember { mutableStateOf(0) }
-    // Files → Branches → Issues → PRs → History last (Changes kept after Files for day-to-day work)
-    val tabs = listOf("Files", "Changes", "Branches", "Issues", "PRs", "History")
+    // Changes first, then Files (file manager), Branches, Issues, PRs, History last
+    val tabs = listOf("Changes", "Files", "Branches", "Issues", "PRs", "History")
     val scope = rememberCoroutineScope()
     var busy by remember { mutableStateOf(false) }
 
@@ -515,8 +515,8 @@ fun RepoDetailScreen(
             tabs.forEachIndexed { i, title -> Tab(selected = tabIndex == i, onClick = { tabIndex = i }, text = { Text(title) }) }
         }
         when (tabIndex) {
-            0 -> FilesEditorTab(repoPath, repoManager, onMessage)
-            1 -> ChangesTab(repoPath, repoManager, onMessage)
+            0 -> ChangesTab(repoPath, repoManager, onMessage)
+            1 -> FilesEditorTab(repoPath, repoManager, onMessage)
             2 -> BranchesTab(repoPath, repoManager, onMessage)
             3 -> IssuesTab(repoPath, repoManager, credentialStore, githubApi, onMessage)
             4 -> PullRequestsTab(repoPath, repoManager, credentialStore, githubApi, onMessage)
@@ -842,79 +842,449 @@ fun BranchesTab(repoPath: String, repoManager: DesktopRepoManager, onMessage: (S
 }
 
 @Composable
+/** One entry in the repo file manager (folder or file in the current directory). */
+private data class FsEntry(
+    val name: String,
+    val relativePath: String,
+    val isDirectory: Boolean,
+    val sizeBytes: Long = 0L
+)
+
+/** Language / type color for known source extensions. */
+private fun languageColorFor(fileName: String): Color {
+    val ext = fileName.substringAfterLast('.', missingDelimiterValue = "").lowercase()
+    return when (ext) {
+        "kt", "kts" -> Color(0xFF7F52FF)          // Kotlin
+        "java" -> Color(0xFFB07219)               // Java
+        "py" -> Color(0xFF3572A5)                 // Python
+        "js", "mjs", "cjs" -> Color(0xFFF1E05A)   // JavaScript
+        "ts", "tsx" -> Color(0xFF3178C6)          // TypeScript
+        "jsx" -> Color(0xFF61DAFB)                // React JSX
+        "go" -> Color(0xFF00ADD8)                 // Go
+        "rs" -> Color(0xFFDEA584)                 // Rust
+        "c", "h" -> Color(0xFF555555)             // C
+        "cpp", "cc", "cxx", "hpp", "hh" -> Color(0xFFF34B7D) // C++
+        "cs" -> Color(0xFF178600)                 // C#
+        "rb" -> Color(0xFF701516)                 // Ruby
+        "php" -> Color(0xFF4F5D95)                // PHP
+        "swift" -> Color(0xFFFA7343)              // Swift
+        "scala" -> Color(0xFFC22D40)              // Scala
+        "sh", "bash", "zsh" -> Color(0xFF89E051)  // Shell
+        "html", "htm" -> Color(0xFFE34C26)        // HTML
+        "css", "scss", "sass", "less" -> Color(0xFF563D7C) // CSS
+        "json" -> Color(0xFF292929)               // JSON
+        "xml", "xsl" -> Color(0xFF0060AC)         // XML
+        "yml", "yaml" -> Color(0xFFCB171E)        // YAML
+        "toml" -> Color(0xFF9C4221)               // TOML
+        "md", "markdown" -> Color(0xFF083FA1)     // Markdown
+        "gradle" -> Color(0xFF02303A)             // Gradle
+        "sql" -> Color(0xFFE38C00)                // SQL
+        "r" -> Color(0xFF198CE7)                  // R
+        "dart" -> Color(0xFF00B4AB)               // Dart
+        "lua" -> Color(0xFF000080)                // Lua
+        "pl", "pm" -> Color(0xFF0298C3)           // Perl
+        "hs" -> Color(0xFF5E5086)                 // Haskell
+        "clj", "cljs" -> Color(0xFFDB5855)        // Clojure
+        "ex", "exs" -> Color(0xFF6E4A7E)          // Elixir
+        "vim" -> Color(0xFF199F4B)                // Vim
+        "dockerfile" -> Color(0xFF384D54)
+        "txt", "log" -> Color(0xFF6A737D)
+        "png", "jpg", "jpeg", "gif", "webp", "svg", "ico" -> Color(0xFFA074C4)
+        "pdf" -> Color(0xFFCB2431)
+        "zip", "tar", "gz", "tgz", "7z", "jar", "apk" -> Color(0xFF8B6914)
+        else -> Color(0xFF8B949E)
+    }
+}
+
+private fun languageLabelFor(fileName: String): String {
+    val ext = fileName.substringAfterLast('.', missingDelimiterValue = "").lowercase()
+    return when (ext) {
+        "kt", "kts" -> "Kotlin"
+        "java" -> "Java"
+        "py" -> "Python"
+        "js", "mjs", "cjs" -> "JavaScript"
+        "ts" -> "TypeScript"
+        "tsx" -> "TSX"
+        "jsx" -> "JSX"
+        "go" -> "Go"
+        "rs" -> "Rust"
+        "c" -> "C"
+        "h" -> "C header"
+        "cpp", "cc", "cxx" -> "C++"
+        "hpp", "hh" -> "C++ header"
+        "cs" -> "C#"
+        "rb" -> "Ruby"
+        "php" -> "PHP"
+        "swift" -> "Swift"
+        "scala" -> "Scala"
+        "sh", "bash", "zsh" -> "Shell"
+        "html", "htm" -> "HTML"
+        "css" -> "CSS"
+        "scss", "sass" -> "Sass"
+        "json" -> "JSON"
+        "xml" -> "XML"
+        "yml", "yaml" -> "YAML"
+        "md", "markdown" -> "Markdown"
+        "gradle" -> "Gradle"
+        "sql" -> "SQL"
+        "dart" -> "Dart"
+        else -> ext.ifBlank { "file" }.uppercase()
+    }
+}
+
+private fun isProbablyTextFile(name: String): Boolean {
+    val ext = name.substringAfterLast('.', missingDelimiterValue = "").lowercase()
+    if (ext.isEmpty()) return true
+    val binary = setOf(
+        "png", "jpg", "jpeg", "gif", "webp", "ico", "bmp", "pdf", "zip", "tar", "gz", "tgz",
+        "7z", "rar", "jar", "apk", "so", "dll", "dylib", "exe", "class", "o", "a", "woff",
+        "woff2", "ttf", "otf", "mp3", "mp4", "webm", "ogg", "wav"
+    )
+    return ext !in binary
+}
+
+@Composable
 fun FilesEditorTab(repoPath: String, repoManager: DesktopRepoManager, onMessage: (String) -> Unit) {
-    var files by remember { mutableStateOf(listOf<String>()) }
+    // Relative path from repo root; empty = root
+    var currentDir by remember(repoPath) { mutableStateOf("") }
+    var entries by remember { mutableStateOf<List<FsEntry>>(emptyList()) }
     var selectedFile by remember { mutableStateOf<String?>(null) }
     var content by remember { mutableStateOf("") }
     var original by remember { mutableStateOf("") }
     var loading by remember { mutableStateOf(false) }
+    var listing by remember { mutableStateOf(true) }
+    var overwriteTarget by remember { mutableStateOf<java.io.File?>(null) }
+    var pendingUpload by remember { mutableStateOf<java.io.File?>(null) }
     val scope = rememberCoroutineScope()
+    val root = remember(repoPath) { java.io.File(repoPath) }
 
-    LaunchedEffect(repoPath) {
-        withContext(Dispatchers.IO) {
-            val root = java.io.File(repoPath)
-            files = root.walkTopDown()
-                .filter { it.isFile && !it.path.contains("${java.io.File.separator}.git${java.io.File.separator}") }
-                .map { it.relativeTo(root).path }
-                .sorted()
-                .take(500)
-                .toList()
+    fun listDir(rel: String) {
+        scope.launch {
+            listing = true
+            entries = withContext(Dispatchers.IO) {
+                val dir = if (rel.isBlank()) root else java.io.File(root, rel)
+                if (!dir.isDirectory) return@withContext emptyList()
+                dir.listFiles()
+                    ?.filter { it.name != ".git" && !it.name.startsWith(".git") }
+                    ?.map { f ->
+                        val childRel = if (rel.isBlank()) f.name else "$rel/${f.name}".replace('\\', '/')
+                        FsEntry(
+                            name = f.name,
+                            relativePath = childRel.replace('\\', '/'),
+                            isDirectory = f.isDirectory,
+                            sizeBytes = if (f.isFile) f.length() else 0L
+                        )
+                    }
+                    ?.sortedWith(compareBy<FsEntry> { !it.isDirectory }.thenBy { it.name.lowercase() })
+                    ?: emptyList()
+            }
+            listing = false
+        }
+    }
+
+    LaunchedEffect(repoPath, currentDir) {
+        selectedFile = null
+        content = ""
+        original = ""
+        listDir(currentDir)
+    }
+
+    fun goUp() {
+        if (currentDir.isBlank()) return
+        currentDir = currentDir
+            .replace('\\', '/')
+            .trimEnd('/')
+            .substringBeforeLast('/', missingDelimiterValue = "")
+    }
+
+    fun openFile(rel: String) {
+        selectedFile = rel
+        scope.launch {
+            loading = true
+            val text = withContext(Dispatchers.IO) {
+                val f = java.io.File(root, rel)
+                if (!f.isFile) return@withContext ""
+                if (!isProbablyTextFile(f.name)) return@withContext "(binary file — ${f.length()} bytes)"
+                try {
+                    f.readText()
+                } catch (_: Exception) {
+                    "(unable to read as text)"
+                }
+            }
+            content = text
+            original = text
+            loading = false
+        }
+    }
+
+    fun copyUpload(src: java.io.File, dest: java.io.File, overwrite: Boolean) {
+        scope.launch {
+            withContext(Dispatchers.IO) {
+                if (dest.exists() && !overwrite) return@withContext
+                dest.parentFile?.mkdirs()
+                src.copyTo(dest, overwrite = true)
+            }
+            onMessage(
+                if (overwrite && dest.exists()) "Replaced ${dest.name}"
+                else "Uploaded ${dest.name}"
+            )
+            listDir(currentDir)
+            val rel = dest.relativeTo(root).path.replace('\\', '/')
+            if (isProbablyTextFile(dest.name)) openFile(rel)
+        }
+    }
+
+    fun pickAndUpload() {
+        scope.launch {
+            val chosen = withContext(Dispatchers.IO) {
+                javax.swing.JFileChooser().apply {
+                    dialogTitle = "Upload file into repository"
+                    fileSelectionMode = javax.swing.JFileChooser.FILES_ONLY
+                    isMultiSelectionEnabled = false
+                }.let { chooser ->
+                    val result = chooser.showOpenDialog(null)
+                    if (result == javax.swing.JFileChooser.APPROVE_OPTION) chooser.selectedFile else null
+                }
+            } ?: return@launch
+
+            val destDir = if (currentDir.isBlank()) root else java.io.File(root, currentDir)
+            val dest = java.io.File(destDir, chosen.name)
+            if (dest.exists()) {
+                pendingUpload = chosen
+                overwriteTarget = dest
+            } else {
+                copyUpload(chosen, dest, overwrite = false)
+            }
         }
     }
 
     Row(Modifier.fillMaxSize()) {
-        LazyColumn(Modifier.width(260.dp).fillMaxHeight().padding(8.dp)) {
-            items(files) { path ->
+        // ---- Browser pane ----
+        Column(Modifier.width(300.dp).fillMaxHeight()) {
+            // Path bar + actions
+            Row(
+                Modifier.fillMaxWidth().padding(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                // "..." back one level
+                IconButton(
+                    onClick = { goUp() },
+                    enabled = currentDir.isNotBlank()
+                ) {
+                    Text("…", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                }
                 Text(
-                    path,
-                    modifier = Modifier.fillMaxWidth().clickable {
-                        selectedFile = path
-                        scope.launch {
-                            loading = true
-                            val text = withContext(Dispatchers.IO) {
-                                try { java.io.File(repoPath, path).readText() } catch (_: Exception) { "" }
-                            }
-                            content = text
-                            original = text
-                            loading = false
-                        }
-                    }.background(if (selectedFile == path) MaterialTheme.colorScheme.primaryContainer.copy(0.4f) else Color.Transparent).padding(8.dp),
+                    if (currentDir.isBlank()) "/" else "/$currentDir",
                     style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
                     maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
                 )
+                IconButton(onClick = { listDir(currentDir) }) {
+                    Icon(Icons.Default.Refresh, "Refresh")
+                }
+            }
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedButton(
+                    onClick = { pickAndUpload() },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.Default.Upload, null, Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Upload")
+                }
+            }
+            Spacer(Modifier.height(4.dp))
+            HorizontalDivider()
+            if (listing) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
+                }
+            } else if (entries.isEmpty()) {
+                Box(Modifier.fillMaxSize().padding(16.dp), contentAlignment = Alignment.Center) {
+                    Text("Empty folder", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            } else {
+                LazyColumn(Modifier.fillMaxSize().padding(horizontal = 4.dp)) {
+                    // Parent "…" row when not at root
+                    if (currentDir.isNotBlank()) {
+                        item {
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .clickable { goUp() }
+                                    .padding(horizontal = 8.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("…", fontWeight = FontWeight.Bold, modifier = Modifier.width(28.dp))
+                                Text("..", style = MaterialTheme.typography.bodyMedium)
+                            }
+                        }
+                    }
+                    items(entries, key = { it.relativePath }) { entry ->
+                        val langColor = if (entry.isDirectory) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            languageColorFor(entry.name)
+                        }
+                        val selected = selectedFile == entry.relativePath
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .background(
+                                    if (selected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
+                                    else Color.Transparent
+                                )
+                                .clickable {
+                                    if (entry.isDirectory) {
+                                        currentDir = entry.relativePath
+                                    } else {
+                                        openFile(entry.relativePath)
+                                    }
+                                }
+                                .padding(horizontal = 8.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            // Color chip
+                            Box(
+                                Modifier
+                                    .size(10.dp)
+                                    .background(langColor, shape = MaterialTheme.shapes.small)
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Icon(
+                                if (entry.isDirectory) Icons.Default.Folder else Icons.Default.Description,
+                                contentDescription = null,
+                                tint = langColor,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    entry.name,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    color = if (entry.isDirectory) MaterialTheme.colorScheme.onSurface
+                                    else langColor
+                                )
+                                if (!entry.isDirectory) {
+                                    Text(
+                                        languageLabelFor(entry.name),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                            if (entry.isDirectory) {
+                                Icon(
+                                    Icons.Default.ChevronRight,
+                                    null,
+                                    Modifier.size(16.dp),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
             }
         }
+
         VerticalDivider()
+
+        // ---- Editor pane ----
         Column(Modifier.weight(1f).padding(12.dp)) {
             if (selectedFile == null) {
-                Text("Select a file to view / edit", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text(
+                        "Open a folder, or select a file to view / edit.\nUse Upload to add a local file into this folder.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
             } else {
+                val name = selectedFile!!.substringAfterLast('/')
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(selectedFile!!, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+                    Box(
+                        Modifier
+                            .size(12.dp)
+                            .background(languageColorFor(name), shape = MaterialTheme.shapes.small)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(selectedFile!!, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(
+                            languageLabelFor(name),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = languageColorFor(name)
+                        )
+                    }
                     Button(
                         onClick = {
                             scope.launch {
                                 withContext(Dispatchers.IO) {
-                                    java.io.File(repoPath, selectedFile!!).writeText(content)
+                                    java.io.File(root, selectedFile!!).writeText(content)
                                 }
                                 original = content
                                 onMessage("Saved $selectedFile")
                             }
                         },
-                        enabled = content != original
+                        enabled = content != original && isProbablyTextFile(name)
                     ) { Text("Save") }
                 }
                 Spacer(Modifier.height(8.dp))
-                if (loading) CircularProgressIndicator()
-                else OutlinedTextField(
-                    value = content,
-                    onValueChange = { content = it },
-                    modifier = Modifier.fillMaxSize(),
-                    textStyle = LocalTextStyle.current.copy(fontFamily = FontFamily.Monospace)
-                )
+                if (loading) {
+                    CircularProgressIndicator()
+                } else {
+                    OutlinedTextField(
+                        value = content,
+                        onValueChange = { content = it },
+                        modifier = Modifier.fillMaxSize(),
+                        textStyle = LocalTextStyle.current.copy(fontFamily = FontFamily.Monospace),
+                        readOnly = !isProbablyTextFile(name)
+                    )
+                }
             }
         }
+    }
+
+    // Overwrite confirmation
+    overwriteTarget?.let { dest ->
+        val src = pendingUpload
+        AlertDialog(
+            onDismissRequest = {
+                overwriteTarget = null
+                pendingUpload = null
+            },
+            title = { Text("Replace existing file?") },
+            text = {
+                Text(
+                    "\"${dest.name}\" already exists in this folder.\n\nReplace it with the selected file?"
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        if (src != null) copyUpload(src, dest, overwrite = true)
+                        overwriteTarget = null
+                        pendingUpload = null
+                    }
+                ) { Text("Replace") }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        overwriteTarget = null
+                        pendingUpload = null
+                    }
+                ) { Text("Cancel") }
+            }
+        )
     }
 }
 
