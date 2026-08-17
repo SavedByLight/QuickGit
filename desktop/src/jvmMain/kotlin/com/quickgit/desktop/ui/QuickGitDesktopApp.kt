@@ -268,7 +268,7 @@ fun RepoDetailScreen(
         }
         when (tabIndex) {
             0 -> ChangesTab(repoPath, repoManager, onMessage)
-            1 -> HistoryTab(repoPath, repoManager)
+            1 -> HistoryTab(repoPath, repoManager, onMessage)
             2 -> BranchesTab(repoPath, repoManager, onMessage)
             3 -> FilesEditorTab(repoPath, repoManager, onMessage)
             4 -> IssuesTab(repoPath, repoManager, credentialStore, githubApi, onMessage)
@@ -331,29 +331,137 @@ fun ChangesTab(repoPath: String, repoManager: DesktopRepoManager, onMessage: (St
 }
 
 @Composable
-fun HistoryTab(repoPath: String, repoManager: DesktopRepoManager) {
+fun HistoryTab(repoPath: String, repoManager: DesktopRepoManager, onMessage: (String) -> Unit) {
     var commits by remember { mutableStateOf(emptyList<DesktopRepoManager.CommitInfo>()) }
     var loading by remember { mutableStateOf(true) }
+    var busy by remember { mutableStateOf(false) }
+    var confirmCherry by remember { mutableStateOf<DesktopRepoManager.CommitInfo?>(null) }
+    var confirmRevert by remember { mutableStateOf<DesktopRepoManager.CommitInfo?>(null) }
     val dateFormat = remember { SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()) }
-    LaunchedEffect(repoPath) {
-        loading = true
-        commits = withContext(Dispatchers.IO) { repoManager.getHistory(repoPath, 200) }
-        loading = false
+    val scope = rememberCoroutineScope()
+
+    fun reload() {
+        scope.launch {
+            loading = true
+            commits = withContext(Dispatchers.IO) { repoManager.getHistory(repoPath, 200) }
+            loading = false
+        }
     }
-    if (loading) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
-    else LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        items(commits) { c ->
-            Card(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(12.dp)) {
-                    Text(c.message, fontWeight = FontWeight.Medium)
-                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Text(c.shortId, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
-                        Text(c.author, style = MaterialTheme.typography.bodySmall)
-                        Text(dateFormat.format(Date(c.time)), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    LaunchedEffect(repoPath) { reload() }
+
+    fun doCherryPick(c: DesktopRepoManager.CommitInfo) {
+        scope.launch {
+            busy = true
+            val r = withContext(Dispatchers.IO) { repoManager.cherryPick(repoPath, c.id) }
+            busy = false
+            confirmCherry = null
+            r.fold(
+                { reload(); onMessage("Cherry-picked ${c.shortId}") },
+                { onMessage("Cherry-pick failed: ${it.message}") }
+            )
+        }
+    }
+
+    fun doRevert(c: DesktopRepoManager.CommitInfo) {
+        scope.launch {
+            busy = true
+            val r = withContext(Dispatchers.IO) { repoManager.revertCommit(repoPath, c.id) }
+            busy = false
+            confirmRevert = null
+            r.fold(
+                { reload(); onMessage("Reverted ${c.shortId}") },
+                { onMessage("Revert failed: ${it.message}") }
+            )
+        }
+    }
+
+    Column(Modifier.fillMaxSize()) {
+        Text(
+            "Cherry-pick applies a commit onto the current branch. Revert creates an inverse commit.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+        )
+        if (loading) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+        } else {
+            LazyColumn(
+                Modifier.fillMaxSize().padding(horizontal = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(commits, key = { it.id }) { c ->
+                    Card(Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(12.dp)) {
+                            Text(c.message, fontWeight = FontWeight.Medium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                Text(
+                                    c.shortId,
+                                    fontFamily = FontFamily.Monospace,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Text(c.author, style = MaterialTheme.typography.bodySmall)
+                                Text(
+                                    dateFormat.format(Date(c.time)),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Row(
+                                Modifier.fillMaxWidth().padding(top = 8.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                OutlinedButton(
+                                    onClick = { confirmCherry = c },
+                                    enabled = !busy
+                                ) { Text("Cherry-pick") }
+                                OutlinedButton(
+                                    onClick = { confirmRevert = c },
+                                    enabled = !busy
+                                ) { Text("Revert") }
+                            }
+                        }
                     }
                 }
+                item { Spacer(Modifier.height(24.dp)) }
             }
         }
+    }
+
+    confirmCherry?.let { c ->
+        AlertDialog(
+            onDismissRequest = { if (!busy) confirmCherry = null },
+            title = { Text("Cherry-pick ${c.shortId}?") },
+            text = {
+                Text("Apply this commit onto the current branch:\n\n${c.message}")
+            },
+            confirmButton = {
+                TextButton(onClick = { doCherryPick(c) }, enabled = !busy) {
+                    Text(if (busy) "Working…" else "Cherry-pick")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmCherry = null }, enabled = !busy) { Text("Cancel") }
+            }
+        )
+    }
+
+    confirmRevert?.let { c ->
+        AlertDialog(
+            onDismissRequest = { if (!busy) confirmRevert = null },
+            title = { Text("Revert ${c.shortId}?") },
+            text = {
+                Text("Create a new commit that undoes:\n\n${c.message}")
+            },
+            confirmButton = {
+                TextButton(onClick = { doRevert(c) }, enabled = !busy) {
+                    Text(if (busy) "Working…" else "Revert")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmRevert = null }, enabled = !busy) { Text("Cancel") }
+            }
+        )
     }
 }
 
@@ -572,43 +680,294 @@ fun IssuesTab(
 ) {
     var issues by remember { mutableStateOf<List<Issue>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
+    var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    var stateFilter by remember { mutableStateOf(IssueStateFilter.OPEN) }
+    var ownerRepo by remember { mutableStateOf<GitHubApi.OwnerRepo?>(null) }
+    var showCreate by remember { mutableStateOf(false) }
+    var detailIssue by remember { mutableStateOf<Issue?>(null) }
+    var comments by remember { mutableStateOf<List<PrComment>>(emptyList()) }
+    var commentDraft by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
 
-    LaunchedEffect(repoPath) {
-        loading = true
-        error = null
-        val remote = withContext(Dispatchers.IO) { repoManager.getRemoteUrl(repoPath) }
-        val parsed = githubApi.parseOwnerRepo(remote)
-        if (parsed == null) {
-            error = "Not a GitHub remote (or no origin URL)"
+    fun reload() {
+        scope.launch {
+            loading = true
+            error = null
+            val remote = withContext(Dispatchers.IO) { repoManager.getRemoteUrl(repoPath) }
+            val parsed = githubApi.parseOwnerRepo(remote)
+            ownerRepo = parsed
+            if (parsed == null) {
+                error = "Not a GitHub remote (or no origin URL). Issues require a github.com remote and a token in Credentials."
+                issues = emptyList()
+                loading = false
+                return@launch
+            }
+            val result = withContext(Dispatchers.IO) {
+                githubApi.listIssues(parsed.owner, parsed.repo, stateFilter.apiValue)
+            }
+            result.fold(
+                onSuccess = { issues = it },
+                onFailure = { error = it.message; issues = emptyList() }
+            )
             loading = false
-            return@LaunchedEffect
         }
-        val result = withContext(Dispatchers.IO) { githubApi.listIssues(parsed.owner, parsed.repo, "open") }
-        result.fold(
-            onSuccess = { issues = it },
-            onFailure = { error = it.message }
-        )
-        loading = false
+    }
+
+    LaunchedEffect(repoPath, stateFilter) { reload() }
+
+    fun loadDetail(issue: Issue) {
+        detailIssue = issue
+        commentDraft = ""
+        val or = ownerRepo ?: return
+        scope.launch {
+            val r = withContext(Dispatchers.IO) {
+                githubApi.listComments(or.owner, or.repo, issue.number)
+            }
+            r.fold(onSuccess = { comments = it }, onFailure = { comments = emptyList() })
+        }
     }
 
     Column(Modifier.fillMaxSize().padding(16.dp)) {
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            IssueStateFilter.entries.forEach { f ->
+                FilterChip(
+                    selected = stateFilter == f,
+                    onClick = { stateFilter = f },
+                    label = { Text(f.label) }
+                )
+            }
+            Spacer(Modifier.weight(1f))
+            Button(onClick = { showCreate = true }, enabled = ownerRepo != null && !busy) {
+                Icon(Icons.Default.Add, null, Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("New issue")
+            }
+        }
+        Spacer(Modifier.height(12.dp))
         when {
-            loading -> CircularProgressIndicator()
+            loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator()
+            }
             error != null -> Text(error!!, color = MaterialTheme.colorScheme.error)
-            issues.isEmpty() -> Text("No open issues", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            issues.isEmpty() -> Text(
+                "No ${stateFilter.label.lowercase()} issues",
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
             else -> LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(issues) { issue ->
-                    Card(Modifier.fillMaxWidth()) {
+                items(issues, key = { it.number }) { issue ->
+                    Card(
+                        Modifier.fillMaxWidth().clickable { loadDetail(issue) }
+                    ) {
                         Column(Modifier.padding(12.dp)) {
-                            Text("#${issue.number} ${issue.title}", fontWeight = FontWeight.Medium)
-                            Text(issue.state, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(
+                                "#${issue.number} ${issue.title}",
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                Text(
+                                    issue.state,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (issue.state == "open") MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Text(
+                                    "@${issue.authorLogin}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                if (issue.commentsCount > 0) {
+                                    Text(
+                                        "${issue.commentsCount} comments",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                            Row(
+                                Modifier.padding(top = 8.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                if (issue.state == "open") {
+                                    OutlinedButton(
+                                        onClick = {
+                                            val or = ownerRepo ?: return@OutlinedButton
+                                            scope.launch {
+                                                busy = true
+                                                val r = withContext(Dispatchers.IO) {
+                                                    githubApi.setIssueState(or.owner, or.repo, issue.number, open = false)
+                                                }
+                                                busy = false
+                                                r.fold(
+                                                    { onMessage("Closed #${issue.number}"); reload() },
+                                                    { onMessage("Close failed: ${it.message}") }
+                                                )
+                                            }
+                                        },
+                                        enabled = !busy
+                                    ) { Text("Close") }
+                                } else {
+                                    OutlinedButton(
+                                        onClick = {
+                                            val or = ownerRepo ?: return@OutlinedButton
+                                            scope.launch {
+                                                busy = true
+                                                val r = withContext(Dispatchers.IO) {
+                                                    githubApi.setIssueState(or.owner, or.repo, issue.number, open = true)
+                                                }
+                                                busy = false
+                                                r.fold(
+                                                    { onMessage("Reopened #${issue.number}"); reload() },
+                                                    { onMessage("Reopen failed: ${it.message}") }
+                                                )
+                                            }
+                                        },
+                                        enabled = !busy
+                                    ) { Text("Reopen") }
+                                }
+                                TextButton(onClick = { loadDetail(issue) }) { Text("Details") }
+                            }
                         }
                     }
                 }
+                item { Spacer(Modifier.height(24.dp)) }
             }
         }
+    }
+
+    if (showCreate) {
+        var title by remember { mutableStateOf("") }
+        var body by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { if (!busy) showCreate = false },
+            title = { Text("New issue") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = title,
+                        onValueChange = { title = it },
+                        label = { Text("Title") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = body,
+                        onValueChange = { body = it },
+                        label = { Text("Body (optional)") },
+                        minLines = 4,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val or = ownerRepo ?: return@TextButton
+                        val t = title.trim()
+                        if (t.isBlank()) return@TextButton
+                        scope.launch {
+                            busy = true
+                            val r = withContext(Dispatchers.IO) {
+                                githubApi.createIssue(or.owner, or.repo, t, body.trim())
+                            }
+                            busy = false
+                            r.fold(
+                                {
+                                    showCreate = false
+                                    onMessage("Created issue #${it.number}")
+                                    stateFilter = IssueStateFilter.OPEN
+                                    reload()
+                                },
+                                { onMessage("Create failed: ${it.message}") }
+                            )
+                        }
+                    },
+                    enabled = title.isNotBlank() && !busy
+                ) { Text(if (busy) "Creating…" else "Create") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCreate = false }, enabled = !busy) { Text("Cancel") }
+            }
+        )
+    }
+
+    detailIssue?.let { issue ->
+        AlertDialog(
+            onDismissRequest = { detailIssue = null },
+            title = { Text("#${issue.number} ${issue.title}") },
+            text = {
+                Column(
+                    Modifier.fillMaxWidth().heightIn(max = 420.dp).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        "State: ${issue.state} · @${issue.authorLogin}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    if (!issue.body.isNullOrBlank()) {
+                        Text(issue.body!!, style = MaterialTheme.typography.bodyMedium)
+                    }
+                    HorizontalDivider()
+                    Text("Comments", fontWeight = FontWeight.SemiBold)
+                    if (comments.isEmpty()) {
+                        Text("No comments yet", style = MaterialTheme.typography.bodySmall)
+                    } else {
+                        comments.forEach { c ->
+                            Column(Modifier.padding(vertical = 4.dp)) {
+                                Text(
+                                    "@${c.authorLogin}",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Text(c.body, style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                    }
+                    OutlinedTextField(
+                        value = commentDraft,
+                        onValueChange = { commentDraft = it },
+                        label = { Text("Add a comment") },
+                        minLines = 2,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val or = ownerRepo ?: return@TextButton
+                        val body = commentDraft.trim()
+                        if (body.isBlank()) return@TextButton
+                        scope.launch {
+                            busy = true
+                            val r = withContext(Dispatchers.IO) {
+                                githubApi.addComment(or.owner, or.repo, issue.number, body)
+                            }
+                            busy = false
+                            r.fold(
+                                {
+                                    commentDraft = ""
+                                    onMessage("Comment added")
+                                    loadDetail(issue)
+                                },
+                                { onMessage("Comment failed: ${it.message}") }
+                            )
+                        }
+                    },
+                    enabled = commentDraft.isNotBlank() && !busy
+                ) { Text("Comment") }
+            },
+            dismissButton = {
+                TextButton(onClick = { detailIssue = null }) { Text("Close") }
+            }
+        )
     }
 }
 
@@ -622,39 +981,392 @@ fun PullRequestsTab(
 ) {
     var prs by remember { mutableStateOf<List<PullRequest>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
+    var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    var stateFilter by remember { mutableStateOf(PrStateFilter.OPEN) }
+    var ownerRepo by remember { mutableStateOf<GitHubApi.OwnerRepo?>(null) }
+    var showCreate by remember { mutableStateOf(false) }
+    var detailPr by remember { mutableStateOf<PullRequest?>(null) }
+    var comments by remember { mutableStateOf<List<PrComment>>(emptyList()) }
+    var commentDraft by remember { mutableStateOf("") }
+    var mergeMethod by remember { mutableStateOf(MergeMethod.MERGE) }
+    val scope = rememberCoroutineScope()
 
-    LaunchedEffect(repoPath) {
-        loading = true
-        error = null
-        val remote = withContext(Dispatchers.IO) { repoManager.getRemoteUrl(repoPath) }
-        val parsed = githubApi.parseOwnerRepo(remote)
-        if (parsed == null) {
-            error = "Not a GitHub remote"
+    fun reload() {
+        scope.launch {
+            loading = true
+            error = null
+            val remote = withContext(Dispatchers.IO) { repoManager.getRemoteUrl(repoPath) }
+            val parsed = githubApi.parseOwnerRepo(remote)
+            ownerRepo = parsed
+            if (parsed == null) {
+                error = "Not a GitHub remote. PRs require a github.com remote and a token in Credentials."
+                prs = emptyList()
+                loading = false
+                return@launch
+            }
+            val result = withContext(Dispatchers.IO) {
+                githubApi.listPullRequests(parsed.owner, parsed.repo, stateFilter.apiValue)
+            }
+            result.fold(
+                onSuccess = { prs = it },
+                onFailure = { error = it.message; prs = emptyList() }
+            )
             loading = false
-            return@LaunchedEffect
         }
-        val result = withContext(Dispatchers.IO) { githubApi.listPullRequests(parsed.owner, parsed.repo, "open") }
-        result.fold(onSuccess = { prs = it }, onFailure = { error = it.message })
-        loading = false
+    }
+
+    LaunchedEffect(repoPath, stateFilter) { reload() }
+
+    fun loadDetail(pr: PullRequest) {
+        detailPr = pr
+        commentDraft = ""
+        val or = ownerRepo ?: return
+        scope.launch {
+            val r = withContext(Dispatchers.IO) {
+                githubApi.listComments(or.owner, or.repo, pr.number)
+            }
+            r.fold(onSuccess = { comments = it }, onFailure = { comments = emptyList() })
+        }
     }
 
     Column(Modifier.fillMaxSize().padding(16.dp)) {
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            PrStateFilter.entries.forEach { f ->
+                FilterChip(
+                    selected = stateFilter == f,
+                    onClick = { stateFilter = f },
+                    label = { Text(f.label) }
+                )
+            }
+            Spacer(Modifier.weight(1f))
+            Button(onClick = { showCreate = true }, enabled = ownerRepo != null && !busy) {
+                Icon(Icons.Default.Add, null, Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("New PR")
+            }
+        }
+        Spacer(Modifier.height(12.dp))
         when {
-            loading -> CircularProgressIndicator()
+            loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator()
+            }
             error != null -> Text(error!!, color = MaterialTheme.colorScheme.error)
-            prs.isEmpty() -> Text("No open pull requests", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            prs.isEmpty() -> Text(
+                "No ${stateFilter.label.lowercase()} pull requests",
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
             else -> LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(prs) { pr ->
-                    Card(Modifier.fillMaxWidth()) {
+                items(prs, key = { it.number }) { pr ->
+                    Card(Modifier.fillMaxWidth().clickable { loadDetail(pr) }) {
                         Column(Modifier.padding(12.dp)) {
-                            Text("#${pr.number} ${pr.title}", fontWeight = FontWeight.Medium)
-                            Text("${pr.state}${if (pr.isDraft) " · draft" else ""}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(
+                                "#${pr.number} ${pr.title}",
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                buildString {
+                                    append(pr.state)
+                                    if (pr.isDraft) append(" · draft")
+                                    if (pr.merged) append(" · merged")
+                                    append(" · ${pr.headRef} → ${pr.baseRef}")
+                                    append(" · @${pr.authorLogin}")
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Row(
+                                Modifier.padding(top = 8.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                if (pr.state == "open" && !pr.merged) {
+                                    Button(
+                                        onClick = {
+                                            val or = ownerRepo ?: return@Button
+                                            scope.launch {
+                                                busy = true
+                                                val r = withContext(Dispatchers.IO) {
+                                                    githubApi.mergePullRequest(
+                                                        or.owner, or.repo, pr.number, mergeMethod, null
+                                                    )
+                                                }
+                                                busy = false
+                                                r.fold(
+                                                    { onMessage("Merged #${pr.number}"); reload() },
+                                                    { onMessage("Merge failed: ${it.message}") }
+                                                )
+                                            }
+                                        },
+                                        enabled = !busy
+                                    ) { Text("Merge") }
+                                    OutlinedButton(
+                                        onClick = {
+                                            val or = ownerRepo ?: return@OutlinedButton
+                                            scope.launch {
+                                                busy = true
+                                                val r = withContext(Dispatchers.IO) {
+                                                    githubApi.setPullRequestState(
+                                                        or.owner, or.repo, pr.number, open = false
+                                                    )
+                                                }
+                                                busy = false
+                                                r.fold(
+                                                    { onMessage("Closed #${pr.number}"); reload() },
+                                                    { onMessage("Close failed: ${it.message}") }
+                                                )
+                                            }
+                                        },
+                                        enabled = !busy
+                                    ) { Text("Close") }
+                                } else if (pr.state == "closed" && !pr.merged) {
+                                    OutlinedButton(
+                                        onClick = {
+                                            val or = ownerRepo ?: return@OutlinedButton
+                                            scope.launch {
+                                                busy = true
+                                                val r = withContext(Dispatchers.IO) {
+                                                    githubApi.setPullRequestState(
+                                                        or.owner, or.repo, pr.number, open = true
+                                                    )
+                                                }
+                                                busy = false
+                                                r.fold(
+                                                    { onMessage("Reopened #${pr.number}"); reload() },
+                                                    { onMessage("Reopen failed: ${it.message}") }
+                                                )
+                                            }
+                                        },
+                                        enabled = !busy
+                                    ) { Text("Reopen") }
+                                }
+                                TextButton(onClick = { loadDetail(pr) }) { Text("Details") }
+                            }
                         }
                     }
                 }
+                item { Spacer(Modifier.height(24.dp)) }
             }
         }
+    }
+
+    if (showCreate) {
+        var title by remember { mutableStateOf("") }
+        var body by remember { mutableStateOf("") }
+        var head by remember { mutableStateOf("") }
+        var base by remember { mutableStateOf("main") }
+        var draft by remember { mutableStateOf(false) }
+        var branchOptions by remember { mutableStateOf<List<String>>(emptyList()) }
+
+        LaunchedEffect(Unit) {
+            val or = ownerRepo
+            if (or != null) {
+                withContext(Dispatchers.IO) {
+                    githubApi.listLocalAndRemoteBranches(or.owner, or.repo).onSuccess {
+                        branchOptions = it
+                        if (base !in it && it.isNotEmpty()) base = it.first()
+                    }
+                }
+            }
+            val current = withContext(Dispatchers.IO) { repoManager.currentBranch(repoPath) }
+            if (!current.isNullOrBlank()) head = current
+        }
+
+        AlertDialog(
+            onDismissRequest = { if (!busy) showCreate = false },
+            title = { Text("New pull request") },
+            text = {
+                Column(
+                    Modifier.fillMaxWidth().heightIn(max = 480.dp).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedTextField(
+                        value = title,
+                        onValueChange = { title = it },
+                        label = { Text("Title") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = body,
+                        onValueChange = { body = it },
+                        label = { Text("Body (optional)") },
+                        minLines = 3,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = head,
+                        onValueChange = { head = it },
+                        label = { Text("Head branch (yours)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        supportingText = {
+                            if (branchOptions.isNotEmpty()) {
+                                Text("Remote branches: ${branchOptions.take(8).joinToString()}")
+                            }
+                        }
+                    )
+                    OutlinedTextField(
+                        value = base,
+                        onValueChange = { base = it },
+                        label = { Text("Base branch") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(checked = draft, onCheckedChange = { draft = it })
+                        Text("Create as draft")
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val or = ownerRepo ?: return@TextButton
+                        val t = title.trim()
+                        val h = head.trim()
+                        val b = base.trim()
+                        if (t.isBlank() || h.isBlank() || b.isBlank()) return@TextButton
+                        scope.launch {
+                            busy = true
+                            val r = withContext(Dispatchers.IO) {
+                                githubApi.createPullRequest(
+                                    or.owner, or.repo, t, body.trim(), h, b, draft
+                                )
+                            }
+                            busy = false
+                            r.fold(
+                                {
+                                    showCreate = false
+                                    onMessage("Created PR #${it.number}")
+                                    stateFilter = PrStateFilter.OPEN
+                                    reload()
+                                },
+                                { onMessage("Create PR failed: ${it.message}") }
+                            )
+                        }
+                    },
+                    enabled = title.isNotBlank() && head.isNotBlank() && base.isNotBlank() && !busy
+                ) { Text(if (busy) "Creating…" else "Create PR") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCreate = false }, enabled = !busy) { Text("Cancel") }
+            }
+        )
+    }
+
+    detailPr?.let { pr ->
+        AlertDialog(
+            onDismissRequest = { detailPr = null },
+            title = { Text("#${pr.number} ${pr.title}") },
+            text = {
+                Column(
+                    Modifier.fillMaxWidth().heightIn(max = 480.dp).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        "${pr.state}${if (pr.isDraft) " · draft" else ""}${if (pr.merged) " · merged" else ""} · ${pr.headRef} → ${pr.baseRef}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text("@${pr.authorLogin}", style = MaterialTheme.typography.bodySmall)
+                    if (!pr.body.isNullOrBlank()) {
+                        Text(pr.body!!, style = MaterialTheme.typography.bodyMedium)
+                    }
+                    if (pr.state == "open" && !pr.merged) {
+                        Text("Merge method", fontWeight = FontWeight.SemiBold)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            MergeMethod.entries.forEach { m ->
+                                FilterChip(
+                                    selected = mergeMethod == m,
+                                    onClick = { mergeMethod = m },
+                                    label = { Text(m.label) }
+                                )
+                            }
+                        }
+                        Button(
+                            onClick = {
+                                val or = ownerRepo ?: return@Button
+                                scope.launch {
+                                    busy = true
+                                    val r = withContext(Dispatchers.IO) {
+                                        githubApi.mergePullRequest(
+                                            or.owner, or.repo, pr.number, mergeMethod, null
+                                        )
+                                    }
+                                    busy = false
+                                    r.fold(
+                                        {
+                                            detailPr = null
+                                            onMessage("Merged #${pr.number}")
+                                            reload()
+                                        },
+                                        { onMessage("Merge failed: ${it.message}") }
+                                    )
+                                }
+                            },
+                            enabled = !busy
+                        ) { Text("Merge PR") }
+                    }
+                    HorizontalDivider()
+                    Text("Comments", fontWeight = FontWeight.SemiBold)
+                    if (comments.isEmpty()) {
+                        Text("No comments yet", style = MaterialTheme.typography.bodySmall)
+                    } else {
+                        comments.forEach { c ->
+                            Column(Modifier.padding(vertical = 4.dp)) {
+                                Text(
+                                    "@${c.authorLogin}",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Text(c.body, style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                    }
+                    OutlinedTextField(
+                        value = commentDraft,
+                        onValueChange = { commentDraft = it },
+                        label = { Text("Add a comment") },
+                        minLines = 2,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val or = ownerRepo ?: return@TextButton
+                        val body = commentDraft.trim()
+                        if (body.isBlank()) return@TextButton
+                        scope.launch {
+                            busy = true
+                            val r = withContext(Dispatchers.IO) {
+                                githubApi.addComment(or.owner, or.repo, pr.number, body)
+                            }
+                            busy = false
+                            r.fold(
+                                {
+                                    commentDraft = ""
+                                    onMessage("Comment added")
+                                    loadDetail(pr)
+                                },
+                                { onMessage("Comment failed: ${it.message}") }
+                            )
+                        }
+                    },
+                    enabled = commentDraft.isNotBlank() && !busy
+                ) { Text("Comment") }
+            },
+            dismissButton = {
+                TextButton(onClick = { detailPr = null }) { Text("Close") }
+            }
+        )
     }
 }
 

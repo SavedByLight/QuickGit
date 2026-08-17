@@ -456,6 +456,87 @@ class DesktopRepoManager(
         }
     }
 
+    /**
+     * Cherry-pick [commitHash] onto the current branch.
+     * Returns failure with a message that includes conflict paths when the pick conflicts.
+     */
+    fun cherryPick(repoPath: String, commitHash: String): Result<Unit> {
+        return try {
+            open(File(repoPath)).use { git ->
+                val objectId = git.repository.resolve(commitHash)
+                    ?: return Result.failure(IllegalArgumentException("Commit not found: $commitHash"))
+                RevWalk(git.repository).use { walk ->
+                    val commit = walk.parseCommit(objectId)
+                    val result = git.cherryPick().include(commit).call()
+                    when (result.status) {
+                        org.eclipse.jgit.api.CherryPickResult.CherryPickStatus.OK ->
+                            Result.success(Unit)
+                        org.eclipse.jgit.api.CherryPickResult.CherryPickStatus.CONFLICTING -> {
+                            val conflicts = git.status().call().conflicting.toList().sorted()
+                            Result.failure(
+                                IllegalStateException(
+                                    "Cherry-pick conflict on ${conflicts.joinToString().ifBlank { "unknown paths" }}"
+                                )
+                            )
+                        }
+                        else -> Result.failure(
+                            IllegalStateException("Could not cherry-pick ${commitHash.take(7)} (${result.status})")
+                        )
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Revert [commitHash] by creating an inverse commit on the current branch.
+     * Optional [message] amends the auto-generated revert message when provided.
+     */
+    fun revertCommit(repoPath: String, commitHash: String, message: String? = null): Result<Unit> {
+        return try {
+            open(File(repoPath)).use { git ->
+                val objectId = git.repository.resolve(commitHash)
+                    ?: return Result.failure(IllegalArgumentException("Commit not found: $commitHash"))
+                RevWalk(git.repository).use { walk ->
+                    val commit = walk.parseCommit(objectId)
+                    val reverted = git.revert().include(commit).call()
+                    if (reverted != null) {
+                        if (!message.isNullOrBlank() && message != reverted.fullMessage.trim()) {
+                            git.commit().setAmend(true).setMessage(message).call()
+                        }
+                        Result.success(Unit)
+                    } else {
+                        val conflicts = git.status().call().conflicting.toList().sorted()
+                        if (conflicts.isNotEmpty()) {
+                            Result.failure(
+                                IllegalStateException(
+                                    "Revert conflict on ${conflicts.joinToString()}"
+                                )
+                            )
+                        } else {
+                            Result.failure(IllegalStateException("Could not revert ${commitHash.take(7)}"))
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /** Current local branch short name, or null if detached / unborn. */
+    fun currentBranch(repoPath: String): String? {
+        return try {
+            open(File(repoPath)).use { git ->
+                try { git.repository.branch } catch (_: Exception) { null }
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     // ---------- Branches ----------
 
     /**
