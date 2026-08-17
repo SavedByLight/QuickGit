@@ -1081,7 +1081,7 @@ fun LogsScreen(onMessage: (String) -> Unit) {
                     modifier = Modifier.fillMaxSize().padding(8.dp),
                     verticalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
-                    items(filtered, key = { "${it.timestampMillis}-${it.tag}-${it.message.hashCode()}" }) { entry ->
+                    items(filtered, key = { it.id }) { entry ->
                         val color = when (entry.level) {
                             LogLevel.DEBUG -> MaterialTheme.colorScheme.onSurfaceVariant
                             LogLevel.INFO -> MaterialTheme.colorScheme.onSurface

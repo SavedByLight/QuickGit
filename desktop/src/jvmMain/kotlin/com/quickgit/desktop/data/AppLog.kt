@@ -13,6 +13,7 @@ import java.util.Locale
 enum class LogLevel { DEBUG, INFO, WARN, ERROR }
 
 data class LogEntry(
+    val id: Long,
     val timestampMillis: Long,
     val tag: String,
     val level: LogLevel,
@@ -36,6 +37,7 @@ data class LogEntry(
 object AppLog {
     private const val MAX_ENTRIES = 2000
     private val lock = Any()
+    private val nextId = java.util.concurrent.atomic.AtomicLong(1)
 
     private val _entries = MutableStateFlow<List<LogEntry>>(emptyList())
     val entries: StateFlow<List<LogEntry>> = _entries.asStateFlow()
@@ -95,7 +97,7 @@ object AppLog {
     }
 
     private fun add(tag: String, level: LogLevel, message: String) {
-        val entry = LogEntry(System.currentTimeMillis(), tag, level, message)
+        val entry = LogEntry(nextId.getAndIncrement(), System.currentTimeMillis(), tag, level, message)
         synchronized(lock) {
             _entries.value = (_entries.value + entry).takeLast(MAX_ENTRIES)
             try {
@@ -128,6 +130,6 @@ object AppLog {
         if (slash < 0 || colon < 0) return null
         val tag = line.substring(slash + 1, colon)
         val message = line.substring(colon + 2)
-        return LogEntry(System.currentTimeMillis(), tag, level, message)
+        return LogEntry(nextId.getAndIncrement(), System.currentTimeMillis(), tag, level, message)
     }
 }
