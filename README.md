@@ -101,3 +101,53 @@ when the public location is used.
  - Acer Aspire 3 Running Waydroid on Ubuntu (Intel)
  - Honor Pad 10 (Snapdragon)
  - Xiaomi Mi A2 Lite (Snapdragon)
+
+---
+
+## Linux / Desktop (native)
+
+QuickGit now also ships as a **native desktop application** for Linux (and Windows/macOS) built with Compose Multiplatform + JGit.
+
+This is a full standalone app (not an Android module or Waydroid container).
+
+### Features on desktop
+
+- Repo list (local clones under `~/QuickGit` by default)
+- Clone (HTTPS with PAT)
+- Changes / staging / unstage / discard
+- Commit with configurable author
+- Push / Pull / Fetch
+- History
+- Branches (list, create, checkout)
+- Encrypted credential store (`~/.config/quickgit/`)
+- Settings (author, repos root, GPG sign toggle)
+
+### Build & run the Linux app
+
+Requirements: JDK 17+, the project Gradle wrapper (or system Gradle 8+).
+
+```bash
+# From the project root
+./gradlew :desktop:run
+```
+
+### Package a distributable Linux app
+
+```bash
+./gradlew :desktop:packageDeb          # .deb
+./gradlew :desktop:packageRpm          # .rpm
+./gradlew :desktop:packageAppImage     # AppImage
+./gradlew :desktop:packageDistributionForCurrentOS
+```
+
+Packages appear under `desktop/build/compose/binaries/main/`.
+
+### Desktop data locations
+
+| Item              | Path                          |
+|-------------------|-------------------------------|
+| Repos root        | `~/QuickGit` (configurable)   |
+| Credentials       | `~/.config/quickgit/credentials.enc` |
+| Preferences       | `~/.config/quickgit/prefs.properties` |
+
+The Android app and the desktop app are independent; they do not share storage.
