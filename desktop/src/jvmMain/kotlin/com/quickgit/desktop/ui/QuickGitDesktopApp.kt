@@ -17,10 +17,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.horizontalScroll
 import com.quickgit.desktop.data.*
 import com.quickgit.desktop.data.github.GitHubApi
 import com.quickgit.desktop.data.gitlab.GitLabApi
@@ -137,10 +142,22 @@ fun QuickGitDesktopApp(
                     DesktopScreen.Profile -> ProfileScreen(
                         credentialStore = credentialStore,
                         githubApi = githubApi(),
+                        repoManager = repoManager,
+                        onCloned = {
+                            selectedRepoPath = it
+                            currentScreen = DesktopScreen.RepoDetail
+                            showMessage("Cloned successfully")
+                        },
                         onMessage = ::showMessage
                     )
                     DesktopScreen.UserSearch -> UserSearchScreen(
                         githubApi = githubApi(),
+                        repoManager = repoManager,
+                        onCloned = {
+                            selectedRepoPath = it
+                            currentScreen = DesktopScreen.RepoDetail
+                            showMessage("Cloned successfully")
+                        },
                         onMessage = ::showMessage
                     )
                     DesktopScreen.Logs -> LogsScreen(onMessage = ::showMessage)
@@ -942,6 +959,185 @@ private fun isProbablyTextFile(name: String): Boolean {
     return ext !in binary
 }
 
+/** Simple syntax highlighting for source text (keywords / strings / comments / numbers). */
+private fun highlightSourceCode(source: String, fileName: String): androidx.compose.ui.text.AnnotatedString {
+    val ext = fileName.substringAfterLast('.', missingDelimiterValue = "").lowercase()
+    val keywords = when (ext) {
+        "kt", "kts" -> setOf(
+            "package", "import", "class", "object", "interface", "fun", "val", "var", "if", "else",
+            "when", "for", "while", "return", "null", "true", "false", "this", "super", "is", "in",
+            "as", "try", "catch", "finally", "throw", "data", "sealed", "enum", "companion",
+            "private", "public", "protected", "internal", "override", "open", "abstract", "suspend",
+            "lateinit", "by", "where", "typealias", "inline", "reified", "const", "outer", "inner"
+        )
+        "java" -> setOf(
+            "package", "import", "class", "interface", "enum", "extends", "implements", "public",
+            "private", "protected", "static", "final", "void", "int", "long", "boolean", "double",
+            "float", "char", "byte", "short", "new", "return", "if", "else", "for", "while", "do",
+            "switch", "case", "break", "continue", "try", "catch", "finally", "throw", "throws",
+            "this", "super", "null", "true", "false", "abstract", "synchronized", "volatile",
+            "native", "strictfp", "transient", "instanceof", "assert", "record", "var", "sealed",
+            "permits", "non-sealed"
+        )
+        "py" -> setOf(
+            "def", "class", "return", "if", "elif", "else", "for", "while", "import", "from", "as",
+            "try", "except", "finally", "raise", "with", "yield", "lambda", "pass", "break",
+            "continue", "True", "False", "None", "and", "or", "not", "in", "is", "global",
+            "nonlocal", "assert", "async", "await", "del", "print"
+        )
+        "js", "mjs", "cjs", "jsx", "ts", "tsx" -> setOf(
+            "function", "const", "let", "var", "return", "if", "else", "for", "while", "do",
+            "switch", "case", "break", "continue", "try", "catch", "finally", "throw", "new",
+            "class", "extends", "super", "this", "import", "export", "default", "from", "as",
+            "async", "await", "typeof", "instanceof", "true", "false", "null", "undefined",
+            "interface", "type", "enum", "implements", "public", "private", "protected", "readonly"
+        )
+        "go" -> setOf(
+            "package", "import", "func", "return", "if", "else", "for", "range", "switch", "case",
+            "break", "continue", "go", "defer", "select", "chan", "map", "struct", "interface",
+            "type", "var", "const", "true", "false", "nil", "make", "new"
+        )
+        "rs" -> setOf(
+            "fn", "let", "mut", "const", "struct", "enum", "impl", "trait", "pub", "mod", "use",
+            "if", "else", "match", "for", "while", "loop", "return", "break", "continue", "self",
+            "Self", "true", "false", "where", "async", "await", "crate", "super", "ref", "move"
+        )
+        "c", "h", "cpp", "cc", "cxx", "hpp", "hh" -> setOf(
+            "int", "long", "short", "char", "void", "float", "double", "bool", "return", "if",
+            "else", "for", "while", "do", "switch", "case", "break", "continue", "struct", "class",
+            "public", "private", "protected", "namespace", "using", "template", "typename", "const",
+            "static", "extern", "sizeof", "typedef", "enum", "true", "false", "nullptr", "new", "delete"
+        )
+        "rb" -> setOf(
+            "def", "class", "module", "end", "if", "elsif", "else", "unless", "while", "until",
+            "for", "do", "begin", "rescue", "ensure", "return", "yield", "self", "nil", "true",
+            "false", "and", "or", "not", "require", "include", "attr_reader", "attr_writer", "attr_accessor"
+        )
+        "php" -> setOf(
+            "function", "class", "interface", "trait", "public", "private", "protected", "static",
+            "return", "if", "else", "elseif", "foreach", "for", "while", "do", "switch", "case",
+            "break", "continue", "try", "catch", "finally", "throw", "new", "echo", "print",
+            "true", "false", "null", "namespace", "use", "extends", "implements"
+        )
+        "swift" -> setOf(
+            "func", "var", "let", "class", "struct", "enum", "protocol", "extension", "import",
+            "return", "if", "else", "guard", "for", "while", "switch", "case", "break", "continue",
+            "true", "false", "nil", "self", "Self", "public", "private", "internal", "fileprivate",
+            "static", "override", "init", "deinit", "throws", "try", "catch", "async", "await"
+        )
+        "sh", "bash", "zsh" -> setOf(
+            "if", "then", "else", "elif", "fi", "for", "while", "do", "done", "case", "esac",
+            "function", "return", "in", "select", "until", "export", "local", "readonly", "true", "false"
+        )
+        "sql" -> setOf(
+            "SELECT", "FROM", "WHERE", "INSERT", "UPDATE", "DELETE", "CREATE", "TABLE", "INDEX",
+            "JOIN", "LEFT", "RIGHT", "INNER", "OUTER", "ON", "AS", "AND", "OR", "NOT", "NULL",
+            "PRIMARY", "KEY", "FOREIGN", "REFERENCES", "ORDER", "BY", "GROUP", "HAVING", "LIMIT",
+            "VALUES", "INTO", "SET", "ALTER", "DROP", "DISTINCT", "COUNT", "SUM", "AVG"
+        )
+        "css", "scss", "sass", "less" -> setOf(
+            "important", "from", "to", "and", "or", "not", "only", "var", "calc", "url", "rgb", "rgba"
+        )
+        "html", "htm", "xml" -> setOf(
+            "html", "head", "body", "div", "span", "script", "style", "link", "meta", "title",
+            "class", "id", "href", "src", "type", "rel", "DOCTYPE"
+        )
+        else -> emptySet()
+    }
+
+    val lineComment = when (ext) {
+        "py", "rb", "sh", "bash", "zsh", "yml", "yaml", "toml" -> "#"
+        "sql" -> "--"
+        "html", "htm", "xml", "css", "scss" -> null
+        else -> "//"
+    }
+    val blockCommentStart = when (ext) {
+        "py" -> "\"\"\""
+        "html", "htm", "xml" -> "<!--"
+        else -> "/*"
+    }
+    val blockCommentEnd = when (ext) {
+        "py" -> "\"\"\""
+        "html", "htm", "xml" -> "-->"
+        else -> "*/"
+    }
+
+    val colorKeyword = Color(0xFFCC7832)
+    val colorString = Color(0xFF6A8759)
+    val colorComment = Color(0xFF808080)
+    val colorNumber = Color(0xFF6897BB)
+    val colorDefault = Color(0xFFA9B7C6)
+
+    return buildAnnotatedString {
+        var i = 0
+        val n = source.length
+        while (i < n) {
+            // Block comments
+            if (source.startsWith(blockCommentStart, i) &&
+                !(ext == "py" && blockCommentStart == "\"\"\"" && i > 0)
+            ) {
+                val end = source.indexOf(blockCommentEnd, i + blockCommentStart.length)
+                    .let { if (it < 0) n else it + blockCommentEnd.length }
+                withStyle(SpanStyle(color = colorComment)) { append(source.substring(i, end)) }
+                i = end
+                continue
+            }
+            // Line comments
+            if (lineComment != null && source.startsWith(lineComment, i)) {
+                val end = source.indexOf('\n', i).let { if (it < 0) n else it }
+                withStyle(SpanStyle(color = colorComment)) { append(source.substring(i, end)) }
+                i = end
+                continue
+            }
+            // Strings
+            if (source[i] == '"' || source[i] == '\'' || source[i] == '`') {
+                val quote = source[i]
+                var j = i + 1
+                while (j < n) {
+                    if (source[j] == '\\' && j + 1 < n) {
+                        j += 2
+                        continue
+                    }
+                    if (source[j] == quote) {
+                        j++
+                        break
+                    }
+                    if (source[j] == '\n' && quote != '`') break
+                    j++
+                }
+                withStyle(SpanStyle(color = colorString)) { append(source.substring(i, j)) }
+                i = j
+                continue
+            }
+            // Numbers
+            if (source[i].isDigit()) {
+                var j = i + 1
+                while (j < n && (source[j].isDigit() || source[j] == '.' || source[j] == 'x' || source[j] == 'X' ||
+                            source[j] in 'a'..'f' || source[j] in 'A'..'F' || source[j] == 'L' || source[j] == 'f')
+                ) j++
+                withStyle(SpanStyle(color = colorNumber)) { append(source.substring(i, j)) }
+                i = j
+                continue
+            }
+            // Identifiers / keywords
+            if (source[i].isLetter() || source[i] == '_' || source[i] == '$') {
+                var j = i + 1
+                while (j < n && (source[j].isLetterOrDigit() || source[j] == '_' || source[j] == '$')) j++
+                val word = source.substring(i, j)
+                val isKw = keywords.contains(word) ||
+                    (ext == "sql" && keywords.contains(word.uppercase()))
+                withStyle(SpanStyle(color = if (isKw) colorKeyword else colorDefault)) {
+                    append(word)
+                }
+                i = j
+                continue
+            }
+            withStyle(SpanStyle(color = colorDefault)) { append(source[i]) }
+            i++
+        }
+    }
+}
+
 @Composable
 fun FilesEditorTab(repoPath: String, repoManager: DesktopRepoManager, onMessage: (String) -> Unit) {
     // Relative path from repo root; empty = root
@@ -1196,7 +1392,7 @@ fun FilesEditorTab(repoPath: String, repoManager: DesktopRepoManager, onMessage:
 
         VerticalDivider()
 
-        // ---- Editor pane ----
+        // ---- Editor / code reader pane ----
         Column(Modifier.weight(1f).padding(12.dp)) {
             if (selectedFile == null) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -1208,6 +1404,7 @@ fun FilesEditorTab(repoPath: String, repoManager: DesktopRepoManager, onMessage:
                 }
             } else {
                 val name = selectedFile!!.substringAfterLast('/')
+                var editing by remember(selectedFile) { mutableStateOf(false) }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(
                         Modifier
@@ -1223,6 +1420,11 @@ fun FilesEditorTab(repoPath: String, repoManager: DesktopRepoManager, onMessage:
                             color = languageColorFor(name)
                         )
                     }
+                    if (isProbablyTextFile(name)) {
+                        TextButton(onClick = { editing = !editing }) {
+                            Text(if (editing) "View" else "Edit")
+                        }
+                    }
                     Button(
                         onClick = {
                             scope.launch {
@@ -1230,6 +1432,7 @@ fun FilesEditorTab(repoPath: String, repoManager: DesktopRepoManager, onMessage:
                                     java.io.File(root, selectedFile!!).writeText(content)
                                 }
                                 original = content
+                                editing = false
                                 onMessage("Saved $selectedFile")
                             }
                         },
@@ -1239,14 +1442,33 @@ fun FilesEditorTab(repoPath: String, repoManager: DesktopRepoManager, onMessage:
                 Spacer(Modifier.height(8.dp))
                 if (loading) {
                     CircularProgressIndicator()
-                } else {
+                } else if (editing && isProbablyTextFile(name)) {
                     OutlinedTextField(
                         value = content,
                         onValueChange = { content = it },
                         modifier = Modifier.fillMaxSize(),
-                        textStyle = LocalTextStyle.current.copy(fontFamily = FontFamily.Monospace),
-                        readOnly = !isProbablyTextFile(name)
+                        textStyle = LocalTextStyle.current.copy(fontFamily = FontFamily.Monospace)
                     )
+                } else {
+                    // Syntax-coloured code reader
+                    val highlighted = remember(content, name) { highlightSourceCode(content, name) }
+                    SelectionContainer(Modifier.fillMaxSize()) {
+                        Box(
+                            Modifier
+                                .fillMaxSize()
+                                .background(Color(0xFF2B2B2B))
+                                .horizontalScroll(rememberScrollState())
+                                .verticalScroll(rememberScrollState())
+                                .padding(12.dp)
+                        ) {
+                            Text(
+                                text = highlighted,
+                                fontFamily = FontFamily.Monospace,
+                                style = MaterialTheme.typography.bodySmall,
+                                softWrap = false
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -2136,14 +2358,235 @@ fun BrowseAccountScreen(
 }
 
 @Composable
+private fun RemoteRepoCard(
+    repo: GitHubRemoteRepo,
+    busy: Boolean,
+    onClone: () -> Unit,
+    onFork: () -> Unit,
+    onBrowse: () -> Unit
+) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(repo.name, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                if (repo.isPrivate) {
+                    Text("private", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+                    Spacer(Modifier.width(8.dp))
+                }
+                if (repo.isFork) {
+                    Text("fork", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            repo.description?.takeIf { it.isNotBlank() }?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            }
+            Text(
+                buildString {
+                    repo.language?.let { append(it); append(" · ") }
+                    append(repo.fullName)
+                    append(" · ")
+                    append(repo.defaultBranch)
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = onClone, enabled = !busy) { Text("Clone") }
+                OutlinedButton(onClick = onFork, enabled = !busy) { Text("Fork") }
+                TextButton(onClick = onBrowse, enabled = !busy) { Text("Code") }
+            }
+        }
+    }
+}
+
+/** Browse a remote GitHub repo: folders, files, syntax-coloured code reader. */
+@Composable
+fun RemoteCodeReaderDialog(
+    owner: String,
+    repo: String,
+    defaultBranch: String,
+    githubApi: GitHubApi,
+    onDismiss: () -> Unit,
+    onMessage: (String) -> Unit
+) {
+    var path by remember { mutableStateOf("") }
+    var ref by remember { mutableStateOf(defaultBranch.ifBlank { "main" }) }
+    var entries by remember { mutableStateOf<List<GitHubApi.RemoteEntry>>(emptyList()) }
+    var fileContent by remember { mutableStateOf<String?>(null) }
+    var fileName by remember { mutableStateOf<String?>(null) }
+    var loading by remember { mutableStateOf(true) }
+    val scope = rememberCoroutineScope()
+
+    fun loadDir(p: String) {
+        scope.launch {
+            loading = true
+            fileContent = null
+            fileName = null
+            val r = withContext(Dispatchers.IO) { githubApi.getRepoContents(owner, repo, p, ref) }
+            r.fold(
+                onSuccess = {
+                    entries = it.sortedWith(compareBy<GitHubApi.RemoteEntry> { e -> e.type != "dir" }.thenBy { e -> e.name.lowercase() })
+                },
+                onFailure = {
+                    entries = emptyList()
+                    onMessage("Browse failed: ${it.message}")
+                }
+            )
+            loading = false
+        }
+    }
+
+    fun openFile(entry: GitHubApi.RemoteEntry) {
+        scope.launch {
+            loading = true
+            val r = withContext(Dispatchers.IO) {
+                githubApi.getFileContent(owner, repo, entry.path, ref)
+            }
+            r.fold(
+                onSuccess = {
+                    fileContent = it
+                    fileName = entry.name
+                },
+                onFailure = { onMessage("Read failed: ${it.message}") }
+            )
+            loading = false
+        }
+    }
+
+    LaunchedEffect(owner, repo, ref) { loadDir("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Column {
+                Text("$owner/$repo", fontWeight = FontWeight.SemiBold)
+                Text(
+                    if (fileName != null) "${if (path.isBlank()) "" else "$path/"}$fileName"
+                    else if (path.isBlank()) "/" else "/$path",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        text = {
+            Column(
+                Modifier.fillMaxWidth().heightIn(min = 320.dp, max = 520.dp)
+            ) {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    IconButton(
+                        onClick = {
+                            when {
+                                fileContent != null -> {
+                                    fileContent = null
+                                    fileName = null
+                                }
+                                path.isNotBlank() -> {
+                                    path = path.substringBeforeLast('/', missingDelimiterValue = "")
+                                    loadDir(path)
+                                }
+                            }
+                        },
+                        enabled = fileContent != null || path.isNotBlank()
+                    ) { Text("…", fontWeight = FontWeight.Bold) }
+                    OutlinedTextField(
+                        value = ref,
+                        onValueChange = { ref = it },
+                        label = { Text("Branch / ref") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                    TextButton(onClick = { loadDir(path) }) { Text("Go") }
+                }
+                Spacer(Modifier.height(8.dp))
+                if (loading) {
+                    Box(Modifier.fillMaxWidth().height(200.dp), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator()
+                    }
+                } else if (fileContent != null && fileName != null) {
+                    val highlighted = remember(fileContent, fileName) {
+                        highlightSourceCode(fileContent!!, fileName!!)
+                    }
+                    SelectionContainer(
+                        Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                            .background(Color(0xFF2B2B2B))
+                    ) {
+                        Box(
+                            Modifier
+                                .fillMaxSize()
+                                .horizontalScroll(rememberScrollState())
+                                .verticalScroll(rememberScrollState())
+                                .padding(12.dp)
+                        ) {
+                            Text(
+                                text = highlighted,
+                                fontFamily = FontFamily.Monospace,
+                                style = MaterialTheme.typography.bodySmall,
+                                softWrap = false
+                            )
+                        }
+                    }
+                } else {
+                    LazyColumn(Modifier.fillMaxWidth().weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        items(entries, key = { it.path }) { entry ->
+                            val isDir = entry.type == "dir"
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        if (isDir) {
+                                            path = entry.path
+                                            loadDir(entry.path)
+                                        } else {
+                                            openFile(entry)
+                                        }
+                                    }
+                                    .padding(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    if (isDir) Icons.Default.Folder else Icons.Default.Description,
+                                    null,
+                                    tint = if (isDir) MaterialTheme.colorScheme.primary else languageColorFor(entry.name),
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    entry.name,
+                                    color = if (isDir) MaterialTheme.colorScheme.onSurface else languageColorFor(entry.name)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Close") }
+        }
+    )
+}
+
+@Composable
 fun ProfileScreen(
     credentialStore: DesktopCredentialStore,
     githubApi: GitHubApi,
+    repoManager: DesktopRepoManager,
+    onCloned: (String) -> Unit,
     onMessage: (String) -> Unit
 ) {
     var user by remember { mutableStateOf<GitHubApi.GitHubUser?>(null) }
+    var repos by remember { mutableStateOf<List<GitHubRemoteRepo>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
+    var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    var browseRepo by remember { mutableStateOf<GitHubRemoteRepo?>(null) }
+    val scope = rememberCoroutineScope()
 
     LaunchedEffect(Unit) {
         loading = true
@@ -2153,13 +2596,54 @@ fun ProfileScreen(
             loading = false
             return@LaunchedEffect
         }
-        val result = withContext(Dispatchers.IO) { githubApi.getAuthenticatedUser() }
-        result.fold(onSuccess = { user = it }, onFailure = { error = it.message })
+        val u = withContext(Dispatchers.IO) { githubApi.getAuthenticatedUser() }
+        u.fold(onSuccess = { user = it }, onFailure = { error = it.message })
+        val r = withContext(Dispatchers.IO) {
+            githubApi.listUserRepos(affiliation = "owner,collaborator,organization_member", perPage = 100)
+        }
+        r.fold(onSuccess = { repos = it }, onFailure = { onMessage("Repos: ${it.message}") })
         loading = false
     }
 
-    Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    fun doClone(repo: GitHubRemoteRepo) {
+        scope.launch {
+            busy = true
+            val url = repo.cloneUrl.ifBlank { "https://github.com/${repo.fullName}.git" }
+            val result = withContext(Dispatchers.IO) { repoManager.cloneRepo(url, repo.name) { } }
+            busy = false
+            result.fold(
+                onSuccess = { onCloned(it.absolutePath) },
+                onFailure = { onMessage("Clone failed: ${it.message}") }
+            )
+        }
+    }
+
+    fun doFork(repo: GitHubRemoteRepo) {
+        scope.launch {
+            busy = true
+            val result = withContext(Dispatchers.IO) {
+                githubApi.forkRepo(repo.ownerLogin, repo.name)
+            }
+            busy = false
+            result.fold(
+                onSuccess = {
+                    onMessage("Forked to ${it.fullName}")
+                    // refresh list
+                    scope.launch {
+                        val r = withContext(Dispatchers.IO) {
+                            githubApi.listUserRepos(perPage = 100)
+                        }
+                        r.onSuccess { repos = it }
+                    }
+                },
+                onFailure = { onMessage("Fork failed: ${it.message}") }
+            )
+        }
+    }
+
+    Column(Modifier.fillMaxSize().padding(16.dp)) {
         Text("GitHub profile", style = MaterialTheme.typography.titleLarge)
+        Spacer(Modifier.height(8.dp))
         when {
             loading -> CircularProgressIndicator()
             error != null -> Text(error!!, color = MaterialTheme.colorScheme.error)
@@ -2168,58 +2652,209 @@ fun ProfileScreen(
                 Text(u.name ?: u.login, style = MaterialTheme.typography.headlineSmall)
                 Text("@${u.login}", color = MaterialTheme.colorScheme.primary)
                 u.bio?.let { Text(it) }
+                Text(
+                    "Repos: ${u.publicRepos} public · Followers: ${u.followers} · Following: ${u.following}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(12.dp))
+                Text("Your repositories", style = MaterialTheme.typography.titleMedium)
                 Spacer(Modifier.height(8.dp))
-                Text("Repos: ${u.publicRepos} public · Followers: ${u.followers} · Following: ${u.following}")
-                u.company?.let { Text("Company: $it") }
-                u.location?.let { Text("Location: $it") }
-                u.email?.let { Text("Email: $it") }
-                u.blog?.takeIf { it.isNotBlank() }?.let { Text("Blog: $it") }
-            }
-        }
-    }
-}
-
-@Composable
-fun UserSearchScreen(githubApi: GitHubApi, onMessage: (String) -> Unit) {
-    var query by remember { mutableStateOf("") }
-    var results by remember { mutableStateOf<List<GitHubApi.GitHubUserSummary>>(emptyList()) }
-    var loading by remember { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
-
-    Column(Modifier.fillMaxSize().padding(16.dp)) {
-        Text("Search GitHub users", style = MaterialTheme.typography.titleLarge)
-        Spacer(Modifier.height(8.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            OutlinedTextField(value = query, onValueChange = { query = it }, label = { Text("Username or name") }, modifier = Modifier.weight(1f), singleLine = true)
-            Button(
-                onClick = {
-                    if (query.isBlank()) return@Button
-                    scope.launch {
-                        loading = true
-                        val r = withContext(Dispatchers.IO) { githubApi.searchUsers(query) }
-                        r.fold(onSuccess = { results = it }, onFailure = { onMessage("Search failed: ${it.message}") })
-                        loading = false
-                    }
-                },
-                enabled = query.isNotBlank() && !loading
-            ) { Text("Search") }
-        }
-        Spacer(Modifier.height(12.dp))
-        if (loading) CircularProgressIndicator()
-        else LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            items(results) { u ->
-                Card(Modifier.fillMaxWidth()) {
-                    Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Person, null)
-                        Spacer(Modifier.width(12.dp))
-                        Column {
-                            Text(u.login, fontWeight = FontWeight.Medium)
-                            Text(u.htmlUrl, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (repos.isEmpty()) {
+                    Text("No repositories found", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                } else {
+                    LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(repos, key = { it.id }) { repo ->
+                            RemoteRepoCard(
+                                repo = repo,
+                                busy = busy,
+                                onClone = { doClone(repo) },
+                                onFork = { doFork(repo) },
+                                onBrowse = { browseRepo = repo }
+                            )
                         }
                     }
                 }
             }
         }
+    }
+
+    browseRepo?.let { repo ->
+        RemoteCodeReaderDialog(
+            owner = repo.ownerLogin,
+            repo = repo.name,
+            defaultBranch = repo.defaultBranch,
+            githubApi = githubApi,
+            onDismiss = { browseRepo = null },
+            onMessage = onMessage
+        )
+    }
+}
+
+@Composable
+fun UserSearchScreen(
+    githubApi: GitHubApi,
+    repoManager: DesktopRepoManager,
+    onCloned: (String) -> Unit,
+    onMessage: (String) -> Unit
+) {
+    var query by remember { mutableStateOf("") }
+    var results by remember { mutableStateOf<List<GitHubApi.GitHubUserSummary>>(emptyList()) }
+    var loading by remember { mutableStateOf(false) }
+    var selectedLogin by remember { mutableStateOf<String?>(null) }
+    var profile by remember { mutableStateOf<GitHubApi.GitHubUser?>(null) }
+    var repos by remember { mutableStateOf<List<GitHubRemoteRepo>>(emptyList()) }
+    var profileLoading by remember { mutableStateOf(false) }
+    var busy by remember { mutableStateOf(false) }
+    var browseRepo by remember { mutableStateOf<GitHubRemoteRepo?>(null) }
+    val scope = rememberCoroutineScope()
+
+    fun openUser(login: String) {
+        selectedLogin = login
+        scope.launch {
+            profileLoading = true
+            profile = null
+            repos = emptyList()
+            val u = withContext(Dispatchers.IO) { githubApi.getUser(login) }
+            u.fold(onSuccess = { profile = it }, onFailure = { onMessage("Profile: ${it.message}") })
+            val r = withContext(Dispatchers.IO) { githubApi.listPublicRepos(login, perPage = 100) }
+            r.fold(onSuccess = { repos = it }, onFailure = { onMessage("Repos: ${it.message}") })
+            profileLoading = false
+        }
+    }
+
+    fun doClone(repo: GitHubRemoteRepo) {
+        scope.launch {
+            busy = true
+            val url = repo.cloneUrl.ifBlank { "https://github.com/${repo.fullName}.git" }
+            val result = withContext(Dispatchers.IO) { repoManager.cloneRepo(url, repo.name) { } }
+            busy = false
+            result.fold(
+                onSuccess = { onCloned(it.absolutePath) },
+                onFailure = { onMessage("Clone failed: ${it.message}") }
+            )
+        }
+    }
+
+    fun doFork(repo: GitHubRemoteRepo) {
+        scope.launch {
+            busy = true
+            val result = withContext(Dispatchers.IO) {
+                githubApi.forkRepo(repo.ownerLogin, repo.name)
+            }
+            busy = false
+            result.fold(
+                onSuccess = { onMessage("Forked to ${it.fullName}") },
+                onFailure = { onMessage("Fork failed: ${it.message}") }
+            )
+        }
+    }
+
+    Column(Modifier.fillMaxSize().padding(16.dp)) {
+        if (selectedLogin == null) {
+            Text("Search GitHub users", style = MaterialTheme.typography.titleLarge)
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    label = { Text("Username or name") },
+                    modifier = Modifier.weight(1f),
+                    singleLine = true
+                )
+                Button(
+                    onClick = {
+                        if (query.isBlank()) return@Button
+                        scope.launch {
+                            loading = true
+                            val r = withContext(Dispatchers.IO) { githubApi.searchUsers(query) }
+                            r.fold(
+                                onSuccess = { results = it },
+                                onFailure = { onMessage("Search failed: ${it.message}") }
+                            )
+                            loading = false
+                        }
+                    },
+                    enabled = query.isNotBlank() && !loading
+                ) { Text("Search") }
+            }
+            Spacer(Modifier.height(12.dp))
+            if (loading) CircularProgressIndicator()
+            else LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                items(results, key = { it.login }) { u ->
+                    Card(
+                        Modifier.fillMaxWidth().clickable { openUser(u.login) }
+                    ) {
+                        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Person, null)
+                            Spacer(Modifier.width(12.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(u.login, fontWeight = FontWeight.Medium)
+                                Text(
+                                    u.htmlUrl,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Text("View →", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                        }
+                    }
+                }
+            }
+        } else {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = {
+                    selectedLogin = null
+                    profile = null
+                    repos = emptyList()
+                }) { Icon(Icons.Default.ArrowBack, "Back") }
+                Text("User profile", style = MaterialTheme.typography.titleLarge)
+            }
+            Spacer(Modifier.height(8.dp))
+            if (profileLoading) {
+                CircularProgressIndicator()
+            } else {
+                profile?.let { u ->
+                    Text(u.name ?: u.login, style = MaterialTheme.typography.headlineSmall)
+                    Text("@${u.login}", color = MaterialTheme.colorScheme.primary)
+                    u.bio?.let { Text(it) }
+                    Text(
+                        "Repos: ${u.publicRepos} · Followers: ${u.followers} · Following: ${u.following}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Spacer(Modifier.height(12.dp))
+                Text("Public repositories", style = MaterialTheme.typography.titleMedium)
+                Spacer(Modifier.height(8.dp))
+                if (repos.isEmpty()) {
+                    Text("No public repositories", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                } else {
+                    LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(repos, key = { it.id }) { repo ->
+                            RemoteRepoCard(
+                                repo = repo,
+                                busy = busy,
+                                onClone = { doClone(repo) },
+                                onFork = { doFork(repo) },
+                                onBrowse = { browseRepo = repo }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    browseRepo?.let { repo ->
+        RemoteCodeReaderDialog(
+            owner = repo.ownerLogin,
+            repo = repo.name,
+            defaultBranch = repo.defaultBranch,
+            githubApi = githubApi,
+            onDismiss = { browseRepo = null },
+            onMessage = onMessage
+        )
     }
 }
 
