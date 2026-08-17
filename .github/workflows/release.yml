@@ -89,17 +89,15 @@ jobs:
 
       - name: Build desktop AppImage
         run: |
-          # AppImage packaging needs FUSE; libfuse2 installed above.
-          # Continue the job even if AppImage fails so Deb still ships.
           set +e
           gradle :desktop:packageAppImage --no-daemon \
             -Pquickgit.version="${{ steps.version.outputs.name }}"
           APPIMAGE_RC=$?
           set -e
-          if [ "$APPIMAGE_RC" -ne 0 ]; then
-            echo "WARNING: packageAppImage failed with exit $APPIMAGE_RC" >&2
-            # Try alternative: package distribution and note missing AppImage
-          fi
+          echo "packageAppImage exit code: $APPIMAGE_RC"
+          echo "=== desktop/build tree (for AppImage discovery) ==="
+          find desktop/build -type f \( -name '*.AppImage' -o -name '*.deb' -o -name 'AppRun' \) 2>/dev/null | head -50 || true
+          find desktop/build/compose -type d 2>/dev/null | head -40 || true
 
       - name: Locate and rename artifacts
         id: artifacts
@@ -126,9 +124,20 @@ jobs:
           echo "Phone APK: $PHONE_OUT ($(stat -c%s "$PHONE_OUT") bytes)"
           echo "Wear APK:  $WEAR_OUT ($(stat -c%s "$WEAR_OUT") bytes)"
 
-          # --- Desktop packages ---
-          DEB=$(find desktop/build/compose/binaries -name '*.deb' 2>/dev/null | head -n 1 || true)
-          APPIMAGE=$(find desktop/build/compose/binaries -name '*.AppImage' 2>/dev/null | head -n 1 || true)
+          # --- Desktop packages (search widely; Compose path varies by version) ---
+          DEB=$(find desktop/build -type f -name '*.deb' 2>/dev/null | head -n 1 || true)
+          APPIMAGE=$(find desktop/build -type f -name '*.AppImage' 2>/dev/null | head -n 1 || true)
+          # Some Compose versions emit the image without the extension in appimage/
+          if [ -z "$APPIMAGE" ]; then
+            APPIMAGE=$(find desktop/build -type f -name 'QuickGit*.AppImage' 2>/dev/null | head -n 1 || true)
+          fi
+          if [ -z "$APPIMAGE" ]; then
+            # Last resort: any executable under appimage dir
+            CAND=$(find desktop/build -path '*appimage*' -type f -executable 2>/dev/null | head -n 1 || true)
+            if [ -n "$CAND" ] && file "$CAND" | grep -qi appimage; then
+              APPIMAGE="$CAND"
+            fi
+          fi
 
           FILES_LIST="$PHONE_OUT"$'\n'"$WEAR_OUT"
 
@@ -137,9 +146,10 @@ jobs:
             cp "$DEB" "$DEB_OUT"
             echo "deb_path=$DEB_OUT" >> "$GITHUB_OUTPUT"
             FILES_LIST="$FILES_LIST"$'\n'"$DEB_OUT"
-            echo "Deb:      $DEB_OUT ($(stat -c%s "$DEB_OUT") bytes)"
+            echo "Deb:      $DEB_OUT ($(stat -c%s "$DEB_OUT") bytes) from $DEB"
           else
-            echo "WARNING: .deb not found — desktop packageDeb may have failed" >&2
+            echo "WARNING: .deb not found under desktop/build" >&2
+            find desktop/build -type f 2>/dev/null | head -80 || true
           fi
 
           if [ -n "$APPIMAGE" ] && [ -f "$APPIMAGE" ]; then
@@ -148,15 +158,15 @@ jobs:
             chmod +x "$APPIMAGE_OUT"
             echo "appimage_path=$APPIMAGE_OUT" >> "$GITHUB_OUTPUT"
             FILES_LIST="$FILES_LIST"$'\n'"$APPIMAGE_OUT"
-            echo "AppImage: $APPIMAGE_OUT ($(stat -c%s "$APPIMAGE_OUT") bytes)"
+            echo "AppImage: $APPIMAGE_OUT ($(stat -c%s "$APPIMAGE_OUT") bytes) from $APPIMAGE"
           else
-            echo "WARNING: .AppImage not found — desktop packageAppImage may have failed" >&2
+            echo "WARNING: .AppImage not found under desktop/build — listing tree:" >&2
+            find desktop/build -type f 2>/dev/null | head -100 || true
           fi
 
-          # Export newline-separated list for the release step
           {
             echo "files<<ARTIFACT_EOF"
-            echo "$FILES_LIST"
+            printf '%s\n' "$FILES_LIST"
             echo "ARTIFACT_EOF"
           } >> "$GITHUB_OUTPUT"
 

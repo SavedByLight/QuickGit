@@ -32,6 +32,8 @@ kotlin {
                     exclude(group = "org.apache.sshd", module = "sshd-osgi")
                 }
                 implementation("org.eclipse.jgit:org.eclipse.jgit.gpg.bc:5.13.3.202401111512-r")
+                // JSON for GitHub/GitLab REST clients (same as Android)
+                implementation("org.json:json:20240303")
             }
         }
     }

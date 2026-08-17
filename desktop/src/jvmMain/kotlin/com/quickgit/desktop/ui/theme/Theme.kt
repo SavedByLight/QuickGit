@@ -43,7 +43,7 @@ private val LightColorScheme = lightColorScheme(
 
 @Composable
 fun QuickGitTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
+    darkTheme: Boolean = true, // desktop defaults to dark mode
     content: @Composable () -> Unit
 ) {
     val colorScheme = if (darkTheme) DarkColorScheme else LightColorScheme
