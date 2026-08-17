@@ -1,24 +1,69 @@
 package com.quickgit.app.navigation
 
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.weight
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Article
+import androidx.compose.material.icons.filled.CloudDownload
+import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.TravelExplore
+import androidx.compose.material3.Icon
+import androidx.compose.material3.NavigationRail
+import androidx.compose.material3.NavigationRailItem
+import androidx.compose.material3.Text
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.quickgit.app.data.models.RepoInfo
+import com.quickgit.app.ui.adaptive.LocalWindowSizeClass
+import com.quickgit.app.ui.adaptive.isTabletOrWider
 import com.quickgit.app.ui.screens.*
 import com.quickgit.app.viewmodel.*
 
+/**
+ * Root navigation graph.
+ *
+ * On phones (compact width) this is a standard NavHost.
+ * On tablets / Chromebooks / large freeform windows (medium+ width) a permanent
+ * NavigationRail is shown on the left — matching the structure of the Linux
+ * desktop Compose Multiplatform app — so the experience is identical in layout
+ * to the native Linux version when running as an Android app on Chromebooks.
+ */
 @Composable
 fun QuickGitNavGraph() {
     val navController = rememberNavController()
     val context = LocalContext.current
     val factory = ViewModelFactory(context.applicationContext as android.app.Application)
+    val wsc = LocalWindowSizeClass.current
+    val useRail = wsc.isTabletOrWider
 
-    NavHost(navController = navController, startDestination = Dest.REPO_LIST) {
+    val navBackStackEntry by navController.currentBackStackEntryAsState()
+    val currentRoute = navBackStackEntry?.destination?.route
+
+    fun isSelected(prefix: String): Boolean {
+        return currentRoute == prefix || currentRoute?.startsWith(prefix) == true
+    }
+
+    @Composable
+    fun NavContent() {
+        NavHost(navController = navController, startDestination = Dest.REPO_LIST, modifier = Modifier.fillMaxSize()) {
 
         composable(Dest.REPO_LIST) {
             val vm: RepoListViewModel = viewModel(factory = factory)
@@ -337,5 +382,97 @@ fun QuickGitNavGraph() {
             )
         }
 
+
+        }
     }
+
+    if (useRail) {
+        // Chromebook / tablet / desktop-window layout: permanent NavigationRail
+        // structured identically to the Linux Compose Desktop app.
+        Row(Modifier.fillMaxSize()) {
+            NavigationRail(modifier = Modifier.fillMaxHeight()) {
+                RailItem(
+                    icon = Icons.Default.Folder,
+                    label = "Repos",
+                    selected = isSelected(Dest.REPO_LIST) ||
+                        isSelected("repo_detail") || isSelected("history") ||
+                        isSelected("branches") || isSelected("diff") ||
+                        isSelected("merge") || isSelected("files") ||
+                        isSelected("editor") || isSelected("pull_requests") ||
+                        isSelected("issues") || isSelected("workflows") ||
+                        isSelected("releases")
+                ) {
+                    navController.navigate(Dest.REPO_LIST) {
+                        popUpTo(Dest.REPO_LIST) { inclusive = true }
+                        launchSingleTop = true
+                    }
+                }
+                RailItem(
+                    icon = Icons.Default.CloudDownload,
+                    label = "Clone",
+                    selected = isSelected(Dest.CLONE)
+                ) {
+                    navController.navigate(Dest.CLONE) { launchSingleTop = true }
+                }
+                RailItem(
+                    icon = Icons.Default.TravelExplore,
+                    label = "Browse",
+                    selected = isSelected(Dest.BROWSE_GITHUB) ||
+                        isSelected("remote_browse") || isSelected("remote_file")
+                ) {
+                    navController.navigate(Dest.BROWSE_GITHUB) { launchSingleTop = true }
+                }
+                RailItem(
+                    icon = Icons.Default.Person,
+                    label = "Profile",
+                    selected = isSelected(Dest.PROFILE_SELF) || isSelected("profile/")
+                ) {
+                    navController.navigate(Dest.profile()) { launchSingleTop = true }
+                }
+                RailItem(
+                    icon = Icons.Default.Search,
+                    label = "Users",
+                    selected = isSelected(Dest.USER_SEARCH)
+                ) {
+                    navController.navigate(Dest.USER_SEARCH) { launchSingleTop = true }
+                }
+                Spacer(Modifier.weight(1f))
+                RailItem(
+                    icon = Icons.Default.Article,
+                    label = "Logs",
+                    selected = isSelected(Dest.LOGS)
+                ) {
+                    navController.navigate(Dest.LOGS) { launchSingleTop = true }
+                }
+                RailItem(
+                    icon = Icons.Default.Settings,
+                    label = "Settings",
+                    selected = isSelected(Dest.SETTINGS)
+                ) {
+                    navController.navigate(Dest.SETTINGS) { launchSingleTop = true }
+                }
+            }
+            VerticalDivider()
+            Box(Modifier.weight(1f).fillMaxHeight()) {
+                NavContent()
+            }
+        }
+    } else {
+        NavContent()
+    }
+}
+
+@Composable
+private fun RailItem(
+    icon: ImageVector,
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    NavigationRailItem(
+        selected = selected,
+        onClick = onClick,
+        icon = { Icon(icon, contentDescription = label) },
+        label = { Text(label) }
+    )
 }
