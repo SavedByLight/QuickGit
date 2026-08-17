@@ -328,15 +328,86 @@ class DesktopRepoManager(
     fun pull(repoPath: String): Result<Unit> {
         return try {
             open(File(repoPath)).use { git ->
-                val remoteUrl = git.repository.config.getString("remote", "origin", "url")
-                val cmd = git.pull().setRemote("origin")
-                credentialsFor(remoteUrl)?.let { cmd.setCredentialsProvider(it) }
-                val result = cmd.call()
-                if (result.mergeResult?.mergeStatus?.isSuccessful == false) {
-                    AppLog.w(TAG, "pull merge conflict: $repoPath")
-                    return Result.failure(IllegalStateException("Merge conflict during pull"))
+                val repo = git.repository
+                val remoteUrl = repo.config.getString("remote", "origin", "url")
+                val creds = credentialsFor(remoteUrl)
+                val localBranch = try { repo.branch } catch (_: Exception) { null }
+
+                // 1) Prefer a normal pull when the remote advertises this branch
+                try {
+                    val cmd = git.pull().setRemote("origin")
+                    creds?.let { cmd.setCredentialsProvider(it) }
+                    val result = cmd.call()
+                    if (result.mergeResult?.mergeStatus?.isSuccessful == false) {
+                        AppLog.w(TAG, "pull merge conflict: $repoPath")
+                        return Result.failure(IllegalStateException("Merge conflict during pull"))
+                    }
+                    AppLog.i(TAG, "pull OK: $repoPath (branch=${localBranch ?: "?"})")
+                    return Result.success(Unit)
+                } catch (e: org.eclipse.jgit.api.errors.RefNotAdvertisedException) {
+                    AppLog.w(
+                        TAG,
+                        "Remote did not advertise branch '${localBranch ?: "?"}'; " +
+                            "fetching and merging remote default (master/main mismatch is common)"
+                    )
                 }
-                AppLog.i(TAG, "pull OK: $repoPath")
+
+                // 2) Fallback: fetch everything, then merge origin/HEAD, origin/<local>, main, or master
+                val fetch = git.fetch().setRemote("origin").setRemoveDeletedRefs(true)
+                creds?.let { fetch.setCredentialsProvider(it) }
+                fetch.call()
+
+                val candidates = buildList {
+                    // Symbolic origin/HEAD → default branch on remote
+                    repo.findRef("refs/remotes/origin/HEAD")?.target?.name?.let { add(it) }
+                    if (!localBranch.isNullOrBlank()) add("refs/remotes/origin/$localBranch")
+                    add("refs/remotes/origin/main")
+                    add("refs/remotes/origin/master")
+                }.distinct()
+
+                var mergeBase: org.eclipse.jgit.lib.ObjectId? = null
+                var mergedRef: String? = null
+                for (refName in candidates) {
+                    val id = repo.resolve(refName) ?: continue
+                    mergeBase = id
+                    mergedRef = refName
+                    break
+                }
+                if (mergeBase == null) {
+                    val msg =
+                        "Pull failed: remote has no branch matching local " +
+                            "'${localBranch ?: "unknown"}' and no origin/main or origin/master after fetch. " +
+                            "Check the remote default branch or set upstream (branch.*.merge)."
+                    AppLog.e(TAG, msg)
+                    return Result.failure(IllegalStateException(msg))
+                }
+
+                val mergeResult = git.merge()
+                    .include(mergeBase)
+                    .setCommit(true)
+                    .call()
+                if (!mergeResult.mergeStatus.isSuccessful) {
+                    AppLog.w(TAG, "pull fallback merge conflict from $mergedRef: ${mergeResult.mergeStatus}")
+                    return Result.failure(
+                        IllegalStateException("Merge conflict while pulling $mergedRef")
+                    )
+                }
+
+                // Remember upstream so the next pull works without fallback
+                if (!localBranch.isNullOrBlank() && mergedRef != null) {
+                    val shortRemote = mergedRef.removePrefix("refs/remotes/origin/")
+                    try {
+                        val cfg = repo.config
+                        cfg.setString("branch", localBranch, "remote", "origin")
+                        cfg.setString("branch", localBranch, "merge", "refs/heads/$shortRemote")
+                        cfg.save()
+                        AppLog.i(TAG, "set upstream $localBranch → origin/$shortRemote")
+                    } catch (e: Exception) {
+                        AppLog.w(TAG, "could not save upstream: ${e.message}")
+                    }
+                }
+
+                AppLog.i(TAG, "pull OK (fallback merge $mergedRef): $repoPath")
                 Result.success(Unit)
             }
         } catch (e: Exception) {

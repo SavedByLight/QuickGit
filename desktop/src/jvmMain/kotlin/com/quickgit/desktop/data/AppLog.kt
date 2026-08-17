@@ -60,7 +60,8 @@ object AppLog {
         } catch (_: Exception) {
             // ignore corrupt log file
         }
-        i("AppLog", "Log buffer ready (${_entries.value.size} entries restored)")
+        // Do not call i() here — that would append another line every startup and inflate the file.
+        println("I/AppLog: Log buffer ready (${_entries.value.size} entries restored)")
     }
 
     fun d(tag: String, msg: String) = add(tag, LogLevel.DEBUG, msg)
@@ -130,6 +131,22 @@ object AppLog {
         if (slash < 0 || colon < 0) return null
         val tag = line.substring(slash + 1, colon)
         val message = line.substring(colon + 2)
-        return LogEntry(nextId.getAndIncrement(), System.currentTimeMillis(), tag, level, message)
+        // Best-effort parse of today's time from the line prefix (display only)
+        val ts = try {
+            val timePart = line.substring(0, 12) // HH:mm:ss.SSS
+            val cal = java.util.Calendar.getInstance()
+            val parsed = SimpleDateFormat("HH:mm:ss.SSS", Locale.US).parse(timePart)
+            if (parsed != null) {
+                val pc = java.util.Calendar.getInstance().apply { time = parsed }
+                cal.set(java.util.Calendar.HOUR_OF_DAY, pc.get(java.util.Calendar.HOUR_OF_DAY))
+                cal.set(java.util.Calendar.MINUTE, pc.get(java.util.Calendar.MINUTE))
+                cal.set(java.util.Calendar.SECOND, pc.get(java.util.Calendar.SECOND))
+                cal.set(java.util.Calendar.MILLISECOND, pc.get(java.util.Calendar.MILLISECOND))
+                cal.timeInMillis
+            } else System.currentTimeMillis()
+        } catch (_: Exception) {
+            System.currentTimeMillis()
+        }
+        return LogEntry(nextId.getAndIncrement(), ts, tag, level, message)
     }
 }
