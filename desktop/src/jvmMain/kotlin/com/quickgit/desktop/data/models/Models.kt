@@ -43,7 +43,9 @@ data class CommitInfo(
 data class BranchInfo(
     val name: String,
     val isCurrent: Boolean,
-    val isRemote: Boolean
+    val isRemote: Boolean,
+    /** For local branches: upstream tracking target as "origin/main", or null if none. */
+    val upstream: String? = null
 )
 
 enum class DiffLineType { CONTEXT, ADDED, REMOVED, HEADER }

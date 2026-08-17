@@ -363,33 +363,122 @@ fun BranchesTab(repoPath: String, repoManager: DesktopRepoManager, onMessage: (S
     var newBranchName by remember { mutableStateOf("") }
     var loading by remember { mutableStateOf(true) }
     val scope = rememberCoroutineScope()
-    fun reload() { scope.launch { loading = true; branches = withContext(Dispatchers.IO) { repoManager.listBranches(repoPath) }; loading = false } }
+    fun reload() {
+        scope.launch {
+            loading = true
+            branches = withContext(Dispatchers.IO) { repoManager.listBranches(repoPath) }
+            loading = false
+        }
+    }
     LaunchedEffect(repoPath) { reload() }
+
+    fun doCheckout(b: DesktopRepoManager.BranchInfo) {
+        if (b.isCurrent) return
+        scope.launch {
+            val r = withContext(Dispatchers.IO) { repoManager.checkout(repoPath, b.name) }
+            r.fold(
+                {
+                    reload()
+                    val short = if (b.isRemote) b.name.substringAfter('/') else b.name
+                    val trackNote = if (b.isRemote) " (tracking ${b.name})" else ""
+                    onMessage("Checked out $short$trackNote")
+                },
+                { onMessage("Checkout failed: ${it.message}") }
+            )
+        }
+    }
+
+    fun doDelete(b: DesktopRepoManager.BranchInfo) {
+        if (b.isRemote || b.isCurrent) return
+        scope.launch {
+            val r = withContext(Dispatchers.IO) { repoManager.deleteBranch(repoPath, b.name, force = false) }
+            r.fold(
+                { reload(); onMessage("Deleted branch ${b.name}") },
+                { onMessage("Delete failed: ${it.message}") }
+            )
+        }
+    }
 
     Column(Modifier.fillMaxSize().padding(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedTextField(value = newBranchName, onValueChange = { newBranchName = it }, label = { Text("New branch") }, modifier = Modifier.weight(1f), singleLine = true)
-            Button(onClick = {
-                if (newBranchName.isNotBlank()) scope.launch {
-                    val r = withContext(Dispatchers.IO) { repoManager.createBranch(repoPath, newBranchName, true) }
-                    r.fold({ newBranchName = ""; reload(); onMessage("Branch created") }, { onMessage("Failed: ${it.message}") })
-                }
-            }, enabled = newBranchName.isNotBlank()) { Text("Create") }
-        }
-        Spacer(Modifier.height(12.dp))
-        if (loading) CircularProgressIndicator()
-        else LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            items(branches) { b ->
-                Row(Modifier.fillMaxWidth().clickable {
-                    if (!b.isCurrent && !b.isRemote) scope.launch {
-                        val r = withContext(Dispatchers.IO) { repoManager.checkout(repoPath, b.name) }
-                        r.fold({ reload(); onMessage("Checked out ${b.name}") }, { onMessage("Checkout failed: ${it.message}") })
+            OutlinedTextField(
+                value = newBranchName,
+                onValueChange = { newBranchName = it },
+                label = { Text("New local branch") },
+                modifier = Modifier.weight(1f),
+                singleLine = true
+            )
+            Button(
+                onClick = {
+                    val name = newBranchName.trim()
+                    if (name.isNotBlank()) scope.launch {
+                        val r = withContext(Dispatchers.IO) {
+                            repoManager.createBranch(repoPath, name, checkout = true)
+                        }
+                        r.fold(
+                            { newBranchName = ""; reload(); onMessage("Created & checked out $name") },
+                            { onMessage("Failed: ${it.message}") }
+                        )
                     }
-                }.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(if (b.isRemote) Icons.Default.Cloud else Icons.Default.Commit, null, tint = if (b.isCurrent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                },
+                enabled = newBranchName.isNotBlank()
+            ) { Text("Create & checkout") }
+        }
+        Text(
+            "Click a local branch to switch, or a remote branch to create a local tracking branch and switch to it.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 8.dp, bottom = 4.dp)
+        )
+        Spacer(Modifier.height(8.dp))
+        if (loading) CircularProgressIndicator()
+        else LazyColumn(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            items(branches, key = { (if (it.isRemote) "r_" else "l_") + it.name }) { b ->
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clickable(enabled = !b.isCurrent) { doCheckout(b) }
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        if (b.isRemote) Icons.Default.Cloud else Icons.Default.Commit,
+                        contentDescription = null,
+                        tint = if (b.isCurrent) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                     Spacer(Modifier.width(12.dp))
-                    Text(b.name, fontWeight = if (b.isCurrent) FontWeight.Bold else FontWeight.Normal, color = if (b.isCurrent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
-                    if (b.isCurrent) { Spacer(Modifier.width(8.dp)); Text("(current)", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary) }
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            b.name,
+                            fontWeight = if (b.isCurrent) FontWeight.Bold else FontWeight.Normal,
+                            color = if (b.isCurrent) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurface
+                        )
+                        val subtitle = when {
+                            b.isCurrent && !b.upstream.isNullOrBlank() -> "current · tracking ${b.upstream}"
+                            b.isCurrent -> "current"
+                            b.isRemote -> "remote — click to checkout & track"
+                            !b.upstream.isNullOrBlank() -> "tracks ${b.upstream}"
+                            else -> "local"
+                        }
+                        Text(
+                            subtitle,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (b.isCurrent) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    if (!b.isCurrent && !b.isRemote) {
+                        TextButton(onClick = { doDelete(b) }) {
+                            Text("Delete")
+                        }
+                    }
+                    if (!b.isCurrent) {
+                        TextButton(onClick = { doCheckout(b) }) {
+                            Text(if (b.isRemote) "Checkout & track" else "Checkout")
+                        }
+                    }
                 }
             }
         }

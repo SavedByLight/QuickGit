@@ -458,17 +458,43 @@ class DesktopRepoManager(
 
     // ---------- Branches ----------
 
-    data class BranchInfo(val name: String, val isCurrent: Boolean, val isRemote: Boolean)
+    /**
+     * @param name bare local name (e.g. "main") or remote-tracking name as listed
+     *             (e.g. "origin/main")
+     * @param upstream for local branches: "origin/main" style tracking target, or null
+     */
+    data class BranchInfo(
+        val name: String,
+        val isCurrent: Boolean,
+        val isRemote: Boolean,
+        val upstream: String? = null
+    )
 
     fun listBranches(repoPath: String): List<BranchInfo> {
         open(File(repoPath)).use { git ->
-            val current = try { git.repository.branch } catch (_: Exception) { null }
-            val locals = git.branchList().call().map {
-                BranchInfo(it.name.removePrefix("refs/heads/"), it.name.removePrefix("refs/heads/") == current, false)
+            val repo = git.repository
+            val current = try { repo.branch } catch (_: Exception) { null }
+            val cfg = repo.config
+
+            val locals = git.branchList().call().map { ref ->
+                val short = ref.name.removePrefix("refs/heads/")
+                val remote = cfg.getString("branch", short, "remote")
+                val merge = cfg.getString("branch", short, "merge")
+                val upstream = when {
+                    !remote.isNullOrBlank() && !merge.isNullOrBlank() ->
+                        "$remote/${merge.removePrefix("refs/heads/")}"
+                    else -> null
+                }
+                BranchInfo(short, short == current, false, upstream)
             }
-            val remotes = git.branchList().setListMode(ListBranchCommand.ListMode.REMOTE).call().map {
-                BranchInfo(it.name.removePrefix("refs/remotes/"), false, true)
-            }
+
+            val remotes = git.branchList()
+                .setListMode(ListBranchCommand.ListMode.REMOTE)
+                .call()
+                .map { ref ->
+                    BranchInfo(ref.name.removePrefix("refs/remotes/"), false, true, null)
+                }
+
             return locals + remotes
         }
     }
@@ -485,10 +511,72 @@ class DesktopRepoManager(
         }
     }
 
+    /**
+     * Check out [branch] with full tracking support.
+     *
+     * [branch] is either a bare local name (e.g. "feature-x") or a remote-tracking
+     * name as shown in the branch list (e.g. "origin/feature-x").
+     *
+     * - Existing local branch → plain checkout (preserves any upstream already set).
+     * - Remote-only branch → create local branch that tracks the remote ref
+     *   (equivalent to `git checkout -b <short> --track <remote-ref>`).
+     * - If a local branch with the same short name already exists, just switch to it.
+     */
     fun checkout(repoPath: String, branch: String): Result<Unit> {
         return try {
             open(File(repoPath)).use { git ->
-                git.checkout().setName(branch).call()
+                val repo = git.repository
+                val remoteRef = repo.findRef("refs/remotes/$branch")
+                val shortName = if (remoteRef != null) branch.substringAfter('/') else branch
+                val localRef = repo.findRef("refs/heads/$shortName")
+
+                when {
+                    localRef != null -> {
+                        git.checkout().setName(shortName).call()
+                    }
+                    remoteRef != null -> {
+                        git.checkout()
+                            .setCreateBranch(true)
+                            .setName(shortName)
+                            .setUpstreamMode(CreateBranchCommand.SetupUpstreamMode.TRACK)
+                            .setStartPoint(remoteRef.name)
+                            .call()
+                    }
+                    else -> {
+                        // Fallback: try the name as-is
+                        git.checkout().setName(branch).call()
+                    }
+                }
+                Result.success(Unit)
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Set or clear upstream tracking for a local branch.
+     * [upstream] is "origin/main" style, or null/blank to clear.
+     */
+    fun setUpstream(repoPath: String, branch: String, upstream: String?): Result<Unit> {
+        return try {
+            open(File(repoPath)).use { git ->
+                val repo = git.repository
+                val cfg = repo.config
+                val short = branch.removePrefix("refs/heads/")
+                if (upstream.isNullOrBlank()) {
+                    cfg.unset("branch", short, "remote")
+                    cfg.unset("branch", short, "merge")
+                } else {
+                    val remote = upstream.substringBefore('/')
+                    val remoteBranch = upstream.substringAfter('/')
+                    if (remote.isBlank() || remoteBranch.isBlank()) {
+                        return Result.failure(IllegalArgumentException("Upstream must be remote/branch, e.g. origin/main"))
+                    }
+                    cfg.setString("branch", short, "remote", remote)
+                    cfg.setString("branch", short, "merge", "refs/heads/$remoteBranch")
+                }
+                cfg.save()
                 Result.success(Unit)
             }
         } catch (e: Exception) {
@@ -499,7 +587,16 @@ class DesktopRepoManager(
     fun deleteBranch(repoPath: String, branch: String, force: Boolean = false): Result<Unit> {
         return try {
             open(File(repoPath)).use { git ->
-                git.branchDelete().setBranchNames(branch).setForce(force).call()
+                // Only delete local branch names; strip remote prefix if passed by mistake
+                val localName = if (branch.contains('/')) {
+                    // Caller might pass short local name only; reject pure remote refs
+                    val remoteRef = git.repository.findRef("refs/remotes/$branch")
+                    if (remoteRef != null) {
+                        return Result.failure(IllegalArgumentException("Cannot delete remote-tracking branch '$branch' from here; use the remote."))
+                    }
+                    branch
+                } else branch
+                git.branchDelete().setBranchNames(localName).setForce(force).call()
                 Result.success(Unit)
             }
         } catch (e: Exception) {

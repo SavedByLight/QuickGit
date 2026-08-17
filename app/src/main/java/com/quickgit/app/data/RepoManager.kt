@@ -1780,14 +1780,25 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
 
     fun listBranches(path: String): List<BranchInfo> {
         openGit(path).use { git ->
-            val current = git.repository.branch
-            val local = git.branchList().call().map {
-                BranchInfo(it.name.removePrefix("refs/heads/"), it.name.removePrefix("refs/heads/") == current, false)
+            val repo = git.repository
+            val current = try { repo.branch } catch (_: Exception) { null }
+            val cfg = repo.config
+
+            val local = git.branchList().call().map { ref ->
+                val short = ref.name.removePrefix("refs/heads/")
+                val remoteName = cfg.getString("branch", short, "remote")
+                val merge = cfg.getString("branch", short, "merge")
+                val upstream = when {
+                    !remoteName.isNullOrBlank() && !merge.isNullOrBlank() ->
+                        "$remoteName/${merge.removePrefix("refs/heads/")}"
+                    else -> null
+                }
+                BranchInfo(short, short == current, false, upstream)
             }
             val remote = git.branchList()
                 .setListMode(org.eclipse.jgit.api.ListBranchCommand.ListMode.REMOTE)
                 .call()
-                .map { BranchInfo(it.name.removePrefix("refs/remotes/"), false, true) }
+                .map { BranchInfo(it.name.removePrefix("refs/remotes/"), false, true, null) }
             return local + remote
         }
     }

@@ -296,14 +296,24 @@ private fun BranchRow(b: BranchInfo, onCheckout: () -> Unit, onDelete: (() -> Un
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text(b.name, fontWeight = if (b.isCurrent) FontWeight.Bold else FontWeight.Normal)
-            if (b.isCurrent) {
-                Text("current", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
-            } else if (b.isRemote) {
-                Text("remote", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            val subtitle = when {
+                b.isCurrent && !b.upstream.isNullOrBlank() -> "current · tracking ${b.upstream}"
+                b.isCurrent -> "current"
+                b.isRemote -> "remote — checkout creates local tracking branch"
+                !b.upstream.isNullOrBlank() -> "tracks ${b.upstream}"
+                else -> "local"
             }
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = if (b.isCurrent) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
         if (!b.isCurrent) {
-            TextButton(onClick = onCheckout) { Text("Checkout") }
+            TextButton(onClick = onCheckout) {
+                Text(if (b.isRemote) "Checkout & track" else "Checkout")
+            }
         }
         if (onDelete != null) {
             IconButton(onClick = onDelete) { Icon(Icons.Default.Delete, "Delete branch") }
