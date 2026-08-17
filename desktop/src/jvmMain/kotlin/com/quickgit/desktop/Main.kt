@@ -9,6 +9,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
+import com.quickgit.desktop.data.AppLog
 import com.quickgit.desktop.data.DesktopAppUpdateConfig
 import com.quickgit.desktop.data.DesktopAppUpdateManager
 import com.quickgit.desktop.data.DesktopCredentialStore
@@ -36,6 +37,9 @@ fun main() = application {
     ) {
         window.minimumSize = Dimension(800, 600)
 
+        LaunchedEffect(Unit) {
+            AppLog.i("Main", "QuickGit desktop started (v${DesktopAppUpdateConfig.currentVersionName})")
+        }
         val credentialStore = remember { DesktopCredentialStore() }
         val repoManager = remember { DesktopRepoManager(credentialStore) }
         val updateManager = remember { DesktopAppUpdateManager(credentialStore) }

@@ -5,12 +5,14 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -30,7 +32,7 @@ import java.text.SimpleDateFormat
 import java.util.*
 
 enum class DesktopScreen {
-    RepoList, RepoDetail, Clone, BrowseAccount, Profile, UserSearch, Settings, Credentials
+    RepoList, RepoDetail, Clone, BrowseAccount, Profile, UserSearch, Logs, Settings, Credentials
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -77,6 +79,9 @@ fun QuickGitDesktopApp(
                     currentScreen = DesktopScreen.UserSearch
                 }
                 Spacer(Modifier.weight(1f))
+                NavRailItem(Icons.Default.Article, "Logs", currentScreen == DesktopScreen.Logs) {
+                    currentScreen = DesktopScreen.Logs
+                }
                 NavRailItem(Icons.Default.Key, "Creds", currentScreen == DesktopScreen.Credentials) {
                     currentScreen = DesktopScreen.Credentials
                 }
@@ -136,6 +141,7 @@ fun QuickGitDesktopApp(
                         githubApi = githubApi(),
                         onMessage = ::showMessage
                     )
+                    DesktopScreen.Logs -> LogsScreen(onMessage = ::showMessage)
                     DesktopScreen.Settings -> SettingsScreen(
                         repoManager = repoManager,
                         credentialStore = credentialStore,
@@ -934,5 +940,162 @@ fun CredentialsScreen(credentialStore: DesktopCredentialStore, onMessage: (Strin
             gitlabToken = ""; gitlabUsername = ""; sshKey = ""; sshPass = ""
             onMessage("All credentials cleared")
         }) { Text("Clear all credentials") }
+    }
+}
+
+
+@Composable
+fun LogsScreen(onMessage: (String) -> Unit) {
+    val entries by AppLog.entries.collectAsState()
+    val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    var filter by remember { mutableStateOf("") }
+    var autoScroll by remember { mutableStateOf(true) }
+
+    val filtered = remember(entries, filter) {
+        if (filter.isBlank()) entries
+        else entries.filter {
+            it.message.contains(filter, ignoreCase = true) ||
+                it.tag.contains(filter, ignoreCase = true) ||
+                it.level.name.contains(filter, ignoreCase = true)
+        }
+    }
+
+    LaunchedEffect(filtered.size, autoScroll) {
+        if (autoScroll && filtered.isNotEmpty()) {
+            listState.animateScrollToItem(filtered.lastIndex)
+        }
+    }
+
+    fun copyToClipboard() {
+        try {
+            val text = if (filter.isBlank()) AppLog.dumpText()
+            else filtered.joinToString("\n") { it.formattedLine }
+            val clip = java.awt.Toolkit.getDefaultToolkit().systemClipboard
+            clip.setContents(java.awt.datatransfer.StringSelection(text), null)
+            onMessage("Copied ${filtered.size} log lines")
+        } catch (e: Exception) {
+            onMessage("Copy failed: ${e.message}")
+        }
+    }
+
+    fun saveToFile() {
+        scope.launch {
+            val result = withContext(Dispatchers.IO) {
+                val chooser = javax.swing.JFileChooser().apply {
+                    dialogTitle = "Save QuickGit logs"
+                    selectedFile = java.io.File(
+                        System.getProperty("user.home"),
+                        "quickgit-logs-${java.text.SimpleDateFormat("yyyyMMdd-HHmmss").format(java.util.Date())}.txt"
+                    )
+                }
+                val res = chooser.showSaveDialog(null)
+                if (res != javax.swing.JFileChooser.APPROVE_OPTION) {
+                    return@withContext null
+                }
+                val file = chooser.selectedFile
+                AppLog.saveToFile(file)
+            }
+            when {
+                result == null -> { /* cancelled */ }
+                result.isSuccess -> onMessage("Saved to ${result.getOrNull()?.absolutePath}")
+                else -> onMessage("Save failed: ${result.exceptionOrNull()?.message}")
+            }
+        }
+    }
+
+    Column(Modifier.fillMaxSize().padding(16.dp)) {
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("Logs", style = MaterialTheme.typography.titleLarge)
+            Text(
+                "${entries.size} entries · kept until cleared",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            OutlinedTextField(
+                value = filter,
+                onValueChange = { filter = it },
+                label = { Text("Filter") },
+                modifier = Modifier.weight(1f),
+                singleLine = true,
+                placeholder = { Text("tag, level, or text") }
+            )
+            FilterChip(
+                selected = autoScroll,
+                onClick = { autoScroll = !autoScroll },
+                label = { Text("Auto-scroll") }
+            )
+            OutlinedButton(onClick = { copyToClipboard() }) {
+                Icon(Icons.Default.ContentCopy, null, Modifier.size(18.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("Copy")
+            }
+            OutlinedButton(onClick = { saveToFile() }) {
+                Icon(Icons.Default.Save, null, Modifier.size(18.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("Save")
+            }
+            OutlinedButton(onClick = {
+                AppLog.clear()
+                onMessage("Logs cleared")
+            }) {
+                Icon(Icons.Default.DeleteSweep, null, Modifier.size(18.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("Clear")
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "Also written to ~/.config/quickgit/app.log",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(8.dp))
+
+        Card(
+            modifier = Modifier.fillMaxSize(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
+        ) {
+            if (filtered.isEmpty()) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text(
+                        if (entries.isEmpty()) "No log entries yet — git and network actions will appear here"
+                        else "No entries match filter",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            } else {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize().padding(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    items(filtered, key = { "${it.timestampMillis}-${it.tag}-${it.message.hashCode()}" }) { entry ->
+                        val color = when (entry.level) {
+                            LogLevel.DEBUG -> MaterialTheme.colorScheme.onSurfaceVariant
+                            LogLevel.INFO -> MaterialTheme.colorScheme.onSurface
+                            LogLevel.WARN -> Color(0xFFFFB74D)
+                            LogLevel.ERROR -> MaterialTheme.colorScheme.error
+                        }
+                        Text(
+                            entry.formattedLine,
+                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                            color = color
+                        )
+                    }
+                }
+            }
+        }
     }
 }

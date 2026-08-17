@@ -223,8 +223,10 @@ class DesktopRepoManager(
             }
 
             cmd.call().close()
+            AppLog.i(TAG, "clone OK → ${dest.absolutePath}")
             Result.success(dest)
         } catch (e: Exception) {
+            AppLog.e(TAG, "clone failed: $url", e)
             Result.failure(e)
         }
     }
@@ -296,9 +298,11 @@ class DesktopRepoManager(
                     .setAuthor(author)
                     .setCommitter(author)
                     .call()
+                AppLog.i(TAG, "commit ${commit.name.take(7)} in $repoPath: ${message.take(80)}")
                 Result.success(commit.name)
             }
         } catch (e: Exception) {
+            AppLog.e(TAG, "commit failed in $repoPath", e)
             Result.failure(e)
         }
     }
@@ -312,9 +316,11 @@ class DesktopRepoManager(
                 val cmd = git.push().setRemote("origin")
                 credentialsFor(remoteUrl)?.let { cmd.setCredentialsProvider(it) }
                 cmd.call()
+                AppLog.i(TAG, "push OK: $repoPath")
                 Result.success(Unit)
             }
         } catch (e: Exception) {
+            AppLog.e(TAG, "push failed: $repoPath", e)
             Result.failure(e)
         }
     }
@@ -327,11 +333,14 @@ class DesktopRepoManager(
                 credentialsFor(remoteUrl)?.let { cmd.setCredentialsProvider(it) }
                 val result = cmd.call()
                 if (result.mergeResult?.mergeStatus?.isSuccessful == false) {
+                    AppLog.w(TAG, "pull merge conflict: $repoPath")
                     return Result.failure(IllegalStateException("Merge conflict during pull"))
                 }
+                AppLog.i(TAG, "pull OK: $repoPath")
                 Result.success(Unit)
             }
         } catch (e: Exception) {
+            AppLog.e(TAG, "pull failed: $repoPath", e)
             Result.failure(e)
         }
     }
