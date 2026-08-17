@@ -39,8 +39,24 @@ jobs:
       - name: Install Linux packaging dependencies (AppImage / FUSE)
         run: |
           sudo apt-get update
-          # libfuse2 is required by appimagetool on Ubuntu runners
-          sudo apt-get install -y libfuse2 binutils fakeroot
+          # libfuse2 is required by appimagetool; on Ubuntu 24.04 the package is libfuse2t64
+          sudo apt-get install -y libfuse2t64 libfuse2 binutils fakeroot file || \
+            sudo apt-get install -y libfuse2 binutils fakeroot file
+          # GitHub-hosted runners have no /dev/fuse for unprivileged appimagetool.
+          # APPIMAGE_EXTRACT_AND_RUN lets appimagetool run without mounting itself.
+          echo "APPIMAGE_EXTRACT_AND_RUN=1" >> "$GITHUB_ENV"
+          # Also install a known-good appimagetool for the manual fallback step.
+          curl -fsSL -o /tmp/appimagetool \
+            "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
+          chmod +x /tmp/appimagetool
+          # Extract so we can invoke without FUSE even if env is ignored by nested tools
+          cd /tmp && ./appimagetool --appimage-extract >/dev/null 2>&1 || true
+          if [ -x /tmp/squashfs-root/AppRun ]; then
+            sudo ln -sfn /tmp/squashfs-root/AppRun /usr/local/bin/appimagetool
+          else
+            sudo ln -sfn /tmp/appimagetool /usr/local/bin/appimagetool
+          fi
+          appimagetool --version || true
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -88,6 +104,9 @@ jobs:
             -Pquickgit.version="${{ steps.version.outputs.name }}"
 
       - name: Build desktop AppImage
+        env:
+          # Critical on GHA: appimagetool (used by Compose) cannot FUSE-mount itself
+          APPIMAGE_EXTRACT_AND_RUN: "1"
         run: |
           set +e
           gradle :desktop:packageAppImage --no-daemon \
@@ -98,6 +117,72 @@ jobs:
           echo "=== desktop/build tree (for AppImage discovery) ==="
           find desktop/build -type f \( -name '*.AppImage' -o -name '*.deb' -o -name 'AppRun' \) 2>/dev/null | head -50 || true
           find desktop/build/compose -type d 2>/dev/null | head -40 || true
+
+          # Compose 1.7 on Ubuntu runners often reports success but only writes
+          # binaries/main/app (unpacked) instead of an .AppImage — no FUSE.
+          # Fall back: build AppImage ourselves from the packaged app dir.
+          if ! find desktop/build -type f -name '*.AppImage' 2>/dev/null | grep -q .; then
+            echo "Compose did not emit .AppImage — building one with appimagetool"
+            APP_DIR=$(find desktop/build/compose/binaries -type d -path '*/app/QuickGit' 2>/dev/null | head -n 1 || true)
+            if [ -z "$APP_DIR" ]; then
+              APP_DIR=$(find desktop/build/compose/binaries -type d -name 'QuickGit' 2>/dev/null | head -n 1 || true)
+            fi
+            if [ -z "$APP_DIR" ] || [ ! -d "$APP_DIR" ]; then
+              echo "ERROR: could not locate packaged app dir under desktop/build/compose/binaries" >&2
+              find desktop/build/compose -maxdepth 5 -type d 2>/dev/null || true
+              exit 1
+            fi
+            echo "Using app dir: $APP_DIR"
+            STAGE="$RUNNER_TEMP/quickgit-appimage"
+            rm -rf "$STAGE"
+            mkdir -p "$STAGE"
+            # AppDir layout expected by appimagetool
+            cp -a "$APP_DIR" "$STAGE/QuickGit.AppDir"
+            # Entrypoint
+            BIN=$(find "$STAGE/QuickGit.AppDir" -type f -path '*/bin/QuickGit' | head -n 1 || true)
+            if [ -z "$BIN" ]; then
+              BIN=$(find "$STAGE/QuickGit.AppDir" -type f -executable -name 'QuickGit' | head -n 1 || true)
+            fi
+            if [ -z "$BIN" ]; then
+              echo "ERROR: QuickGit launcher not found in $APP_DIR" >&2
+              find "$STAGE/QuickGit.AppDir" -maxdepth 4 -type f 2>/dev/null | head -40
+              exit 1
+            fi
+            REL_BIN="${BIN#$STAGE/QuickGit.AppDir/}"
+            {
+              echo '#!/bin/sh'
+              echo 'SELF=$(dirname "$(readlink -f "$0")")'
+              echo "exec \"\$SELF/$REL_BIN\" \"\$@\""
+            } > "$STAGE/QuickGit.AppDir/AppRun"
+            chmod +x "$STAGE/QuickGit.AppDir/AppRun"
+            # Desktop entry
+            {
+              echo '[Desktop Entry]'
+              echo 'Type=Application'
+              echo 'Name=QuickGit'
+              echo 'Comment=Git client for Linux'
+              echo 'Exec=QuickGit'
+              echo 'Icon=quickgit'
+              echo 'Categories=Development;'
+              echo 'Terminal=false'
+            } > "$STAGE/QuickGit.AppDir/quickgit.desktop"
+            # Icon (Compose ships icon.png in resources when configured)
+            ICON=$(find "$APP_DIR" desktop/src -name 'icon.png' 2>/dev/null | head -n 1 || true)
+            if [ -n "$ICON" ] && [ -f "$ICON" ]; then
+              cp "$ICON" "$STAGE/QuickGit.AppDir/quickgit.png"
+            else
+              # Minimal 1x1 PNG placeholder so appimagetool accepts the dir
+              printf '\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82' \
+                > "$STAGE/QuickGit.AppDir/quickgit.png"
+            fi
+            mkdir -p desktop/build/compose/binaries/main/appimage
+            OUT_AI="desktop/build/compose/binaries/main/appimage/QuickGit-${{ steps.version.outputs.name }}-x86_64.AppImage"
+            ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 appimagetool \
+              "$STAGE/QuickGit.AppDir" "$OUT_AI"
+            chmod +x "$OUT_AI"
+            echo "Built fallback AppImage: $OUT_AI ($(stat -c%s "$OUT_AI") bytes)"
+            ls -la desktop/build/compose/binaries/main/appimage/ || true
+          fi
 
       - name: Locate and rename artifacts
         id: artifacts
@@ -134,7 +219,7 @@ jobs:
           if [ -z "$APPIMAGE" ]; then
             # Last resort: any executable under appimage dir
             CAND=$(find desktop/build -path '*appimage*' -type f -executable 2>/dev/null | head -n 1 || true)
-            if [ -n "$CAND" ] && file "$CAND" | grep -qi appimage; then
+            if [ -n "$CAND" ] && file "$CAND" | grep -qiE 'appimage|ELF'; then
               APPIMAGE="$CAND"
             fi
           fi
@@ -160,8 +245,9 @@ jobs:
             FILES_LIST="$FILES_LIST"$'\n'"$APPIMAGE_OUT"
             echo "AppImage: $APPIMAGE_OUT ($(stat -c%s "$APPIMAGE_OUT") bytes) from $APPIMAGE"
           else
-            echo "WARNING: .AppImage not found under desktop/build — listing tree:" >&2
+            echo "ERROR: .AppImage not found under desktop/build after package + fallback" >&2
             find desktop/build -type f 2>/dev/null | head -100 || true
+            exit 1
           fi
 
           {
