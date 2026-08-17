@@ -61,6 +61,27 @@ compose.desktop {
             copyright = "© 2025 QuickGit"
             vendor = "QuickGit"
 
+            // jlink strips the JRE aggressively; JGit / Apache SSHD / networking touch
+            // management, naming, and crypto APIs. Without these modules the .deb crashes
+            // at runtime with NoClassDefFoundError: javax/management/MalformedObjectNameException
+            // (and similar for SSL / HTTPS).
+            modules(
+                "java.base",
+                "java.desktop",
+                "java.logging",
+                "java.management",
+                "java.naming",
+                "java.net.http",
+                "java.prefs",
+                "java.security.jgss",
+                "java.security.sasl",
+                "java.sql",
+                "java.xml",
+                "jdk.crypto.ec",
+                "jdk.unsupported",
+                "jdk.unsupported.desktop",
+            )
+
             linux {
                 iconFile.set(project.file("src/jvmMain/resources/icon.png"))
                 debMaintainer = "quickgit@example.com"
