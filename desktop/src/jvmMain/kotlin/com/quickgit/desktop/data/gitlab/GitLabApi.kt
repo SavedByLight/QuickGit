@@ -336,7 +336,7 @@ class GitLabApi(
         val content = obj.optString("content", "")
         if (content.isBlank()) return@runCatching ""
         if (encoding != "base64") throw IOException("Unsupported encoding: $encoding")
-        val bytes = android.util.Base64.decode(content, android.util.Base64.DEFAULT)
+        val bytes = java.util.Base64.getDecoder().decode(content.replace("\n", "").replace("\r", ""))
         String(bytes, StandardCharsets.UTF_8)
     }
 

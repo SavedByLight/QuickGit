@@ -235,7 +235,7 @@ class GitHubApi(private val token: String?) {
         val rawContent = obj.optString("content", "")
         if (rawContent.isBlank()) return@runCatching ""
         if (encoding != "base64") throw IOException("Unsupported content encoding: $encoding")
-        val bytes = android.util.Base64.decode(rawContent, android.util.Base64.DEFAULT)
+        val bytes = java.util.Base64.getDecoder().decode(rawContent.replace("\n", "").replace("\r", ""))
         String(bytes, StandardCharsets.UTF_8)
     }
 
