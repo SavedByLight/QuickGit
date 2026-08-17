@@ -2,6 +2,7 @@ package com.quickgit.app.ui.screens
 
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -19,6 +20,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.quickgit.app.data.AppUpdateConfig
+import com.quickgit.app.data.DesktopLayoutMode
 import com.quickgit.app.ui.adaptive.AdaptiveContent
 import com.quickgit.app.ui.theme.GitGreen
 import com.quickgit.app.viewmodel.SettingsViewModel
@@ -494,6 +496,40 @@ fun SettingsScreen(
                     onCheckedChange = vm::setGpgSignEnabled,
                     enabled = state.hasStoredGpgKey
                 )
+            }
+
+            HorizontalDivider(Modifier.padding(vertical = 20.dp))
+            Text("Layout", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "Desktop layout shows a permanent left NavigationRail (Repos, Clone, Browse, " +
+                    "Profile, Users, Logs, Settings) — the same chrome as the Linux desktop app. " +
+                    "Auto follows window width (Chromebook / tablet / freeform). " +
+                    "Always forces the rail even on phones; Never keeps phone-style navigation.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(12.dp))
+            val layoutOptions = listOf(
+                DesktopLayoutMode.AUTO to "Auto (by screen size)",
+                DesktopLayoutMode.ALWAYS to "Always (desktop rail)",
+                DesktopLayoutMode.NEVER to "Never (phone only)"
+            )
+            layoutOptions.forEach { (mode, label) ->
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clickable { vm.setDesktopLayoutMode(mode) }
+                        .padding(vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    RadioButton(
+                        selected = state.desktopLayoutMode == mode,
+                        onClick = { vm.setDesktopLayoutMode(mode) }
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(label, style = MaterialTheme.typography.bodyLarge)
+                }
             }
 
             HorizontalDivider(Modifier.padding(vertical = 20.dp))

@@ -41,7 +41,8 @@ class ViewModelFactory(private val app: Application) : ViewModelProvider.Factory
                     gitApp.repoManager,
                     gitApp.gitHubAccountManager,
                     gitApp.gitLabAccountManager,
-                    gitApp.appUpdateManager
+                    gitApp.appUpdateManager,
+                    gitApp.appPreferences
                 )
             modelClass.isAssignableFrom(FilesViewModel::class.java) ->
                 FilesViewModel(gitApp.repoManager)

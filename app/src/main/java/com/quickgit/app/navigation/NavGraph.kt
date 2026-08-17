@@ -30,20 +30,25 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.quickgit.app.QuickGitApp
+import com.quickgit.app.data.DesktopLayoutMode
 import com.quickgit.app.data.models.RepoInfo
 import com.quickgit.app.ui.adaptive.LocalWindowSizeClass
 import com.quickgit.app.ui.adaptive.isTabletOrWider
 import com.quickgit.app.ui.screens.*
 import com.quickgit.app.viewmodel.*
+import androidx.compose.runtime.collectAsState
 
 /**
  * Root navigation graph.
  *
- * On phones (compact width) this is a standard NavHost.
- * On tablets / Chromebooks / large freeform windows (medium+ width) a permanent
- * NavigationRail is shown on the left — matching the structure of the Linux
- * desktop Compose Multiplatform app — so the experience is identical in layout
- * to the native Linux version when running as an Android app on Chromebooks.
+ * Desktop layout (left NavigationRail matching the Linux desktop app) is
+ * controlled by [com.quickgit.app.data.AppPreferences.desktopLayoutMode]:
+ * - AUTO — rail when window is tablet/Chromebook width or wider
+ * - ALWAYS — always show the left rail
+ * - NEVER — phone-style navigation only
+ *
+ * Toggle under Settings → Layout.
  */
 @Composable
 fun QuickGitNavGraph() {
@@ -51,7 +56,15 @@ fun QuickGitNavGraph() {
     val context = LocalContext.current
     val factory = ViewModelFactory(context.applicationContext as android.app.Application)
     val wsc = LocalWindowSizeClass.current
-    val useRail = wsc.isTabletOrWider
+    val app = context.applicationContext as QuickGitApp
+    val desktopMode by app.appPreferences.desktopLayoutMode.collectAsState()
+    // Left NavigationRail (same structure as Linux desktop):
+    // ALWAYS = force on, NEVER = force off, AUTO = tablet/Chromebook width and up.
+    val useRail = when (desktopMode) {
+        DesktopLayoutMode.ALWAYS -> true
+        DesktopLayoutMode.NEVER -> false
+        DesktopLayoutMode.AUTO -> wsc.isTabletOrWider
+    }
 
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = navBackStackEntry?.destination?.route

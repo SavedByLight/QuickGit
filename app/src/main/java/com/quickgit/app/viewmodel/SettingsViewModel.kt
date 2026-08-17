@@ -4,6 +4,8 @@ import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.quickgit.app.data.AppLog
+import com.quickgit.app.data.AppPreferences
+import com.quickgit.app.data.DesktopLayoutMode
 import com.quickgit.app.data.CredentialStore
 import com.quickgit.app.data.GitHubAccountManager
 import com.quickgit.app.data.GitLabAccountManager
@@ -52,7 +54,9 @@ data class SettingsUiState(
     val updateDownloading: Boolean = false,
     val updateProgress: Int = 0,
     val updateNeedsInstallPermission: Boolean = false,
-    val downloadedApkPath: String? = null
+    val downloadedApkPath: String? = null,
+    /** Left NavigationRail layout (matches Linux desktop). Auto / Always / Never. */
+    val desktopLayoutMode: DesktopLayoutMode = DesktopLayoutMode.AUTO
 )
 
 class SettingsViewModel(
@@ -60,7 +64,8 @@ class SettingsViewModel(
     private val repoManager: RepoManager,
     private val gitHubAccountManager: GitHubAccountManager,
     private val gitLabAccountManager: GitLabAccountManager,
-    private val appUpdateManager: com.quickgit.app.data.AppUpdateManager
+    private val appUpdateManager: com.quickgit.app.data.AppUpdateManager,
+    private val appPreferences: AppPreferences
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(SettingsUiState())
@@ -77,6 +82,18 @@ class SettingsViewModel(
         verifyGitHubIfConnected()
         verifyGitLabIfConnected()
         refreshAppVersion()
+        refreshDesktopLayout()
+    }
+
+    private fun refreshDesktopLayout() {
+        _state.value = _state.value.copy(
+            desktopLayoutMode = appPreferences.desktopLayoutMode.value
+        )
+    }
+
+    fun setDesktopLayoutMode(mode: DesktopLayoutMode) {
+        appPreferences.setDesktopLayoutMode(mode)
+        _state.value = _state.value.copy(desktopLayoutMode = mode)
     }
 
     private fun refreshAppVersion() {

@@ -1,6 +1,7 @@
 package com.quickgit.app
 
 import android.app.Application
+import com.quickgit.app.data.AppPreferences
 import com.quickgit.app.data.AppUpdateManager
 import com.quickgit.app.data.CredentialStore
 import com.quickgit.app.data.GitHubAccountManager
@@ -31,6 +32,8 @@ class QuickGitApp : Application() {
         private set
     lateinit var appUpdateManager: AppUpdateManager
         private set
+    lateinit var appPreferences: AppPreferences
+        private set
 
     override fun onCreate() {
         super.onCreate()
@@ -45,5 +48,6 @@ class QuickGitApp : Application() {
         workflowManager = WorkflowManager(repoManager, credentialStore)
         releaseManager = ReleaseManager(repoManager, credentialStore)
         appUpdateManager = AppUpdateManager(this, credentialStore)
+        appPreferences = AppPreferences(this)
     }
 }
