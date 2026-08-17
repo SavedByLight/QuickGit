@@ -151,3 +151,14 @@ Packages appear under `desktop/build/compose/binaries/main/`.
 | Preferences       | `~/.config/quickgit/prefs.properties` |
 
 The Android app and the desktop app are independent; they do not share storage.
+
+### Desktop auto-update
+
+The native Linux builds check GitHub Releases on startup (and via **Settings → Check for updates**).
+They prefer a `.deb` on Debian/Ubuntu and an `.AppImage` otherwise, download to
+`~/Downloads/QuickGit-updates/`, and open the file for install.
+
+### Desktop credentials
+
+**Credentials** includes a **Username** field for GitHub and per-host HTTPS logins
+(required for correct `UsernamePasswordCredentialsProvider` auth with JGit).

@@ -47,11 +47,26 @@ class DesktopCredentialStore {
 
     // ---------- Public API (mirrors Android CredentialStore) ----------
 
-    fun getHttpsToken(host: String): String? = get("https_token_$host")
+    fun getHttpsToken(host: String): String? = get("https_token_${host.lowercase()}")
 
     fun setHttpsToken(host: String, token: String?) {
-        if (token.isNullOrBlank()) remove("https_token_$host")
-        else put("https_token_$host", token)
+        val h = host.lowercase()
+        if (token.isNullOrBlank()) remove("https_token_$h")
+        else put("https_token_$h", token)
+    }
+
+    fun getHttpsUsername(host: String): String? = get("https_user_${host.lowercase()}")
+
+    fun setHttpsUsername(host: String, username: String?) {
+        val h = host.lowercase()
+        if (username.isNullOrBlank()) remove("https_user_$h")
+        else put("https_user_$h", username)
+    }
+
+    /** Save host + username + token together (matches Android CredentialStore). */
+    fun saveHttpsCredential(host: String, username: String, token: String) {
+        setHttpsUsername(host, username)
+        setHttpsToken(host, token)
     }
 
     fun getSshPrivateKey(): String? = get("ssh_private_key")

@@ -19,8 +19,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.quickgit.desktop.data.DesktopAppUpdateManager
+import com.quickgit.desktop.data.DesktopAppUpdateConfig
 import com.quickgit.desktop.data.DesktopCredentialStore
 import com.quickgit.desktop.data.DesktopRepoManager
+import com.quickgit.desktop.data.DesktopUpdateCheckResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -35,7 +38,8 @@ enum class DesktopScreen {
 @Composable
 fun QuickGitDesktopApp(
     repoManager: DesktopRepoManager,
-    credentialStore: DesktopCredentialStore
+    credentialStore: DesktopCredentialStore,
+    updateManager: DesktopAppUpdateManager = DesktopAppUpdateManager(credentialStore)
 ) {
     var currentScreen by remember { mutableStateOf(DesktopScreen.RepoList) }
     var selectedRepoPath by remember { mutableStateOf<String?>(null) }
@@ -119,6 +123,7 @@ fun QuickGitDesktopApp(
                 DesktopScreen.Settings -> SettingsScreen(
                     repoManager = repoManager,
                     credentialStore = credentialStore,
+                    updateManager = updateManager,
                     onMessage = ::showMessage
                 )
                 DesktopScreen.Credentials -> CredentialsScreen(
@@ -669,12 +674,16 @@ fun CloneScreen(
 fun SettingsScreen(
     repoManager: DesktopRepoManager,
     credentialStore: DesktopCredentialStore,
+    updateManager: DesktopAppUpdateManager,
     onMessage: (String) -> Unit
 ) {
     var authorName by remember { mutableStateOf(repoManager.getCommitAuthorName()) }
     var authorEmail by remember { mutableStateOf(repoManager.getCommitAuthorEmail()) }
     var reposRoot by remember { mutableStateOf(repoManager.getReposRoot().absolutePath) }
     var gpgSign by remember { mutableStateOf(repoManager.isGpgSigningEnabled()) }
+    var checkingUpdate by remember { mutableStateOf(false) }
+    var updateStatus by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
 
     Column(
         Modifier.fillMaxSize().padding(24.dp).verticalScroll(rememberScrollState()),
@@ -705,6 +714,62 @@ fun SettingsScreen(
             })
             Text("Sign commits with GPG (key must be imported in Credentials)")
         }
+
+        Divider()
+        Text("Updates", style = MaterialTheme.typography.titleMedium)
+        Text(
+            "Current version: ${DesktopAppUpdateConfig.currentVersionName}",
+            style = MaterialTheme.typography.bodyMedium
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+                onClick = {
+                    scope.launch {
+                        checkingUpdate = true
+                        updateStatus = null
+                        updateManager.clearSuppression()
+                        val result = withContext(Dispatchers.IO) { updateManager.checkForUpdate() }
+                        checkingUpdate = false
+                        when (result) {
+                            is DesktopUpdateCheckResult.UpToDate ->
+                                updateStatus = "You are up to date (${result.current.versionName})"
+                            is DesktopUpdateCheckResult.Available -> {
+                                updateStatus = "Update ${result.latest.versionName} available — downloading…"
+                                val dl = withContext(Dispatchers.IO) {
+                                    updateManager.downloadUpdate(result.downloadUrl, result.assetName)
+                                }
+                                dl.fold(
+                                    onSuccess = { file ->
+                                        updateStatus = "Downloaded to ${file.absolutePath}"
+                                        updateManager.openFile(file)
+                                        onMessage("Update downloaded")
+                                    },
+                                    onFailure = {
+                                        updateStatus = "Download failed: ${it.message}"
+                                        updateManager.openReleasePage()
+                                    }
+                                )
+                            }
+                            is DesktopUpdateCheckResult.Error ->
+                                updateStatus = "Check failed: ${result.message}"
+                        }
+                    }
+                },
+                enabled = !checkingUpdate
+            ) {
+                if (checkingUpdate) {
+                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)
+                    Spacer(Modifier.width(8.dp))
+                }
+                Text(if (checkingUpdate) "Checking…" else "Check for updates")
+            }
+            TextButton(onClick = { updateManager.openReleasePage() }) {
+                Text("Open releases page")
+            }
+        }
+        updateStatus?.let {
+            Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
     }
 }
 
@@ -714,8 +779,16 @@ fun CredentialsScreen(
     onMessage: (String) -> Unit
 ) {
     var githubToken by remember { mutableStateOf(credentialStore.getGithubToken() ?: "") }
+    var githubUsername by remember {
+        mutableStateOf(credentialStore.getHttpsUsername("github.com") ?: "")
+    }
     var httpsHost by remember { mutableStateOf("github.com") }
-    var httpsToken by remember { mutableStateOf("") }
+    var httpsUsername by remember {
+        mutableStateOf(credentialStore.getHttpsUsername("github.com") ?: "")
+    }
+    var httpsToken by remember {
+        mutableStateOf(credentialStore.getHttpsToken("github.com") ?: "")
+    }
     var sshKey by remember { mutableStateOf(credentialStore.getSshPrivateKey() ?: "") }
     var sshPass by remember { mutableStateOf(credentialStore.getSshPassphrase() ?: "") }
 
@@ -723,27 +796,79 @@ fun CredentialsScreen(
         Modifier.fillMaxSize().padding(24.dp).verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        Text("GitHub Personal Access Token", style = MaterialTheme.typography.titleMedium)
+        Text("GitHub account", style = MaterialTheme.typography.titleMedium)
+        Text(
+            "Username is required for HTTPS remotes. For a personal access token, use your GitHub username " +
+                "(or leave blank to send x-access-token). Token needs the repo scope.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        OutlinedTextField(
+            value = githubUsername,
+            onValueChange = { githubUsername = it },
+            label = { Text("Username") },
+            placeholder = { Text("your-github-username") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true
+        )
         OutlinedTextField(
             value = githubToken,
             onValueChange = { githubToken = it },
-            label = { Text("Token") },
+            label = { Text("Personal access token") },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true
         )
         Button(onClick = {
             credentialStore.setGithubToken(githubToken.ifBlank { null })
-            onMessage("GitHub token saved")
-        }) { Text("Save GitHub token") }
+            if (githubUsername.isNotBlank()) {
+                credentialStore.setHttpsUsername("github.com", githubUsername)
+            }
+            if (githubToken.isNotBlank()) {
+                credentialStore.setHttpsToken("github.com", githubToken)
+            }
+            onMessage("GitHub credentials saved")
+        }) { Text("Save GitHub credentials") }
 
         Divider()
-        Text("Per-host HTTPS token", style = MaterialTheme.typography.titleMedium)
-        OutlinedTextField(value = httpsHost, onValueChange = { httpsHost = it }, label = { Text("Host") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-        OutlinedTextField(value = httpsToken, onValueChange = { httpsToken = it }, label = { Text("Token") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+        Text("Per-host HTTPS credentials", style = MaterialTheme.typography.titleMedium)
+        OutlinedTextField(
+            value = httpsHost,
+            onValueChange = {
+                httpsHost = it
+                httpsUsername = credentialStore.getHttpsUsername(it) ?: ""
+                httpsToken = credentialStore.getHttpsToken(it) ?: ""
+            },
+            label = { Text("Host") },
+            placeholder = { Text("github.com") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true
+        )
+        OutlinedTextField(
+            value = httpsUsername,
+            onValueChange = { httpsUsername = it },
+            label = { Text("Username") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true
+        )
+        OutlinedTextField(
+            value = httpsToken,
+            onValueChange = { httpsToken = it },
+            label = { Text("Personal access token / password") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true
+        )
         Button(onClick = {
-            credentialStore.setHttpsToken(httpsHost, httpsToken.ifBlank { null })
-            onMessage("Token for $httpsHost saved")
-        }) { Text("Save host token") }
+            if (httpsHost.isBlank()) {
+                onMessage("Host is required")
+                return@Button
+            }
+            credentialStore.saveHttpsCredential(
+                httpsHost,
+                httpsUsername,
+                httpsToken
+            )
+            onMessage("Credentials for $httpsHost saved")
+        }) { Text("Save host credentials") }
 
         Divider()
         Text("SSH private key (PEM / OpenSSH format)", style = MaterialTheme.typography.titleMedium)
@@ -771,6 +896,8 @@ fun CredentialsScreen(
         TextButton(onClick = {
             credentialStore.clearAll()
             githubToken = ""
+            githubUsername = ""
+            httpsUsername = ""
             httpsToken = ""
             sshKey = ""
             sshPass = ""

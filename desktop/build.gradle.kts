@@ -46,11 +46,14 @@ tasks.withType<JavaCompile> {
 compose.desktop {
     application {
         mainClass = "com.quickgit.desktop.MainKt"
+        // CI stamps version via -Pquickgit.version (and sed on packageVersion)
+        val appVer = (project.findProperty("quickgit.version") as String?) ?: "1.0.0"
+        jvmArgs += listOf("-Dquickgit.version=$appVer")
 
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb, TargetFormat.Rpm, TargetFormat.AppImage)
             packageName = "QuickGit"
-            packageVersion = "1.0.0"
+            packageVersion = appVer
             description = "A GitHub Desktop-style git client for Linux, Windows and macOS"
             copyright = "© 2025 QuickGit"
             vendor = "QuickGit"

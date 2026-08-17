@@ -36,6 +36,12 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
+      - name: Install Linux packaging dependencies (AppImage / FUSE)
+        run: |
+          sudo apt-get update
+          # libfuse2 is required by appimagetool on Ubuntu runners
+          sudo apt-get install -y libfuse2 binutils fakeroot
+
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
@@ -61,6 +67,9 @@ jobs:
           done
           # Desktop packageVersion (Compose Desktop rejects 0.x for some targets)
           sed -i "s/packageVersion = \"[^\"]*\"/packageVersion = \"${{ steps.version.outputs.name }}\"/" desktop/build.gradle.kts
+          # Embed version for in-app auto-update checks
+          sed -i "s/?: \"1\.0\.0\"/?: \"${{ steps.version.outputs.name }}\"/" \
+            desktop/src/jvmMain/kotlin/com/quickgit/desktop/data/DesktopAppUpdateManager.kt || true
 
       - name: Decode keystore
         run: |
@@ -73,11 +82,24 @@ jobs:
       - name: Build phone + Wear release APKs
         run: gradle :app:assembleRelease :wear:assembleRelease --no-daemon
 
-      - name: Build desktop packages (Deb + AppImage)
+      - name: Build desktop Deb
         run: |
-          # Deb and AppImage are the primary Linux artifacts. Other formats
-          # (rpm) can be added later if needed.
-          gradle :desktop:packageDeb :desktop:packageAppImage --no-daemon
+          gradle :desktop:packageDeb --no-daemon \
+            -Pquickgit.version="${{ steps.version.outputs.name }}"
+
+      - name: Build desktop AppImage
+        run: |
+          # AppImage packaging needs FUSE; libfuse2 installed above.
+          # Continue the job even if AppImage fails so Deb still ships.
+          set +e
+          gradle :desktop:packageAppImage --no-daemon \
+            -Pquickgit.version="${{ steps.version.outputs.name }}"
+          APPIMAGE_RC=$?
+          set -e
+          if [ "$APPIMAGE_RC" -ne 0 ]; then
+            echo "WARNING: packageAppImage failed with exit $APPIMAGE_RC" >&2
+            # Try alternative: package distribution and note missing AppImage
+          fi
 
       - name: Locate and rename artifacts
         id: artifacts
@@ -105,7 +127,6 @@ jobs:
           echo "Wear APK:  $WEAR_OUT ($(stat -c%s "$WEAR_OUT") bytes)"
 
           # --- Desktop packages ---
-          # Compose Desktop outputs under desktop/build/compose/binaries/main/
           DEB=$(find desktop/build/compose/binaries -name '*.deb' 2>/dev/null | head -n 1 || true)
           APPIMAGE=$(find desktop/build/compose/binaries -name '*.AppImage' 2>/dev/null | head -n 1 || true)
 
@@ -124,6 +145,7 @@ jobs:
           if [ -n "$APPIMAGE" ] && [ -f "$APPIMAGE" ]; then
             APPIMAGE_OUT="quickgit-${{ steps.version.outputs.name }}-linux-x86_64.AppImage"
             cp "$APPIMAGE" "$APPIMAGE_OUT"
+            chmod +x "$APPIMAGE_OUT"
             echo "appimage_path=$APPIMAGE_OUT" >> "$GITHUB_OUTPUT"
             FILES_LIST="$FILES_LIST"$'\n'"$APPIMAGE_OUT"
             echo "AppImage: $APPIMAGE_OUT ($(stat -c%s "$APPIMAGE_OUT") bytes)"
@@ -158,6 +180,8 @@ jobs:
             - `quickgit-wear-${{ steps.version.outputs.name }}.apk` — Wear OS
             - `quickgit-${{ steps.version.outputs.name }}-linux-amd64.deb` — native Linux (.deb)
             - `quickgit-${{ steps.version.outputs.name }}-linux-x86_64.AppImage` — native Linux (AppImage)
+
+            **Desktop auto-update:** the .deb / AppImage builds check this Releases page for newer packages.
 
             **Commit message:**
             ${{ github.event.head_commit.message }}

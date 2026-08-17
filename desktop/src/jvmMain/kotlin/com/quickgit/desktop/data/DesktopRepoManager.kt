@@ -170,9 +170,13 @@ class DesktopRepoManager(
         if (url == null) return null
         val host = credentialStore.hostFromRemoteUrl(url) ?: return null
         val token = credentialStore.getHttpsToken(host) ?: credentialStore.getGithubToken()
-        return if (!token.isNullOrBlank()) {
-            UsernamePasswordCredentialsProvider(token, "")
-        } else null
+        if (token.isNullOrBlank()) return null
+        // Prefer stored username; fall back to x-access-token (GitHub PAT convention)
+        // or the token itself as username (some hosts accept that).
+        val user = credentialStore.getHttpsUsername(host)
+            ?.takeIf { it.isNotBlank() }
+            ?: if (host.contains("github")) "x-access-token" else token
+        return UsernamePasswordCredentialsProvider(user, token)
     }
 
     // ---------- Clone ----------
