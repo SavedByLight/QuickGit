@@ -97,5 +97,6 @@ when the public location is used.
  - Google Pixel 10a (Tensor G4)
  - Amazon Fire 10 13th gen (Mediatek)
  - Samsung Chromebook 4 (Intel)
+ - Acer Aspire 3 Running Waydroid on Ubuntu (Intel)
  - Honor Pad 10 (Snapdragon)
  - Xiaomi Mi A2 Lite (Snapdragon)
