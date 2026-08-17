@@ -841,7 +841,6 @@ fun BranchesTab(repoPath: String, repoManager: DesktopRepoManager, onMessage: (S
     }
 }
 
-@Composable
 /** One entry in the repo file manager (folder or file in the current directory). */
 private data class FsEntry(
     val name: String,
