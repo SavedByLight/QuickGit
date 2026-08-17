@@ -99,6 +99,7 @@ when the public location is used.
  - Amazon Fire 10 13th gen (Mediatek)
  - Samsung Chromebook 4 (Intel)
  - Acer Aspire 3 Running Waydroid on Ubuntu (Intel)
+ - Acer Aspire Desktop deb app (Intel)
  - Honor Pad 10 (Snapdragon)
  - Xiaomi Mi A2 Lite (Snapdragon)
 
