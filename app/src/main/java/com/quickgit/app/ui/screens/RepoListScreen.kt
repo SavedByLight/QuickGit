@@ -49,7 +49,12 @@ fun RepoListScreen(
     onSearchPeople: () -> Unit = {},
     onSettings: () -> Unit,
     onLogs: () -> Unit,
-    onNeedsAuth: () -> Unit = onSettings
+    onNeedsAuth: () -> Unit = onSettings,
+    // Tablet / Chromebook / desktop-window layout: the left NavigationRail already
+    // exposes Profile, Search people, and Settings (matching the Linux/Mac desktop
+    // app's RepoListScreen, which has no such menu of its own), so this screen's
+    // own account dropdown and Settings icon would be pure duplicates.
+    isDesktopLayout: Boolean = false
 ) {
     val repos by vm.repos.collectAsState()
     val loading by vm.loading.collectAsState()
@@ -102,52 +107,59 @@ fun RepoListScreen(
             TopAppBar(
                 title = { Text("QuickGit") },
                 actions = {
-                    // Profile + Search people in one menu
-                    Box {
-                        IconButton(onClick = { accountMenuExpanded = true }) {
-                            val avatarUrl = account?.avatarUrl
-                            if (avatarUrl.isNullOrBlank()) {
-                                Icon(Icons.Default.Person, contentDescription = "Account")
-                            } else {
-                                UserAvatar(
-                                    avatarUrl = avatarUrl,
-                                    login = account?.login ?: "?",
-                                    size = 28.dp
+                    // Profile + Search people in one menu — hidden on tablet/Chromebook
+                    // layout since the NavigationRail already provides both.
+                    if (!isDesktopLayout) {
+                        Box {
+                            IconButton(onClick = { accountMenuExpanded = true }) {
+                                val avatarUrl = account?.avatarUrl
+                                if (avatarUrl.isNullOrBlank()) {
+                                    Icon(Icons.Default.Person, contentDescription = "Account")
+                                } else {
+                                    UserAvatar(
+                                        avatarUrl = avatarUrl,
+                                        login = account?.login ?: "?",
+                                        size = 28.dp
+                                    )
+                                }
+                            }
+                            DropdownMenu(
+                                expanded = accountMenuExpanded,
+                                onDismissRequest = { accountMenuExpanded = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            if (account?.login.isNullOrBlank()) "Profile"
+                                            else "Profile (${account?.login})"
+                                        )
+                                    },
+                                    onClick = {
+                                        accountMenuExpanded = false
+                                        onOpenProfile()
+                                    },
+                                    leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Search people") },
+                                    onClick = {
+                                        accountMenuExpanded = false
+                                        onSearchPeople()
+                                    },
+                                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) }
                                 )
                             }
-                        }
-                        DropdownMenu(
-                            expanded = accountMenuExpanded,
-                            onDismissRequest = { accountMenuExpanded = false }
-                        ) {
-                            DropdownMenuItem(
-                                text = {
-                                    Text(
-                                        if (account?.login.isNullOrBlank()) "Profile"
-                                        else "Profile (${account?.login})"
-                                    )
-                                },
-                                onClick = {
-                                    accountMenuExpanded = false
-                                    onOpenProfile()
-                                },
-                                leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Search people") },
-                                onClick = {
-                                    accountMenuExpanded = false
-                                    onSearchPeople()
-                                },
-                                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) }
-                            )
                         }
                     }
                     IconButton(onClick = onLogs) {
                         Icon(Icons.Default.Terminal, contentDescription = "Logs")
                     }
-                    IconButton(onClick = onSettings) {
-                        Icon(Icons.Default.Settings, contentDescription = "Settings")
+                    // Settings icon — hidden on tablet/Chromebook layout since the
+                    // NavigationRail already provides it.
+                    if (!isDesktopLayout) {
+                        IconButton(onClick = onSettings) {
+                            Icon(Icons.Default.Settings, contentDescription = "Settings")
+                        }
                     }
                 }
             )

@@ -87,7 +87,8 @@ fun QuickGitNavGraph() {
                 onOpenProfile = { navController.navigate(Dest.profile()) },
                 onSearchPeople = { navController.navigate(Dest.USER_SEARCH) },
                 onSettings = { navController.navigate(Dest.SETTINGS) { launchSingleTop = true } },
-                onLogs = { navController.navigate(Dest.LOGS) }
+                onLogs = { navController.navigate(Dest.LOGS) },
+                isDesktopLayout = useRail
             )
         }
 
