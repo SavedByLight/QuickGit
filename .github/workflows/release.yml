@@ -394,8 +394,7 @@ jobs:
           done
           {
             echo "list<<EOF"
-            printf '%s
-' "${FILES[@]}"
+            printf '%s\n' "${FILES[@]}"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
