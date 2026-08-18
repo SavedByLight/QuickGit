@@ -91,7 +91,13 @@ compose.desktop {
 
             windows {
                 menuGroup = "QuickGit"
+                // Stable per-product GUID so MSI upgrades replace previous installs
                 upgradeUuid = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+                shortcut = true
+                dirChooser = true
+                perUserInstall = false
+                // Same icon as Linux when present
+                iconFile.set(project.file("src/jvmMain/resources/icon.png"))
             }
 
             macOS {

@@ -11,7 +11,7 @@ import java.util.regex.Pattern
 
 /**
  * Checks GitHub Releases for a newer QuickGit desktop package and downloads it.
- * Mirrors Android AppUpdateManager but targets .deb / AppImage assets.
+ * Mirrors Android AppUpdateManager but targets platform packages (.msi / .deb / AppImage / .dmg).
  */
 object DesktopAppUpdateConfig {
     const val OWNER = "SavedByLight"
@@ -86,14 +86,18 @@ class DesktopAppUpdateManager(
 
     private fun preferredAssetSuffixes(): List<String> {
         val os = System.getProperty("os.name").lowercase()
-        if (!os.contains("linux")) {
-            return listOf(".deb", ".AppImage", ".rpm", ".msi", ".dmg")
+        return when {
+            os.contains("win") -> listOf(".msi", ".exe")
+            os.contains("mac") || os.contains("darwin") -> listOf(".dmg", ".pkg")
+            else -> {
+                // Linux and unknowns
+                val osRelease = File("/etc/os-release").readTextSafe().lowercase()
+                val isDebianFamily = File("/etc/debian_version").exists() ||
+                    "ubuntu" in osRelease || "debian" in osRelease || "linuxmint" in osRelease
+                if (isDebianFamily) listOf(".deb", ".AppImage", ".rpm")
+                else listOf(".AppImage", ".deb", ".rpm")
+            }
         }
-        val osRelease = File("/etc/os-release").readTextSafe().lowercase()
-        val isDebianFamily = File("/etc/debian_version").exists() ||
-            "ubuntu" in osRelease || "debian" in osRelease || "linuxmint" in osRelease
-        return if (isDebianFamily) listOf(".deb", ".AppImage", ".rpm")
-        else listOf(".AppImage", ".deb", ".rpm")
     }
 
     private fun File.readTextSafe(): String =
@@ -129,7 +133,7 @@ class DesktopAppUpdateManager(
                 }
             }
             if (chosenUrl.isNullOrBlank() || chosenName.isNullOrBlank()) {
-                return DesktopUpdateCheckResult.Error("No desktop package (.deb / AppImage) in latest release")
+                return DesktopUpdateCheckResult.Error("No desktop package for this OS in latest release")
             }
             DesktopUpdateCheckResult.Available(
                 current = current,

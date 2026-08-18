@@ -3,7 +3,7 @@ name: Build and Release
 # Runs on every push to main — i.e. after every commit that lands on main
 # (including merged PRs). Each run gets its own monotonically increasing
 # version number derived from the workflow run number, builds the phone,
-# Wear OS, and native desktop (Linux) apps, tags the commit, and publishes
+# Wear OS, native desktop (Linux + Windows), tags the commit, and publishes
 # a GitHub Release with all artifacts attached.
 on:
   push:
@@ -19,13 +19,34 @@ permissions:
   contents: write # needed to push tags and create releases
 
 jobs:
-  build-and-release:
+  # ── Shared version stamp ──────────────────────────────────────────────────
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.version.outputs.code }}
+      name: ${{ steps.version.outputs.name }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - name: Compute version number
+        id: version
+        run: |
+          VERSION_CODE="${{ github.run_number }}"
+          VERSION_NAME="1.0.${{ github.run_number }}"
+          TAG="v${VERSION_NAME}"
+          echo "code=$VERSION_CODE" >> "$GITHUB_OUTPUT"
+          echo "name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Version: $VERSION_NAME (code $VERSION_CODE), tag $TAG"
+
+  # ── Android + Linux desktop ───────────────────────────────────────────────
+  build-linux-android:
+    needs: version
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # full history, so tagging/describe works cleanly
+          fetch-depth: 0
 
       - name: Set up JDK 17
         uses: actions/setup-java@v5
@@ -65,26 +86,16 @@ jobs:
           # No gradlew is committed (it ships a binary wrapper jar), so this
           # action provisions Gradle itself and we invoke `gradle` directly.
 
-      - name: Compute version number
-        id: version
-        run: |
-          VERSION_CODE="${{ github.run_number }}"
-          VERSION_NAME="1.0.${{ github.run_number }}"
-          TAG="v${VERSION_NAME}"
-          echo "code=$VERSION_CODE" >> "$GITHUB_OUTPUT"
-          echo "name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-
       - name: Stamp version into phone, Wear, and desktop build files
         run: |
           for f in app/build.gradle.kts wear/build.gradle.kts; do
-            sed -i "s/versionCode = [0-9]\+/versionCode = ${{ steps.version.outputs.code }}/" "$f"
-            sed -i "s/versionName = \"[^\"]*\"/versionName = \"${{ steps.version.outputs.name }}\"/" "$f"
+            sed -i "s/versionCode = [0-9]\+/versionCode = ${{ needs.version.outputs.code }}/" "$f"
+            sed -i "s/versionName = \"[^\"]*\"/versionName = \"${{ needs.version.outputs.name }}\"/" "$f"
           done
           # Desktop packageVersion (Compose Desktop rejects 0.x for some targets)
-          sed -i "s/packageVersion = \"[^\"]*\"/packageVersion = \"${{ steps.version.outputs.name }}\"/" desktop/build.gradle.kts
+          sed -i "s/packageVersion = \"[^\"]*\"/packageVersion = \"${{ needs.version.outputs.name }}\"/" desktop/build.gradle.kts
           # Embed version for in-app auto-update checks
-          sed -i "s/?: \"1\.0\.0\"/?: \"${{ steps.version.outputs.name }}\"/" \
+          sed -i "s/?: \"1\.0\.0\"/?: \"${{ needs.version.outputs.name }}\"/" \
             desktop/src/jvmMain/kotlin/com/quickgit/desktop/data/DesktopAppUpdateManager.kt || true
 
       - name: Decode keystore
@@ -101,7 +112,7 @@ jobs:
       - name: Build desktop Deb
         run: |
           gradle :desktop:packageDeb --no-daemon \
-            -Pquickgit.version="${{ steps.version.outputs.name }}"
+            -Pquickgit.version="${{ needs.version.outputs.name }}"
 
       - name: Build desktop AppImage
         env:
@@ -110,7 +121,7 @@ jobs:
         run: |
           set +e
           gradle :desktop:packageAppImage --no-daemon \
-            -Pquickgit.version="${{ steps.version.outputs.name }}"
+            -Pquickgit.version="${{ needs.version.outputs.name }}"
           APPIMAGE_RC=$?
           set -e
           echo "packageAppImage exit code: $APPIMAGE_RC"
@@ -176,7 +187,7 @@ jobs:
                 > "$STAGE/QuickGit.AppDir/quickgit.png"
             fi
             mkdir -p desktop/build/compose/binaries/main/appimage
-            OUT_AI="desktop/build/compose/binaries/main/appimage/QuickGit-${{ steps.version.outputs.name }}-x86_64.AppImage"
+            OUT_AI="desktop/build/compose/binaries/main/appimage/QuickGit-${{ needs.version.outputs.name }}-x86_64.AppImage"
             ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 appimagetool \
               "$STAGE/QuickGit.AppDir" "$OUT_AI"
             chmod +x "$OUT_AI"
@@ -184,12 +195,11 @@ jobs:
             ls -la desktop/build/compose/binaries/main/appimage/ || true
           fi
 
-      - name: Locate and rename artifacts
-        id: artifacts
+      - name: Locate and stage Linux/Android artifacts
         run: |
           set -euo pipefail
+          mkdir -p dist
 
-          # --- Android APKs ---
           PHONE_APK=$(find app/build/outputs/apk/release -name '*.apk' | head -n 1)
           WEAR_APK=$(find wear/build/outputs/apk/release -name '*.apk' | head -n 1)
           if [ -z "$PHONE_APK" ] || [ ! -f "$PHONE_APK" ]; then
@@ -200,85 +210,214 @@ jobs:
             echo "Wear release APK not found under wear/build/outputs/apk/release" >&2
             exit 1
           fi
-          PHONE_OUT="quickgit-${{ steps.version.outputs.name }}.apk"
-          WEAR_OUT="quickgit-wear-${{ steps.version.outputs.name }}.apk"
-          cp "$PHONE_APK" "$PHONE_OUT"
-          cp "$WEAR_APK" "$WEAR_OUT"
-          echo "phone_path=$PHONE_OUT" >> "$GITHUB_OUTPUT"
-          echo "wear_path=$WEAR_OUT" >> "$GITHUB_OUTPUT"
-          echo "Phone APK: $PHONE_OUT ($(stat -c%s "$PHONE_OUT") bytes)"
-          echo "Wear APK:  $WEAR_OUT ($(stat -c%s "$WEAR_OUT") bytes)"
+          cp "$PHONE_APK" "dist/quickgit-${{ needs.version.outputs.name }}.apk"
+          cp "$WEAR_APK" "dist/quickgit-wear-${{ needs.version.outputs.name }}.apk"
+          echo "Phone APK: dist/quickgit-${{ needs.version.outputs.name }}.apk"
+          echo "Wear APK:  dist/quickgit-wear-${{ needs.version.outputs.name }}.apk"
 
-          # --- Desktop packages (search widely; Compose path varies by version) ---
           DEB=$(find desktop/build -type f -name '*.deb' 2>/dev/null | head -n 1 || true)
           APPIMAGE=$(find desktop/build -type f -name '*.AppImage' 2>/dev/null | head -n 1 || true)
-          # Some Compose versions emit the image without the extension in appimage/
           if [ -z "$APPIMAGE" ]; then
             APPIMAGE=$(find desktop/build -type f -name 'QuickGit*.AppImage' 2>/dev/null | head -n 1 || true)
           fi
           if [ -z "$APPIMAGE" ]; then
-            # Last resort: any executable under appimage dir
             CAND=$(find desktop/build -path '*appimage*' -type f -executable 2>/dev/null | head -n 1 || true)
             if [ -n "$CAND" ] && file "$CAND" | grep -qiE 'appimage|ELF'; then
               APPIMAGE="$CAND"
             fi
           fi
 
-          FILES_LIST="$PHONE_OUT"$'\n'"$WEAR_OUT"
-
           if [ -n "$DEB" ] && [ -f "$DEB" ]; then
-            DEB_OUT="quickgit-${{ steps.version.outputs.name }}-linux-amd64.deb"
-            cp "$DEB" "$DEB_OUT"
-            echo "deb_path=$DEB_OUT" >> "$GITHUB_OUTPUT"
-            FILES_LIST="$FILES_LIST"$'\n'"$DEB_OUT"
-            echo "Deb:      $DEB_OUT ($(stat -c%s "$DEB_OUT") bytes) from $DEB"
+            cp "$DEB" "dist/quickgit-${{ needs.version.outputs.name }}-linux-amd64.deb"
+            echo "Deb: dist/quickgit-${{ needs.version.outputs.name }}-linux-amd64.deb from $DEB"
           else
             echo "WARNING: .deb not found under desktop/build" >&2
             find desktop/build -type f 2>/dev/null | head -80 || true
           fi
 
           if [ -n "$APPIMAGE" ] && [ -f "$APPIMAGE" ]; then
-            APPIMAGE_OUT="quickgit-${{ steps.version.outputs.name }}-linux-x86_64.AppImage"
-            cp "$APPIMAGE" "$APPIMAGE_OUT"
-            chmod +x "$APPIMAGE_OUT"
-            echo "appimage_path=$APPIMAGE_OUT" >> "$GITHUB_OUTPUT"
-            FILES_LIST="$FILES_LIST"$'\n'"$APPIMAGE_OUT"
-            echo "AppImage: $APPIMAGE_OUT ($(stat -c%s "$APPIMAGE_OUT") bytes) from $APPIMAGE"
+            cp "$APPIMAGE" "dist/quickgit-${{ needs.version.outputs.name }}-linux-x86_64.AppImage"
+            chmod +x "dist/quickgit-${{ needs.version.outputs.name }}-linux-x86_64.AppImage"
+            echo "AppImage: dist/quickgit-${{ needs.version.outputs.name }}-linux-x86_64.AppImage from $APPIMAGE"
           else
             echo "ERROR: .AppImage not found under desktop/build after package + fallback" >&2
             find desktop/build -type f 2>/dev/null | head -100 || true
             exit 1
           fi
 
-          {
-            echo "files<<ARTIFACT_EOF"
-            printf '%s\n' "$FILES_LIST"
-            echo "ARTIFACT_EOF"
-          } >> "$GITHUB_OUTPUT"
+          ls -la dist/
+
+      - name: Upload Linux/Android artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-android-packages
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  # ── Windows desktop (identical feature set: Actions, Releases, etc.) ──────
+  build-windows:
+    needs: version
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Install WiX Toolset (required for MSI)
+        run: choco install wixtoolset -y --no-progress
+        shell: pwsh
+
+      - name: Add WiX to PATH
+        run: |
+          $wix = @(
+            "${env:ProgramFiles(x86)}\WiX Toolset v3.14\bin",
+            "${env:ProgramFiles(x86)}\WiX Toolset v3.11\bin",
+            "${env:ProgramFiles}\WiX Toolset v3.14\bin"
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if ($wix) {
+            echo "WIX=$wix" >> $env:GITHUB_ENV
+            echo "$wix" >> $env:GITHUB_PATH
+            Write-Host "WiX found at $wix"
+          } else {
+            Write-Host "WARNING: WiX bin dir not found; packageMsi may fail"
+            Get-ChildItem "${env:ProgramFiles(x86)}" -Filter "WiX*" -ErrorAction SilentlyContinue
+          }
+        shell: pwsh
+
+      - name: Stamp version into desktop build files
+        run: |
+          $ver = "${{ needs.version.outputs.name }}"
+          (Get-Content desktop/build.gradle.kts) `
+            -replace 'packageVersion = "[^"]*"', "packageVersion = `"$ver`"" `
+            | Set-Content desktop/build.gradle.kts
+          $upd = "desktop/src/jvmMain/kotlin/com/quickgit/desktop/data/DesktopAppUpdateManager.kt"
+          if (Test-Path $upd) {
+            (Get-Content $upd) `
+              -replace '\?: "1\.0\.0"', "? : `"$ver`"" `
+              | Set-Content $upd
+          }
+          Write-Host "Stamped packageVersion = $ver"
+        shell: pwsh
+
+      - name: Build desktop MSI
+        run: |
+          gradle :desktop:packageMsi --no-daemon "-Pquickgit.version=${{ needs.version.outputs.name }}"
+        shell: cmd
+
+      - name: Locate and stage Windows MSI
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $msi = Get-ChildItem -Path desktop\build -Recurse -Filter *.msi -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+          if (-not $msi) {
+            Write-Error "No .msi found under desktop/build"
+            Get-ChildItem -Path desktop\build -Recurse -ErrorAction SilentlyContinue | Select-Object -First 80 FullName
+            exit 1
+          }
+          $out = "dist\quickgit-${{ needs.version.outputs.name }}-windows-x64.msi"
+          Copy-Item $msi.FullName $out
+          Write-Host "MSI: $out ($((Get-Item $out).Length) bytes) from $($msi.FullName)"
+          Get-ChildItem dist
+        shell: pwsh
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-package
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  # ── Tag + GitHub Release with all platforms ───────────────────────────────
+  publish-release:
+    needs: [version, build-linux-android, build-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download Linux/Android packages
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-android-packages
+          path: dist
+
+      - name: Download Windows package
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-package
+          path: dist
+
+      - name: List release files
+        run: |
+          ls -la dist/
+          test -f "dist/quickgit-${{ needs.version.outputs.name }}.apk"
+          test -f "dist/quickgit-wear-${{ needs.version.outputs.name }}.apk"
+          test -f "dist/quickgit-${{ needs.version.outputs.name }}-linux-x86_64.AppImage"
+          test -f "dist/quickgit-${{ needs.version.outputs.name }}-windows-x64.msi"
+          # .deb is best-effort on Linux runners
+          if [ ! -f "dist/quickgit-${{ needs.version.outputs.name }}-linux-amd64.deb" ]; then
+            echo "WARNING: Linux .deb missing (AppImage still required)"
+          fi
 
       - name: Tag the release commit
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag "${{ steps.version.outputs.tag }}"
-          git push origin "${{ steps.version.outputs.tag }}"
+          git tag "${{ needs.version.outputs.tag }}"
+          git push origin "${{ needs.version.outputs.tag }}"
+
+      - name: Build release file list
+        id: files
+        run: |
+          set -euo pipefail
+          FILES=()
+          for f in dist/*; do
+            [ -f "$f" ] || continue
+            FILES+=("$f")
+            echo "include: $f"
+          done
+          {
+            echo "list<<EOF"
+            printf '%s
+' "${FILES[@]}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.version.outputs.tag }}
-          name: QuickGit ${{ steps.version.outputs.name }}
+          tag_name: ${{ needs.version.outputs.tag }}
+          name: QuickGit ${{ needs.version.outputs.name }}
           body: |
             Automated build from commit ${{ github.sha }}.
 
             **Artifacts**
-            - `quickgit-${{ steps.version.outputs.name }}.apk` — phone / tablet (Android)
-            - `quickgit-wear-${{ steps.version.outputs.name }}.apk` — Wear OS
-            - `quickgit-${{ steps.version.outputs.name }}-linux-amd64.deb` — native Linux (.deb)
-            - `quickgit-${{ steps.version.outputs.name }}-linux-x86_64.AppImage` — native Linux (AppImage)
+            - `quickgit-${{ needs.version.outputs.name }}.apk` — phone / tablet (Android)
+            - `quickgit-wear-${{ needs.version.outputs.name }}.apk` — Wear OS
+            - `quickgit-${{ needs.version.outputs.name }}-linux-amd64.deb` — native Linux (.deb)
+            - `quickgit-${{ needs.version.outputs.name }}-linux-x86_64.AppImage` — native Linux (AppImage)
+            - `quickgit-${{ needs.version.outputs.name }}-windows-x64.msi` — native Windows (MSI)
 
-            **Desktop auto-update:** the .deb / AppImage builds check this Releases page for newer packages.
+            Desktop builds (Linux and Windows) share the same UI: Actions, Releases, Issues, PRs, and the rest of the tabbed repo detail experience.
+
+            **Desktop auto-update:** Linux (.deb / AppImage) and Windows (.msi) builds check this Releases page for newer packages for their platform.
 
             **Commit message:**
             ${{ github.event.head_commit.message }}
-          files: ${{ steps.artifacts.outputs.files }}
+          files: ${{ steps.files.outputs.list }}
