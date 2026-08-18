@@ -57,7 +57,7 @@ import kotlinx.coroutines.launch
 @Composable
 fun WorkflowsScreen(
     vm: WorkflowsViewModel,
-    onBack: () -> Unit,
+    onBack: (() -> Unit)? = null,
     onNeedsAuth: (String) -> Unit
 ) {
     val state by vm.state.collectAsState()
@@ -107,7 +107,11 @@ fun WorkflowsScreen(
             topBar = {
                 TopAppBar(
                     title = { Text(if (state.isGitLab) "Build" else "Actions") },
-                    navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back") } }
+                    navigationIcon = {
+                        onBack?.let { back ->
+                            IconButton(onClick = back) { Icon(Icons.Default.ArrowBack, "Back") }
+                        }
+                    }
                 )
             }
         ) { padding ->
@@ -128,7 +132,11 @@ fun WorkflowsScreen(
         topBar = {
             TopAppBar(
                 title = { Text(if (state.isGitLab) "Build" else "Actions") },
-                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back") } },
+                navigationIcon = {
+                    onBack?.let { back ->
+                        IconButton(onClick = back) { Icon(Icons.Default.ArrowBack, "Back") }
+                    }
+                },
                 actions = {
                     IconButton(onClick = { vm.refresh() }, enabled = !state.loading) {
                         Icon(Icons.Default.Refresh, "Refresh")

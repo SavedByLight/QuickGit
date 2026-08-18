@@ -500,8 +500,8 @@ fun RepoDetailScreen(
     onMessage: (String) -> Unit
 ) {
     var tabIndex by remember { mutableStateOf(0) }
-    // Changes first, then Files (file manager), Branches, Issues, PRs, History last
-    val tabs = listOf("Changes", "Files", "Branches", "Issues", "PRs", "History")
+    // Changes first, then Files (file manager), Branches, Issues, PRs, Actions, Releases, History last
+    val tabs = listOf("Changes", "Files", "Branches", "Issues", "PRs", "Actions", "Releases", "History")
     val scope = rememberCoroutineScope()
     var busy by remember { mutableStateOf(false) }
 
@@ -537,7 +537,9 @@ fun RepoDetailScreen(
             2 -> BranchesTab(repoPath, repoManager, onMessage)
             3 -> IssuesTab(repoPath, repoManager, credentialStore, githubApi, onMessage)
             4 -> PullRequestsTab(repoPath, repoManager, credentialStore, githubApi, onMessage)
-            5 -> HistoryTab(repoPath, repoManager, onMessage)
+            5 -> WorkflowsTab(repoPath, repoManager, credentialStore, githubApi, onMessage)
+            6 -> ReleasesTab(repoPath, repoManager, credentialStore, githubApi, onMessage)
+            7 -> HistoryTab(repoPath, repoManager, onMessage)
         }
     }
 }
@@ -2206,6 +2208,440 @@ fun PullRequestsTab(
                 TextButton(onClick = { detailPr = null }) { Text("Close") }
             }
         )
+    }
+}
+
+
+@Composable
+fun WorkflowsTab(
+    repoPath: String,
+    repoManager: DesktopRepoManager,
+    credentialStore: DesktopCredentialStore,
+    githubApi: GitHubApi,
+    onMessage: (String) -> Unit
+) {
+    var workflows by remember { mutableStateOf<List<Workflow>>(emptyList()) }
+    var runs by remember { mutableStateOf<List<WorkflowRun>>(emptyList()) }
+    var loading by remember { mutableStateOf(true) }
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var filter by remember { mutableStateOf(WorkflowRunFilter.ALL) }
+    var selectedWorkflowId by remember { mutableStateOf<Long?>(null) }
+    var ownerRepo by remember { mutableStateOf<GitHubApi.OwnerRepo?>(null) }
+    var detailRun by remember { mutableStateOf<WorkflowRun?>(null) }
+    var jobs by remember { mutableStateOf<List<WorkflowJob>>(emptyList()) }
+    var detailLoading by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+
+    fun reload() {
+        scope.launch {
+            loading = true
+            error = null
+            val remote = withContext(Dispatchers.IO) { repoManager.getRemoteUrl(repoPath) }
+            val parsed = githubApi.parseOwnerRepo(remote)
+            ownerRepo = parsed
+            if (parsed == null) {
+                error = "Not a GitHub remote. Actions require a github.com remote and a token in Credentials."
+                workflows = emptyList()
+                runs = emptyList()
+                loading = false
+                return@launch
+            }
+            val wfResult = withContext(Dispatchers.IO) {
+                githubApi.listWorkflows(parsed.owner, parsed.repo)
+            }
+            wfResult.fold(
+                onSuccess = { workflows = it },
+                onFailure = { error = it.message; workflows = emptyList() }
+            )
+            val runResult = withContext(Dispatchers.IO) {
+                githubApi.listWorkflowRuns(
+                    parsed.owner, parsed.repo,
+                    workflowId = selectedWorkflowId,
+                    status = filter.apiValue
+                )
+            }
+            runResult.fold(
+                onSuccess = { runs = it },
+                onFailure = { if (error == null) error = it.message; runs = emptyList() }
+            )
+            loading = false
+        }
+    }
+
+    LaunchedEffect(repoPath, filter, selectedWorkflowId) { reload() }
+
+    fun loadRunDetail(run: WorkflowRun) {
+        detailRun = run
+        jobs = emptyList()
+        val or = ownerRepo ?: return
+        scope.launch {
+            detailLoading = true
+            val r = withContext(Dispatchers.IO) {
+                githubApi.listJobsForRun(or.owner, or.repo, run.id)
+            }
+            r.fold(onSuccess = { jobs = it }, onFailure = { jobs = emptyList() })
+            detailLoading = false
+        }
+    }
+
+    if (detailRun != null) {
+        val run = detailRun!!
+        Column(Modifier.fillMaxSize().padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = { detailRun = null }) { Icon(Icons.Default.ArrowBack, "Back") }
+                Text(
+                    run.displayTitle.ifBlank { run.name },
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                val or = ownerRepo
+                if (or != null && !busy) {
+                    if (run.status == "in_progress" || run.status == "queued") {
+                        OutlinedButton(onClick = {
+                            scope.launch {
+                                busy = true
+                                val r = withContext(Dispatchers.IO) {
+                                    githubApi.cancelWorkflowRun(or.owner, or.repo, run.id)
+                                }
+                                busy = false
+                                r.fold(
+                                    { onMessage("Cancel requested"); detailRun = null; reload() },
+                                    { onMessage("Cancel failed: ${it.message}") }
+                                )
+                            }
+                        }) { Text("Cancel") }
+                        Spacer(Modifier.width(8.dp))
+                    }
+                    OutlinedButton(onClick = {
+                        scope.launch {
+                            busy = true
+                            val r = withContext(Dispatchers.IO) {
+                                githubApi.rerunWorkflowRun(or.owner, or.repo, run.id)
+                            }
+                            busy = false
+                            r.fold(
+                                { onMessage("Re-run requested"); detailRun = null; reload() },
+                                { onMessage("Re-run failed: ${it.message}") }
+                            )
+                        }
+                    }) { Text("Re-run") }
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "${run.status}${run.conclusion?.let { " · $it" } ?: ""} · ${run.event} · ${run.headBranch ?: ""}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(12.dp))
+            if (detailLoading) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator()
+                }
+            } else if (jobs.isEmpty()) {
+                Text("No jobs", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            } else {
+                LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(jobs, key = { it.id }) { job ->
+                        Card(Modifier.fillMaxWidth()) {
+                            Column(Modifier.padding(12.dp)) {
+                                Text(job.name, fontWeight = FontWeight.Medium)
+                                Text(
+                                    "${job.status}${job.conclusion?.let { " · $it" } ?: ""}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                if (job.steps.isNotEmpty()) {
+                                    Spacer(Modifier.height(6.dp))
+                                    job.steps.forEach { step ->
+                                        Text(
+                                            "  ${step.number}. ${step.name} — ${step.status}${step.conclusion?.let { " ($it)" } ?: ""}",
+                                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return
+    }
+
+    Column(Modifier.fillMaxSize().padding(16.dp)) {
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            FilterChip(
+                selected = selectedWorkflowId == null,
+                onClick = { selectedWorkflowId = null },
+                label = { Text("All workflows") }
+            )
+            workflows.take(8).forEach { wf ->
+                FilterChip(
+                    selected = selectedWorkflowId == wf.id,
+                    onClick = { selectedWorkflowId = wf.id },
+                    label = { Text(wf.name, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                )
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            WorkflowRunFilter.entries.forEach { f ->
+                FilterChip(
+                    selected = filter == f,
+                    onClick = { filter = f },
+                    label = { Text(f.label) }
+                )
+            }
+            Spacer(Modifier.weight(1f))
+            IconButton(onClick = { reload() }, enabled = !loading) {
+                Icon(Icons.Default.Refresh, "Refresh")
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        when {
+            loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator()
+            }
+            error != null -> Text(error!!, color = MaterialTheme.colorScheme.error)
+            runs.isEmpty() -> Text(
+                "No workflow runs",
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            else -> LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(runs, key = { it.id }) { run ->
+                    Card(
+                        Modifier.fillMaxWidth().clickable { loadRunDetail(run) }
+                    ) {
+                        Column(Modifier.padding(12.dp)) {
+                            Text(
+                                run.displayTitle.ifBlank { run.name },
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                Text(
+                                    run.status + (run.conclusion?.let { " · $it" } ?: ""),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Text(
+                                    run.headBranch ?: "",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Text(
+                                    run.event,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun ReleasesTab(
+    repoPath: String,
+    repoManager: DesktopRepoManager,
+    credentialStore: DesktopCredentialStore,
+    githubApi: GitHubApi,
+    onMessage: (String) -> Unit
+) {
+    var releases by remember { mutableStateOf<List<Release>>(emptyList()) }
+    var loading by remember { mutableStateOf(true) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var ownerRepo by remember { mutableStateOf<GitHubApi.OwnerRepo?>(null) }
+    var detail by remember { mutableStateOf<Release?>(null) }
+    var detailLoading by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+
+    fun reload() {
+        scope.launch {
+            loading = true
+            error = null
+            val remote = withContext(Dispatchers.IO) { repoManager.getRemoteUrl(repoPath) }
+            val parsed = githubApi.parseOwnerRepo(remote)
+            ownerRepo = parsed
+            if (parsed == null) {
+                error = "Not a GitHub remote. Releases require a github.com remote and a token in Credentials."
+                releases = emptyList()
+                loading = false
+                return@launch
+            }
+            val result = withContext(Dispatchers.IO) {
+                githubApi.listReleases(parsed.owner, parsed.repo)
+            }
+            result.fold(
+                onSuccess = { releases = it },
+                onFailure = { error = it.message; releases = emptyList() }
+            )
+            loading = false
+        }
+    }
+
+    LaunchedEffect(repoPath) { reload() }
+
+    fun openDetail(release: Release) {
+        detail = release
+        val or = ownerRepo ?: return
+        scope.launch {
+            detailLoading = true
+            val r = withContext(Dispatchers.IO) {
+                githubApi.getRelease(or.owner, or.repo, release.id)
+            }
+            r.fold(onSuccess = { detail = it }, onFailure = { /* keep list item */ })
+            detailLoading = false
+        }
+    }
+
+    if (detail != null) {
+        val rel = detail!!
+        Column(Modifier.fillMaxSize().padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = { detail = null }) { Icon(Icons.Default.ArrowBack, "Back") }
+                Text(
+                    rel.name.ifBlank { rel.tagName },
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                IconButton(onClick = { reload(); detail = null }) {
+                    Icon(Icons.Default.Refresh, "Refresh")
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "${rel.tagName}${if (rel.prerelease) " · pre-release" else ""}${if (rel.draft) " · draft" else ""}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            rel.publishedAt?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Spacer(Modifier.height(12.dp))
+            if (detailLoading) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator()
+                }
+            } else {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    if (!rel.body.isNullOrBlank()) {
+                        Text(rel.body!!, style = MaterialTheme.typography.bodyMedium)
+                        Spacer(Modifier.height(16.dp))
+                    }
+                    if (rel.assets.isNotEmpty()) {
+                        Text("Assets", fontWeight = FontWeight.SemiBold)
+                        Spacer(Modifier.height(8.dp))
+                        rel.assets.forEach { asset ->
+                            Card(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                                Row(
+                                    Modifier.padding(12.dp).fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text(asset.name, fontWeight = FontWeight.Medium)
+                                        Text(
+                                            "${asset.size} bytes · ${asset.downloadCount} downloads",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        Text("No assets", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
+        }
+        return
+    }
+
+    Column(Modifier.fillMaxSize().padding(16.dp)) {
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("Releases", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+            IconButton(onClick = { reload() }, enabled = !loading) {
+                Icon(Icons.Default.Refresh, "Refresh")
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        when {
+            loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator()
+            }
+            error != null -> Text(error!!, color = MaterialTheme.colorScheme.error)
+            releases.isEmpty() -> Text(
+                "No releases",
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            else -> LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(releases, key = { it.id }) { rel ->
+                    Card(
+                        Modifier.fillMaxWidth().clickable { openDetail(rel) }
+                    ) {
+                        Column(Modifier.padding(12.dp)) {
+                            Text(
+                                rel.name.ifBlank { rel.tagName },
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                Text(
+                                    rel.tagName,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                if (rel.prerelease) {
+                                    Text(
+                                        "pre-release",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.tertiary
+                                    )
+                                }
+                                if (rel.draft) {
+                                    Text(
+                                        "draft",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.error
+                                    )
+                                }
+                                rel.publishedAt?.let {
+                                    Text(
+                                        it.take(10),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

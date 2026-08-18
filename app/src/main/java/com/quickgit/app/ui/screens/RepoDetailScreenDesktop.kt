@@ -22,15 +22,17 @@ import com.quickgit.app.viewmodel.FilesViewModel
 import com.quickgit.app.viewmodel.HistoryViewModel
 import com.quickgit.app.viewmodel.IssuesViewModel
 import com.quickgit.app.viewmodel.PullRequestsViewModel
+import com.quickgit.app.viewmodel.ReleasesViewModel
 import com.quickgit.app.viewmodel.RepoDetailViewModel
 import com.quickgit.app.viewmodel.ViewModelFactory
+import com.quickgit.app.viewmodel.WorkflowsViewModel
 
 /**
  * Repo detail screen for tablet / Chromebook / desktop-window sized Android windows.
  *
  * Structured identically to [com.quickgit.desktop.ui.RepoDetailScreen] in the Linux/Mac
  * desktop app: a single screen with a top bar (back, repo name, plain Pull/Push) and a
- * [TabRow] of Changes / Files / Branches / Issues / PRs / History, instead of the phone
+ * [TabRow] of Changes / Files / Branches / Issues / PRs / Actions / Releases / History, instead of the phone
  * layout's separate screens and Pull/Push option sheets. To match the desktop app exactly,
  * this intentionally drops the phone-only extras (LFS menu, force-push confirmation,
  * commit sign-off/amend, suggested commit messages, status detail sheet).
@@ -54,7 +56,16 @@ fun RepoDetailScreenDesktop(
     val filesVm: FilesViewModel = viewModel(factory = factory)
     val issuesVm: IssuesViewModel = viewModel(factory = factory)
     val pullRequestsVm: PullRequestsViewModel = viewModel(factory = factory)
+    val workflowsVm: WorkflowsViewModel = viewModel(factory = factory)
+    val releasesVm: ReleasesViewModel = viewModel(factory = factory)
     val historyVm: HistoryViewModel = viewModel(factory = factory)
+
+    LaunchedEffect(repoPath) {
+        issuesVm.init(repoPath)
+        pullRequestsVm.init(repoPath)
+        workflowsVm.init(repoPath)
+        releasesVm.init(repoPath)
+    }
 
     val state by vm.state.collectAsState()
     val snackbarHost = remember { SnackbarHostState() }
@@ -75,8 +86,8 @@ fun RepoDetailScreenDesktop(
         }
     }
 
-    // Changes first, then Files, Branches, Issues, PRs, History last — same order as desktop.
-    val tabs = listOf("Changes", "Files", "Branches", "Issues", "PRs", "History")
+    // Changes first, then Files, Branches, Issues, PRs, Actions, Releases, History last — same order as desktop.
+    val tabs = listOf("Changes", "Files", "Branches", "Issues", "PRs", "Actions", "Releases", "History")
     var tabIndex by remember { mutableStateOf(0) }
 
     Scaffold(
@@ -113,7 +124,9 @@ fun RepoDetailScreenDesktop(
                     2 -> BranchesScreen(repoPath = repoPath, vm = branchesVm, onBack = null)
                     3 -> IssuesScreen(vm = issuesVm, onBack = null, onNeedsAuth = onNeedsAuth)
                     4 -> PullRequestsScreen(vm = pullRequestsVm, onBack = null, onNeedsAuth = onNeedsAuth)
-                    5 -> HistoryScreen(repoPath = repoPath, vm = historyVm, onBack = null)
+                    5 -> WorkflowsScreen(vm = workflowsVm, onBack = null, onNeedsAuth = onNeedsAuth)
+                    6 -> ReleasesScreen(vm = releasesVm, onBack = null, onNeedsAuth = onNeedsAuth)
+                    7 -> HistoryScreen(repoPath = repoPath, vm = historyVm, onBack = null)
                 }
             }
         }
