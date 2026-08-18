@@ -86,6 +86,7 @@ public folder is not writable. Uninstalling the app does **not** delete `Documen
 when the public location is used.
 
 ## Tested on
+ - Samsung Galaxy S25 Ultra (Snapdragon)
  - Samsung Galaxy M55 (Snapdragon)
  - Samsung Galaxy A52s (Snapdragon)
  - Samsung Galaxy A34 (Mediatek)
