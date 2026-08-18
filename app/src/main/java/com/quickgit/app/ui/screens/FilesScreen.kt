@@ -62,7 +62,7 @@ import com.quickgit.app.viewmodel.FilesViewModel
 fun FilesScreen(
     repoPath: String,
     vm: FilesViewModel,
-    onBack: () -> Unit,
+    onBack: (() -> Unit)? = null,
     onOpenFile: (String) -> Unit
 ) {
     LaunchedEffect(repoPath) { vm.init(repoPath) }
@@ -109,7 +109,9 @@ fun FilesScreen(
                     }
                 },
                 navigationIcon = {
-                    IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, contentDescription = "Back") }
+                    onBack?.let { back ->
+                        IconButton(onClick = back) { Icon(Icons.Default.ArrowBack, contentDescription = "Back") }
+                    }
                 },
                 actions = {
                     IconButton(onClick = { vm.openDir(state.currentDir) }) {

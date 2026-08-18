@@ -33,7 +33,7 @@ import kotlinx.coroutines.launch
 @Composable
 fun PullRequestsScreen(
     vm: PullRequestsViewModel,
-    onBack: () -> Unit,
+    onBack: (() -> Unit)? = null,
     onNeedsAuth: (String) -> Unit
 ) {
     val state by vm.state.collectAsState()
@@ -57,7 +57,11 @@ fun PullRequestsScreen(
             topBar = {
                 TopAppBar(
                     title = { Text(if (state.isGitLab) "Merge requests" else "Pull requests") },
-                    navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back") } }
+                    navigationIcon = {
+                        onBack?.let { back ->
+                            IconButton(onClick = back) { Icon(Icons.Default.ArrowBack, "Back") }
+                        }
+                    }
                 )
             }
         ) { padding ->
@@ -78,7 +82,11 @@ fun PullRequestsScreen(
         topBar = {
             TopAppBar(
                 title = { Text(if (state.isGitLab) "Merge requests" else "Pull requests") },
-                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back") } }
+                navigationIcon = {
+                    onBack?.let { back ->
+                        IconButton(onClick = back) { Icon(Icons.Default.ArrowBack, "Back") }
+                    }
+                }
             )
         },
         floatingActionButton = {

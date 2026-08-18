@@ -55,7 +55,7 @@ import java.util.Date
 fun HistoryScreen(
     repoPath: String,
     vm: HistoryViewModel,
-    onBack: () -> Unit
+    onBack: (() -> Unit)? = null
 ) {
     LaunchedEffect(repoPath) { vm.init(repoPath) }
 
@@ -95,8 +95,10 @@ fun HistoryScreen(
                     }
                 },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                    onBack?.let { back ->
+                        IconButton(onClick = back) {
+                            Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                        }
                     }
                 },
                 actions = {

@@ -239,10 +239,12 @@ fun QuickGitNavGraph() {
             val vm: RepoDetailViewModel = viewModel(factory = factory)
             androidx.compose.runtime.LaunchedEffect(repoPath) { vm.init(repoPath) }
             RepoDetailScreen(
+                repoPath = repoPath,
                 repoName = repoPath.substringAfterLast('/'),
                 vm = vm,
                 onBack = { navController.popBackStack() },
                 onOpenDiff = { filePath, mode -> navController.navigate(Dest.diff(repoPath, filePath, mode)) },
+                onOpenFile = { filePath -> navController.navigate(Dest.editor(repoPath, filePath)) },
                 onOpenHistory = { navController.navigate(Dest.history(repoPath)) },
                 onOpenBranches = { navController.navigate(Dest.branches(repoPath)) },
                 onOpenFiles = { navController.navigate(Dest.files(repoPath)) },

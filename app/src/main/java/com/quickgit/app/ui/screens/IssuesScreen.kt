@@ -28,7 +28,7 @@ import com.quickgit.app.viewmodel.IssuesViewModel
 @Composable
 fun IssuesScreen(
     vm: IssuesViewModel,
-    onBack: () -> Unit,
+    onBack: (() -> Unit)? = null,
     onNeedsAuth: (String) -> Unit
 ) {
     val state by vm.state.collectAsState()
@@ -52,7 +52,11 @@ fun IssuesScreen(
             topBar = {
                 TopAppBar(
                     title = { Text("Issues") },
-                    navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back") } }
+                    navigationIcon = {
+                        onBack?.let { back ->
+                            IconButton(onClick = back) { Icon(Icons.Default.ArrowBack, "Back") }
+                        }
+                    }
                 )
             }
         ) { padding ->
@@ -73,7 +77,11 @@ fun IssuesScreen(
         topBar = {
             TopAppBar(
                 title = { Text("Issues") },
-                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back") } }
+                navigationIcon = {
+                    onBack?.let { back ->
+                        IconButton(onClick = back) { Icon(Icons.Default.ArrowBack, "Back") }
+                    }
+                }
             )
         },
         floatingActionButton = {

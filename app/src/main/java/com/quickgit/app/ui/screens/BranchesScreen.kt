@@ -20,7 +20,7 @@ import com.quickgit.app.viewmodel.BranchesViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun BranchesScreen(repoPath: String, vm: BranchesViewModel, onBack: () -> Unit) {
+fun BranchesScreen(repoPath: String, vm: BranchesViewModel, onBack: (() -> Unit)? = null) {
     LaunchedEffect(repoPath) { vm.init(repoPath) }
     val state by vm.state.collectAsState()
     val snackbarHost = remember { SnackbarHostState() }
@@ -57,7 +57,11 @@ fun BranchesScreen(repoPath: String, vm: BranchesViewModel, onBack: () -> Unit) 
         topBar = {
             TopAppBar(
                 title = { Text("Branches & remotes") },
-                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back") } },
+                navigationIcon = {
+                    onBack?.let { back ->
+                        IconButton(onClick = back) { Icon(Icons.Default.ArrowBack, "Back") }
+                    }
+                },
                 actions = {
                     IconButton(onClick = { showAddRemote = true }) {
                         Icon(Icons.Default.CloudUpload, "Add remote")

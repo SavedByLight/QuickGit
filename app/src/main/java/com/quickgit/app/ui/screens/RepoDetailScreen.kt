@@ -24,6 +24,7 @@ import com.quickgit.app.ui.adaptive.AdaptiveContent
 import com.quickgit.app.ui.adaptive.LocalWindowSizeClass
 import com.quickgit.app.ui.adaptive.isCompactHeight
 import com.quickgit.app.ui.adaptive.isMediumWidth
+import com.quickgit.app.ui.adaptive.isTabletOrWider
 import com.quickgit.app.ui.components.PullToRefreshBox
 import com.quickgit.app.ui.theme.GitAmber
 import com.quickgit.app.ui.theme.GitGreen
@@ -33,10 +34,12 @@ import com.quickgit.app.viewmodel.RepoDetailViewModel
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RepoDetailScreen(
+    repoPath: String,
     repoName: String,
     vm: RepoDetailViewModel,
     onBack: () -> Unit,
     onOpenDiff: (filePath: String, mode: String) -> Unit,
+    onOpenFile: (filePath: String) -> Unit = {},
     onOpenHistory: () -> Unit,
     onOpenBranches: () -> Unit,
     onOpenFiles: () -> Unit,
@@ -47,6 +50,23 @@ fun RepoDetailScreen(
     onConflicts: () -> Unit,
     onNeedsAuth: (String) -> Unit
 ) {
+    // Tablet / Chromebook / desktop-window sized: use the same single-screen,
+    // tabbed layout as the Linux/Mac desktop app instead of navigating to
+    // separate screens.
+    if (LocalWindowSizeClass.current.isTabletOrWider) {
+        RepoDetailScreenDesktop(
+            repoPath = repoPath,
+            repoName = repoName,
+            vm = vm,
+            onBack = onBack,
+            onOpenDiff = onOpenDiff,
+            onOpenFile = onOpenFile,
+            onConflicts = onConflicts,
+            onNeedsAuth = onNeedsAuth
+        )
+        return
+    }
+
     val state by vm.state.collectAsState()
     val snackbarHost = remember { SnackbarHostState() }
 
@@ -677,7 +697,7 @@ private fun ChangeRow(
     }
 }
 
-private fun ChangeType.badge() = when (this) {
+internal fun ChangeType.badge() = when (this) {
     ChangeType.ADDED -> "A"
     ChangeType.MODIFIED -> "M"
     ChangeType.DELETED -> "D"
@@ -686,7 +706,7 @@ private fun ChangeType.badge() = when (this) {
     ChangeType.UNTRACKED -> "U"
 }
 
-private fun ChangeType.color() = when (this) {
+internal fun ChangeType.color() = when (this) {
     ChangeType.ADDED -> GitGreen
     ChangeType.MODIFIED -> GitAmber
     ChangeType.DELETED -> GitRed
