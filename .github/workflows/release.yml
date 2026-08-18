@@ -341,9 +341,16 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # ── Tag + GitHub Release with all platforms ───────────────────────────────
+  # ── Tag + GitHub Release (always 1.0.<run_number>; Windows is best-effort) ─
+  # Continues the previous behaviour: every successful main build publishes a
+  # GitHub Release tagged v1.0.<github.run_number>. Windows MSI is attached when
+  # the windows job succeeds; a Windows failure must not block Android/Linux releases.
   publish-release:
     needs: [version, build-linux-android, build-windows]
+    if: |
+      always() &&
+      needs.version.result == 'success' &&
+      needs.build-linux-android.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -358,10 +365,12 @@ jobs:
           path: dist
 
       - name: Download Windows package
+        if: needs.build-windows.result == 'success'
         uses: actions/download-artifact@v4
         with:
           name: windows-package
           path: dist
+        continue-on-error: true
 
       - name: List release files
         run: |
@@ -369,10 +378,15 @@ jobs:
           test -f "dist/quickgit-${{ needs.version.outputs.name }}.apk"
           test -f "dist/quickgit-wear-${{ needs.version.outputs.name }}.apk"
           test -f "dist/quickgit-${{ needs.version.outputs.name }}-linux-x86_64.AppImage"
-          test -f "dist/quickgit-${{ needs.version.outputs.name }}-windows-x64.msi"
           # .deb is best-effort on Linux runners
           if [ ! -f "dist/quickgit-${{ needs.version.outputs.name }}-linux-amd64.deb" ]; then
             echo "WARNING: Linux .deb missing (AppImage still required)"
+          fi
+          # Windows MSI is optional — do not fail the release if absent
+          if [ -f "dist/quickgit-${{ needs.version.outputs.name }}-windows-x64.msi" ]; then
+            echo "Windows MSI present"
+          else
+            echo "WARNING: Windows MSI missing (Linux/Android release will still publish as 1.0.${{ needs.version.outputs.name }})"
           fi
 
       - name: Tag the release commit
@@ -411,7 +425,9 @@ jobs:
             - `quickgit-wear-${{ needs.version.outputs.name }}.apk` — Wear OS
             - `quickgit-${{ needs.version.outputs.name }}-linux-amd64.deb` — native Linux (.deb)
             - `quickgit-${{ needs.version.outputs.name }}-linux-x86_64.AppImage` — native Linux (AppImage)
-            - `quickgit-${{ needs.version.outputs.name }}-windows-x64.msi` — native Windows (MSI)
+            - `quickgit-${{ needs.version.outputs.name }}-windows-x64.msi` — native Windows (MSI; included when the Windows job succeeds)
+
+            Version scheme is unchanged: every successful main build publishes **v1.0.<run_number>** (e.g. 1.0.251).
 
             Desktop builds (Linux and Windows) share the same UI: Actions, Releases, Issues, PRs, and the rest of the tabbed repo detail experience.
 
