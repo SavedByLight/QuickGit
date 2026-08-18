@@ -306,7 +306,7 @@ jobs:
           $upd = "desktop/src/jvmMain/kotlin/com/quickgit/desktop/data/DesktopAppUpdateManager.kt"
           if (Test-Path $upd) {
             (Get-Content $upd) `
-              -replace '\?: "1\.0\.0"', "? : `"$ver`"" `
+              -replace '\?: "1\.0\.0"', "?: `"$ver`"" `
               | Set-Content $upd
           }
           Write-Host "Stamped packageVersion = $ver"
