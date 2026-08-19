@@ -1,5 +1,6 @@
 package com.quickgit.app.ui.screens
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -168,10 +169,11 @@ fun HistoryScreen(
                             items(state.commits, key = { it.id }) { commit ->
                                 val selected = state.selectedCommitId == commit.id
                                 Surface(
-                                    Modifier.fillMaxWidth(),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { vm.selectCommit(commit.id) },
                                     color = if (selected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
-                                    else MaterialTheme.colorScheme.surface,
-                                    onClick = { vm.selectCommit(commit.id) }
+                                    else MaterialTheme.colorScheme.surface
                                 ) {
                                     Column(Modifier.padding(16.dp)) {
                                         Row(
