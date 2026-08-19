@@ -164,63 +164,67 @@ fun RepoListScreen(
                 }
             )
         },
+        // Phone: bottom-right FAB menu. Tablet/Chromebook/desktop-window (isDesktopLayout):
+        // match the Linux desktop app — no FAB; "New repository" lives in the list header.
         floatingActionButton = {
-            Column(horizontalAlignment = Alignment.End) {
-                AnimatedVisibility(
-                    visible = fabExpanded,
-                    enter = fadeIn() + scaleIn(),
-                    exit = fadeOut() + scaleOut()
-                ) {
-                    Column(horizontalAlignment = Alignment.End) {
-                        FabMenuItem(
-                            label = "New repository",
-                            icon = Icons.Default.Create,
-                            onClick = {
-                                fabExpanded = false
-                                if (vm.canCreateRemoteRepo()) {
-                                    showCreateRepoDialog = true
-                                } else {
-                                    onNeedsAuth()
+            if (!isDesktopLayout) {
+                Column(horizontalAlignment = Alignment.End) {
+                    AnimatedVisibility(
+                        visible = fabExpanded,
+                        enter = fadeIn() + scaleIn(),
+                        exit = fadeOut() + scaleOut()
+                    ) {
+                        Column(horizontalAlignment = Alignment.End) {
+                            FabMenuItem(
+                                label = "New repository",
+                                icon = Icons.Default.Create,
+                                onClick = {
+                                    fabExpanded = false
+                                    if (vm.canCreateRemoteRepo()) {
+                                        showCreateRepoDialog = true
+                                    } else {
+                                        onNeedsAuth()
+                                    }
                                 }
-                            }
-                        )
-                        Spacer(Modifier.height(12.dp))
-                        FabMenuItem(
-                            label = "Browse repos",
-                            icon = Icons.Default.CloudDownload,
-                            onClick = {
-                                fabExpanded = false
-                                onBrowseGitHub()
-                            }
-                        )
-                        Spacer(Modifier.height(12.dp))
-                        FabMenuItem(
-                            label = "Clone URL",
-                            icon = Icons.Default.Add,
-                            onClick = {
-                                fabExpanded = false
-                                onClone()
-                            }
-                        )
-                        Spacer(Modifier.height(12.dp))
-                        FabMenuItem(
-                            label = "Import folder",
-                            icon = Icons.Default.FolderOpen,
-                            onClick = {
-                                fabExpanded = false
-                                importFolderLauncher.launch(null)
-                            }
-                        )
-                        Spacer(Modifier.height(12.dp))
+                            )
+                            Spacer(Modifier.height(12.dp))
+                            FabMenuItem(
+                                label = "Browse repos",
+                                icon = Icons.Default.CloudDownload,
+                                onClick = {
+                                    fabExpanded = false
+                                    onBrowseGitHub()
+                                }
+                            )
+                            Spacer(Modifier.height(12.dp))
+                            FabMenuItem(
+                                label = "Clone URL",
+                                icon = Icons.Default.Add,
+                                onClick = {
+                                    fabExpanded = false
+                                    onClone()
+                                }
+                            )
+                            Spacer(Modifier.height(12.dp))
+                            FabMenuItem(
+                                label = "Import folder",
+                                icon = Icons.Default.FolderOpen,
+                                onClick = {
+                                    fabExpanded = false
+                                    importFolderLauncher.launch(null)
+                                }
+                            )
+                            Spacer(Modifier.height(12.dp))
+                        }
                     }
-                }
-                FloatingActionButton(
-                    onClick = { fabExpanded = !fabExpanded }
-                ) {
-                    Icon(
-                        if (fabExpanded) Icons.Default.Close else Icons.Default.Add,
-                        contentDescription = if (fabExpanded) "Close" else "Add"
-                    )
+                    FloatingActionButton(
+                        onClick = { fabExpanded = !fabExpanded }
+                    ) {
+                        Icon(
+                            if (fabExpanded) Icons.Default.Close else Icons.Default.Add,
+                            contentDescription = if (fabExpanded) "Close" else "Add"
+                        )
+                    }
                 }
             }
         }
@@ -228,7 +232,7 @@ fun RepoListScreen(
         AdaptiveContent(Modifier.padding(padding)) {
             Box(Modifier.fillMaxSize()) {
                 // Dim overlay when FAB menu is open so taps dismiss it
-                if (fabExpanded) {
+                if (!isDesktopLayout && fabExpanded) {
                     Box(
                         Modifier
                             .fillMaxSize()
@@ -251,18 +255,84 @@ fun RepoListScreen(
                             Text("No repositories yet", style = MaterialTheme.typography.titleMedium)
                             Spacer(Modifier.height(8.dp))
                             Text(
-                                "Tap + to clone a URL, browse GitHub/GitLab, or import an existing folder.",
+                                if (isDesktopLayout)
+                                    "Create a new one, clone a URL, or browse your account from the side rail."
+                                else
+                                    "Tap + to clone a URL, browse GitHub/GitLab, or import an existing folder.",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
+                            if (isDesktopLayout) {
+                                Spacer(Modifier.height(12.dp))
+                                Button(
+                                    onClick = {
+                                        if (vm.canCreateRemoteRepo()) {
+                                            showCreateRepoDialog = true
+                                        } else {
+                                            onNeedsAuth()
+                                        }
+                                    }
+                                ) {
+                                    Icon(Icons.Default.Add, null, Modifier.size(18.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("New repository")
+                                }
+                            }
                         }
                     } else {
                         LazyColumn(Modifier.fillMaxSize()) {
+                            // Tablet/desktop layout: header with "New repository" like the Linux app
+                            if (isDesktopLayout) {
+                                item(key = "__header__") {
+                                    Row(
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            "Local repositories",
+                                            style = MaterialTheme.typography.titleLarge
+                                        )
+                                        Row(
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Button(
+                                                onClick = {
+                                                    if (vm.canCreateRemoteRepo()) {
+                                                        showCreateRepoDialog = true
+                                                    } else {
+                                                        onNeedsAuth()
+                                                    }
+                                                }
+                                            ) {
+                                                Icon(Icons.Default.Add, null, Modifier.size(18.dp))
+                                                Spacer(Modifier.width(6.dp))
+                                                Text("New repository")
+                                            }
+                                            TextButton(onClick = { importFolderLauncher.launch(null) }) {
+                                                Icon(Icons.Default.FolderOpen, null, Modifier.size(18.dp))
+                                                Spacer(Modifier.width(4.dp))
+                                                Text("Import")
+                                            }
+                                            TextButton(onClick = vm::refresh) {
+                                                Text("Refresh")
+                                            }
+                                        }
+                                    }
+                                    HorizontalDivider()
+                                }
+                            }
                             items(repos, key = { it.localPath }) { repo ->
                                 RepoRow(repo, onClick = { onOpenRepo(repo) }, onDelete = { repoToDelete = repo })
                                 HorizontalDivider()
                             }
-                            item { Spacer(Modifier.height(96.dp)) }
+                            // Extra bottom space only needed when FAB is present (phone)
+                            if (!isDesktopLayout) {
+                                item { Spacer(Modifier.height(96.dp)) }
+                            }
                         }
                     }
                 }

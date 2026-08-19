@@ -114,6 +114,21 @@ fun FilesScreen(
                     }
                 },
                 actions = {
+                    // "…" go up one directory — same affordance as the desktop path bar
+                    IconButton(
+                        onClick = vm::goUp,
+                        enabled = state.currentDir.isNotBlank()
+                    ) {
+                        Text(
+                            "…",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = if (state.currentDir.isNotBlank())
+                                MaterialTheme.colorScheme.onSurface
+                            else
+                                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                        )
+                    }
                     IconButton(onClick = { vm.openDir(state.currentDir) }) {
                         Icon(Icons.Default.Refresh, contentDescription = "Refresh")
                     }

@@ -24,8 +24,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.input.OffsetMapping
+import androidx.compose.ui.text.input.TransformedText
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.unit.sp
 import com.quickgit.desktop.data.*
 import com.quickgit.desktop.data.github.GitHubApi
 import com.quickgit.desktop.data.gitlab.GitLabApi
@@ -1324,19 +1331,16 @@ fun FilesEditorTab(repoPath: String, repoManager: DesktopRepoManager, onMessage:
                         }
                     }
                     items(entries, key = { it.relativePath }) { entry ->
-                        val langColor = if (entry.isDirectory) {
+                        // Neutral styling to match the Android file list (no selection
+                        // highlight or language-tinted file names).
+                        val iconTint = if (entry.isDirectory) {
                             MaterialTheme.colorScheme.primary
                         } else {
-                            languageColorFor(entry.name)
+                            MaterialTheme.colorScheme.onSurfaceVariant
                         }
-                        val selected = selectedFile == entry.relativePath
                         Row(
                             Modifier
                                 .fillMaxWidth()
-                                .background(
-                                    if (selected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
-                                    else Color.Transparent
-                                )
                                 .clickable {
                                     if (entry.isDirectory) {
                                         currentDir = entry.relativePath
@@ -1347,17 +1351,10 @@ fun FilesEditorTab(repoPath: String, repoManager: DesktopRepoManager, onMessage:
                                 .padding(horizontal = 8.dp, vertical = 8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            // Color chip
-                            Box(
-                                Modifier
-                                    .size(10.dp)
-                                    .background(langColor, shape = MaterialTheme.shapes.small)
-                            )
-                            Spacer(Modifier.width(10.dp))
                             Icon(
                                 if (entry.isDirectory) Icons.Default.Folder else Icons.Default.Description,
                                 contentDescription = null,
-                                tint = langColor,
+                                tint = iconTint,
                                 modifier = Modifier.size(18.dp)
                             )
                             Spacer(Modifier.width(8.dp))
@@ -1367,8 +1364,7 @@ fun FilesEditorTab(repoPath: String, repoManager: DesktopRepoManager, onMessage:
                                     style = MaterialTheme.typography.bodyMedium,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
-                                    color = if (entry.isDirectory) MaterialTheme.colorScheme.onSurface
-                                    else langColor
+                                    color = MaterialTheme.colorScheme.onSurface
                                 )
                                 if (!entry.isDirectory) {
                                     Text(
@@ -1407,19 +1403,28 @@ fun FilesEditorTab(repoPath: String, repoManager: DesktopRepoManager, onMessage:
             } else {
                 val name = selectedFile!!.substringAfterLast('/')
                 var editing by remember(selectedFile) { mutableStateOf(false) }
+                // Always-on syntax colouring (view + edit), matching the Android editor.
+                val codeStyle = TextStyle(
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 13.sp,
+                    lineHeight = 20.sp,
+                    color = Color(0xFFA9B7C6)
+                )
+                val highlightTransform = remember(name) {
+                    VisualTransformation { text ->
+                        TransformedText(
+                            highlightSourceCode(text.text, name),
+                            OffsetMapping.Identity
+                        )
+                    }
+                }
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        Modifier
-                            .size(12.dp)
-                            .background(languageColorFor(name), shape = MaterialTheme.shapes.small)
-                    )
-                    Spacer(Modifier.width(8.dp))
                     Column(Modifier.weight(1f)) {
                         Text(selectedFile!!, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text(
                             languageLabelFor(name),
                             style = MaterialTheme.typography.labelSmall,
-                            color = languageColorFor(name)
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                     if (isProbablyTextFile(name)) {
@@ -1445,14 +1450,26 @@ fun FilesEditorTab(repoPath: String, repoManager: DesktopRepoManager, onMessage:
                 if (loading) {
                     CircularProgressIndicator()
                 } else if (editing && isProbablyTextFile(name)) {
-                    OutlinedTextField(
-                        value = content,
-                        onValueChange = { content = it },
-                        modifier = Modifier.fillMaxSize(),
-                        textStyle = LocalTextStyle.current.copy(fontFamily = FontFamily.Monospace)
-                    )
+                    // Editable body with the same syntax colouring as the Android CodeEditor
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            .background(Color(0xFF2B2B2B))
+                            .horizontalScroll(rememberScrollState())
+                            .verticalScroll(rememberScrollState())
+                            .padding(12.dp)
+                    ) {
+                        BasicTextField(
+                            value = content,
+                            onValueChange = { content = it },
+                            textStyle = codeStyle,
+                            cursorBrush = SolidColor(Color(0xFF7EE787)),
+                            visualTransformation = highlightTransform,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
                 } else {
-                    // Syntax-coloured code reader
+                    // Syntax-coloured code reader (identical palette to edit mode)
                     val highlighted = remember(content, name) { highlightSourceCode(content, name) }
                     SelectionContainer(Modifier.fillMaxSize()) {
                         Box(
