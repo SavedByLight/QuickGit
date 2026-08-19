@@ -57,12 +57,16 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install Linux packaging dependencies (AppImage / FUSE)
+      - name: Install Linux packaging dependencies (Deb / Rpm / AppImage)
         run: |
           sudo apt-get update
-          # libfuse2 is required by appimagetool; on Ubuntu 24.04 the package is libfuse2t64
-          sudo apt-get install -y libfuse2t64 libfuse2 binutils fakeroot file || \
-            sudo apt-get install -y libfuse2 binutils fakeroot file
+          # libfuse2 is required by appimagetool; on Ubuntu 24.04 the package is libfuse2t64.
+          # rpm + rpmbuild are required for Compose packageRpm; fakeroot/binutils for .deb.
+          sudo apt-get install -y \
+            libfuse2t64 libfuse2 binutils fakeroot file \
+            rpm rpm2cpio cpio || \
+            sudo apt-get install -y \
+              libfuse2 binutils fakeroot file rpm rpm2cpio cpio
           # GitHub-hosted runners have no /dev/fuse for unprivileged appimagetool.
           # APPIMAGE_EXTRACT_AND_RUN lets appimagetool run without mounting itself.
           echo "APPIMAGE_EXTRACT_AND_RUN=1" >> "$GITHUB_ENV"
@@ -78,6 +82,8 @@ jobs:
             sudo ln -sfn /tmp/appimagetool /usr/local/bin/appimagetool
           fi
           appimagetool --version || true
+          rpm --version || true
+          which rpmbuild || true
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -113,6 +119,13 @@ jobs:
         run: |
           gradle :desktop:packageDeb --no-daemon \
             -Pquickgit.version="${{ needs.version.outputs.name }}"
+
+      - name: Build desktop Rpm
+        run: |
+          gradle :desktop:packageRpm --no-daemon \
+            -Pquickgit.version="${{ needs.version.outputs.name }}"
+          echo "=== RPM outputs ==="
+          find desktop/build -type f -name '*.rpm' 2>/dev/null | head -20 || true
 
       - name: Build desktop AppImage
         env:
@@ -216,6 +229,7 @@ jobs:
           echo "Wear APK:  dist/quickgit-wear-${{ needs.version.outputs.name }}.apk"
 
           DEB=$(find desktop/build -type f -name '*.deb' 2>/dev/null | head -n 1 || true)
+          RPM=$(find desktop/build -type f -name '*.rpm' 2>/dev/null | head -n 1 || true)
           APPIMAGE=$(find desktop/build -type f -name '*.AppImage' 2>/dev/null | head -n 1 || true)
           if [ -z "$APPIMAGE" ]; then
             APPIMAGE=$(find desktop/build -type f -name 'QuickGit*.AppImage' 2>/dev/null | head -n 1 || true)
@@ -227,12 +241,23 @@ jobs:
             fi
           fi
 
+          # .deb and .rpm are required on every release (always ship both).
           if [ -n "$DEB" ] && [ -f "$DEB" ]; then
             cp "$DEB" "dist/quickgit-${{ needs.version.outputs.name }}-linux-amd64.deb"
             echo "Deb: dist/quickgit-${{ needs.version.outputs.name }}-linux-amd64.deb from $DEB"
           else
-            echo "WARNING: .deb not found under desktop/build" >&2
+            echo "ERROR: .deb not found under desktop/build (required every release)" >&2
             find desktop/build -type f 2>/dev/null | head -80 || true
+            exit 1
+          fi
+
+          if [ -n "$RPM" ] && [ -f "$RPM" ]; then
+            cp "$RPM" "dist/quickgit-${{ needs.version.outputs.name }}-linux-x86_64.rpm"
+            echo "Rpm: dist/quickgit-${{ needs.version.outputs.name }}-linux-x86_64.rpm from $RPM"
+          else
+            echo "ERROR: .rpm not found under desktop/build (required every release)" >&2
+            find desktop/build -type f 2>/dev/null | head -80 || true
+            exit 1
           fi
 
           if [ -n "$APPIMAGE" ] && [ -f "$APPIMAGE" ]; then
@@ -378,10 +403,9 @@ jobs:
           test -f "dist/quickgit-${{ needs.version.outputs.name }}.apk"
           test -f "dist/quickgit-wear-${{ needs.version.outputs.name }}.apk"
           test -f "dist/quickgit-${{ needs.version.outputs.name }}-linux-x86_64.AppImage"
-          # .deb is best-effort on Linux runners
-          if [ ! -f "dist/quickgit-${{ needs.version.outputs.name }}-linux-amd64.deb" ]; then
-            echo "WARNING: Linux .deb missing (AppImage still required)"
-          fi
+          # .deb and .rpm are required on every release
+          test -f "dist/quickgit-${{ needs.version.outputs.name }}-linux-amd64.deb"
+          test -f "dist/quickgit-${{ needs.version.outputs.name }}-linux-x86_64.rpm"
           # Windows MSI is optional — do not fail the release if absent
           if [ -f "dist/quickgit-${{ needs.version.outputs.name }}-windows-x64.msi" ]; then
             echo "Windows MSI present"
@@ -423,7 +447,8 @@ jobs:
             **Artifacts**
             - `quickgit-${{ needs.version.outputs.name }}.apk` — phone / tablet (Android)
             - `quickgit-wear-${{ needs.version.outputs.name }}.apk` — Wear OS
-            - `quickgit-${{ needs.version.outputs.name }}-linux-amd64.deb` — native Linux (.deb)
+            - `quickgit-${{ needs.version.outputs.name }}-linux-amd64.deb` — native Linux (.deb; Debian/Ubuntu)
+            - `quickgit-${{ needs.version.outputs.name }}-linux-x86_64.rpm` — native Linux (.rpm; Fedora/RHEL/openSUSE)
             - `quickgit-${{ needs.version.outputs.name }}-linux-x86_64.AppImage` — native Linux (AppImage)
             - `quickgit-${{ needs.version.outputs.name }}-windows-x64.msi` — native Windows (MSI; included when the Windows job succeeds)
 
@@ -431,7 +456,7 @@ jobs:
 
             Desktop builds (Linux and Windows) share the same UI: Actions, Releases, Issues, PRs, and the rest of the tabbed repo detail experience.
 
-            **Desktop auto-update:** Linux (.deb / AppImage) and Windows (.msi) builds check this Releases page for newer packages for their platform.
+            **Desktop auto-update:** Linux (.deb / .rpm / AppImage) and Windows (.msi) builds check this Releases page for newer packages for their platform.
 
             **Commit message:**
             ${{ github.event.head_commit.message }}
