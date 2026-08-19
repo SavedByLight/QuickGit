@@ -30,12 +30,9 @@ import com.quickgit.app.viewmodel.WorkflowsViewModel
 /**
  * Repo detail screen for tablet / Chromebook / desktop-window sized Android windows.
  *
- * Structured identically to [com.quickgit.desktop.ui.RepoDetailScreen] in the Linux/Mac
- * desktop app: a single screen with a top bar (back, repo name, plain Pull/Push) and a
- * [TabRow] of Changes / Files / Branches / Issues / PRs / Actions / Releases / History, instead of the phone
- * layout's separate screens and Pull/Push option sheets. To match the desktop app exactly,
- * this intentionally drops the phone-only extras (LFS menu, force-push confirmation,
- * commit sign-off/amend, suggested commit messages, status detail sheet).
+ * Structured identically to the Linux/Mac desktop app: top bar (back, repo name, Pull/Push
+ * with force-push options) and a [TabRow] of Changes / Files / Branches / Issues / PRs /
+ * Actions / Releases / History. Force push (with lease / no lease) matches the phone app.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -69,6 +66,9 @@ fun RepoDetailScreenDesktop(
 
     val state by vm.state.collectAsState()
     val snackbarHost = remember { SnackbarHostState() }
+    var pushMenuExpanded by remember { mutableStateOf(false) }
+    var showForcePushConfirm by remember { mutableStateOf(false) }
+    var forcePushUseLease by remember { mutableStateOf(true) }
 
     LaunchedEffect(state.lastResult, state.statusMessage) {
         state.statusMessage?.let {
@@ -106,7 +106,50 @@ fun RepoDetailScreenDesktop(
                 )
                 Button(onClick = { vm.pull() }, enabled = !state.busy) { Text("Pull") }
                 Spacer(Modifier.width(8.dp))
-                Button(onClick = { vm.push() }, enabled = !state.busy) { Text("Push") }
+                Box {
+                    Button(onClick = { pushMenuExpanded = true }, enabled = !state.busy) {
+                        Text("Push ▾")
+                    }
+                    DropdownMenu(
+                        expanded = pushMenuExpanded,
+                        onDismissRequest = { pushMenuExpanded = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Git push") },
+                            onClick = {
+                                pushMenuExpanded = false
+                                vm.push(force = false)
+                            }
+                        )
+                        HorizontalDivider()
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    "Force with lease…",
+                                    color = com.quickgit.app.ui.theme.GitRed
+                                )
+                            },
+                            onClick = {
+                                pushMenuExpanded = false
+                                forcePushUseLease = true
+                                showForcePushConfirm = true
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    "Force (no lease)…",
+                                    color = com.quickgit.app.ui.theme.GitRed
+                                )
+                            },
+                            onClick = {
+                                pushMenuExpanded = false
+                                forcePushUseLease = false
+                                showForcePushConfirm = true
+                            }
+                        )
+                    }
+                }
                 if (state.busy) {
                     Spacer(Modifier.width(8.dp))
                     CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
@@ -130,6 +173,104 @@ fun RepoDetailScreenDesktop(
                 }
             }
         }
+    }
+
+    if (showForcePushConfirm) {
+        AlertDialog(
+            onDismissRequest = { showForcePushConfirm = false },
+            title = { Text("Force push") },
+            text = {
+                Column {
+                    Text(
+                        "Choose how to overwrite the remote branch:",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Surface(
+                        onClick = { forcePushUseLease = true },
+                        shape = MaterialTheme.shapes.medium,
+                        color = if (forcePushUseLease) {
+                            MaterialTheme.colorScheme.primaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            Modifier.padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = forcePushUseLease,
+                                onClick = { forcePushUseLease = true }
+                            )
+                            Column(Modifier.weight(1f)) {
+                                Text("Force with lease", fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    "Only if remote still matches your last fetch (safer)",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Surface(
+                        onClick = { forcePushUseLease = false },
+                        shape = MaterialTheme.shapes.medium,
+                        color = if (!forcePushUseLease) {
+                            MaterialTheme.colorScheme.primaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            Modifier.padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = !forcePushUseLease,
+                                onClick = { forcePushUseLease = false }
+                            )
+                            Column(Modifier.weight(1f)) {
+                                Text("Force (no lease)", fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    "Always overwrite — can discard others’ commits",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showForcePushConfirm = false
+                        if (forcePushUseLease) {
+                            vm.push(forceWithLease = true)
+                        } else {
+                            vm.push(force = true)
+                        }
+                    },
+                    colors = if (forcePushUseLease) {
+                        ButtonDefaults.buttonColors()
+                    } else {
+                        ButtonDefaults.buttonColors(
+                            containerColor = com.quickgit.app.ui.theme.GitRed
+                        )
+                    }
+                ) {
+                    Text(if (forcePushUseLease) "Force with lease" else "Force push")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showForcePushConfirm = false }) { Text("Cancel") }
+            }
+        )
     }
 }
 

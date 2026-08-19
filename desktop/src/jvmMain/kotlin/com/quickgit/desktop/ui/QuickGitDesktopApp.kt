@@ -511,6 +511,26 @@ fun RepoDetailScreen(
     val tabs = listOf("Changes", "Files", "Branches", "Issues", "PRs", "Actions", "Releases", "History")
     val scope = rememberCoroutineScope()
     var busy by remember { mutableStateOf(false) }
+    var pushMenuExpanded by remember { mutableStateOf(false) }
+    var showForcePushConfirm by remember { mutableStateOf(false) }
+    var forcePushUseLease by remember { mutableStateOf(true) }
+    val gitRed = Color(0xFFCF222E)
+
+    fun doPush(force: Boolean = false, forceWithLease: Boolean = false) {
+        scope.launch {
+            busy = true
+            val r = withContext(Dispatchers.IO) {
+                repoManager.push(repoPath, force = force, forceWithLease = forceWithLease)
+            }
+            busy = false
+            val label = when {
+                forceWithLease -> "Force with lease"
+                force -> "Force push"
+                else -> "Push"
+            }
+            r.fold({ onMessage("$label OK") }, { onMessage("$label failed: ${it.message}") })
+        }
+    }
 
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -525,15 +545,105 @@ fun RepoDetailScreen(
                 }
             }, enabled = !busy) { Text("Pull") }
             Spacer(Modifier.width(8.dp))
-            Button(onClick = {
-                scope.launch {
-                    busy = true
-                    val r = withContext(Dispatchers.IO) { repoManager.push(repoPath) }
-                    busy = false
-                    r.fold({ onMessage("Push OK") }, { onMessage("Push failed: ${it.message}") })
+            Box {
+                Button(onClick = { pushMenuExpanded = true }, enabled = !busy) { Text("Push ▾") }
+                DropdownMenu(
+                    expanded = pushMenuExpanded,
+                    onDismissRequest = { pushMenuExpanded = false }
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("Git push") },
+                        onClick = {
+                            pushMenuExpanded = false
+                            doPush()
+                        }
+                    )
+                    HorizontalDivider()
+                    DropdownMenuItem(
+                        text = { Text("Force with lease…", color = gitRed) },
+                        onClick = {
+                            pushMenuExpanded = false
+                            forcePushUseLease = true
+                            showForcePushConfirm = true
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Force (no lease)…", color = gitRed) },
+                        onClick = {
+                            pushMenuExpanded = false
+                            forcePushUseLease = false
+                            showForcePushConfirm = true
+                        }
+                    )
                 }
-            }, enabled = !busy) { Text("Push") }
+            }
             if (busy) { Spacer(Modifier.width(8.dp)); CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) }
+        }
+        if (showForcePushConfirm) {
+            AlertDialog(
+                onDismissRequest = { showForcePushConfirm = false },
+                title = { Text("Force push") },
+                text = {
+                    Column {
+                        Text(
+                            "Choose how to overwrite the remote branch:",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable { forcePushUseLease = true }
+                                .padding(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(selected = forcePushUseLease, onClick = { forcePushUseLease = true })
+                            Column {
+                                Text("Force with lease", fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    "Only if remote still matches your last fetch (safer)",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable { forcePushUseLease = false }
+                                .padding(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(selected = !forcePushUseLease, onClick = { forcePushUseLease = false })
+                            Column {
+                                Text("Force (no lease)", fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    "Always overwrite — can discard others’ commits",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            showForcePushConfirm = false
+                            if (forcePushUseLease) doPush(forceWithLease = true)
+                            else doPush(force = true)
+                        },
+                        colors = if (forcePushUseLease) ButtonDefaults.buttonColors()
+                        else ButtonDefaults.buttonColors(containerColor = gitRed)
+                    ) {
+                        Text(if (forcePushUseLease) "Force with lease" else "Force push")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showForcePushConfirm = false }) { Text("Cancel") }
+                }
+            )
         }
         TabRow(selectedTabIndex = tabIndex) {
             tabs.forEachIndexed { i, title -> Tab(selected = tabIndex == i, onClick = { tabIndex = i }, text = { Text(title) }) }

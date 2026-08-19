@@ -16,8 +16,10 @@ import org.eclipse.jgit.lib.RepositoryState
 import org.eclipse.jgit.revwalk.RevCommit
 import org.eclipse.jgit.revwalk.RevWalk
 import org.eclipse.jgit.storage.file.FileRepositoryBuilder
+import org.eclipse.jgit.lib.NullProgressMonitor
 import org.eclipse.jgit.transport.CredentialsProvider
 import org.eclipse.jgit.transport.RefSpec
+import org.eclipse.jgit.transport.RemoteRefUpdate
 import org.eclipse.jgit.transport.SshSessionFactory
 import org.eclipse.jgit.transport.SshTransport
 import org.eclipse.jgit.transport.Transport
@@ -344,20 +346,120 @@ class DesktopRepoManager(
 
     // ---------- Push / Pull ----------
 
-    fun push(repoPath: String, progress: ((String) -> Unit)? = null): Result<Unit> {
+    /**
+     * Push current branch to origin.
+     * - [forceWithLease]: only overwrite remote if it still matches our remote-tracking tip
+     *   (same as `git push --force-with-lease`). Wins over [force] if both are true.
+     * - [force]: unconditional overwrite (`git push --force`).
+     */
+    fun push(
+        repoPath: String,
+        force: Boolean = false,
+        forceWithLease: Boolean = false,
+        progress: ((String) -> Unit)? = null
+    ): Result<Unit> {
         return try {
             open(File(repoPath)).use { git ->
                 val remoteUrl = git.repository.config.getString("remote", "origin", "url")
-                val cmd = git.push().setRemote("origin")
-                credentialsFor(remoteUrl)?.let { cmd.setCredentialsProvider(it) }
-                cmd.call()
-                AppLog.i(TAG, "push OK: $repoPath")
-                Result.success(Unit)
+                    ?: return Result.failure(IllegalStateException("No URL configured for remote 'origin'"))
+                if (forceWithLease || force) {
+                    progress?.invoke("Force pushing…")
+                    pushForced(git, remoteUrl, withLease = forceWithLease)
+                } else {
+                    progress?.invoke("Pushing…")
+                    val cmd = git.push().setRemote("origin")
+                    credentialsFor(remoteUrl)?.let { cmd.setCredentialsProvider(it) }
+                    // Push only the current branch (never all local branches).
+                    val branch = try { git.repository.branch } catch (_: Exception) { null }
+                    if (branch.isNullOrBlank()) {
+                        return Result.failure(IllegalStateException("Detached HEAD — check out a branch before push"))
+                    }
+                    cmd.setRefSpecs(RefSpec("refs/heads/$branch:refs/heads/$branch"))
+                    val results = cmd.call()
+                    val rejected = results.flatMap { it.remoteUpdates }
+                        .filter { it.status.name.contains("REJECTED") || it.status.name.contains("NON_EXISTING") }
+                    if (rejected.isNotEmpty()) {
+                        val details = rejected.joinToString("; ") {
+                            it.message?.takeIf { m -> m.isNotBlank() } ?: (it.status?.name ?: "REJECTED")
+                        }
+                        AppLog.w(TAG, "push rejected: $details")
+                        return Result.failure(IllegalStateException("Push rejected: $details"))
+                    }
+                    AppLog.i(TAG, "push OK: $repoPath")
+                    Result.success(Unit)
+                }
             }
         } catch (e: Exception) {
             AppLog.e(TAG, "push failed: $repoPath", e)
             Result.failure(e)
         }
+    }
+
+    /**
+     * Force / force-with-lease push of the current branch via [RemoteRefUpdate].
+     * Lease uses the remote-tracking ref (`refs/remotes/origin/<branch>`) as the expected
+     * remote tip — same as `git push --force-with-lease`.
+     */
+    private fun pushForced(git: Git, remoteUrl: String, withLease: Boolean): Result<Unit> {
+        val repo = git.repository
+        val branch = repo.branch
+            ?: return Result.failure(IllegalStateException("Detached HEAD — check out a branch before force push"))
+        val localRef = "refs/heads/$branch"
+        val remoteRef = "refs/heads/$branch"
+        val trackingRef = "refs/remotes/origin/$branch"
+        val localId = repo.resolve(localRef)
+            ?: return Result.failure(IllegalStateException("No local branch $branch"))
+
+        val expectedRemoteId: ObjectId? = if (withLease) {
+            val id = repo.resolve(trackingRef)
+            if (id == null) {
+                return Result.failure(
+                    IllegalStateException(
+                        "No remote-tracking branch origin/$branch — fetch first before force-with-lease"
+                    )
+                )
+            }
+            id
+        } else {
+            null
+        }
+
+        if (withLease) {
+            AppLog.w(TAG, "push: FORCE-WITH-LEASE expected remote tip ${expectedRemoteId!!.name}")
+        } else {
+            AppLog.w(TAG, "push: FORCE (no lease)")
+        }
+
+        val update = RemoteRefUpdate(
+            repo,
+            localRef,
+            remoteRef,
+            /* forceUpdate = */ true,
+            trackingRef,
+            expectedRemoteId
+        )
+
+        Transport.open(repo, remoteUrl).use { transport ->
+            credentialsFor(remoteUrl)?.let { transport.credentialsProvider = it }
+            if ((remoteUrl.startsWith("git@") || remoteUrl.startsWith("ssh://")) && transport is SshTransport) {
+                // Default JGit SSH identity; advanced key injection can be added later
+            }
+            val result = transport.push(NullProgressMonitor.INSTANCE, listOf(update))
+            val rejected = result.remoteUpdates
+                .filter { it.status.name.contains("REJECTED") || it.status.name.contains("NON_EXISTING") }
+            if (rejected.isNotEmpty()) {
+                val statuses = rejected.joinToString { "${it.remoteName}: ${it.status}" }
+                AppLog.w(TAG, "force push rejected: $statuses")
+                val leaseHint = if (withLease) {
+                    "Remote moved since your last fetch — pull/rebase and try again"
+                } else {
+                    "Force push rejected"
+                }
+                return Result.failure(IllegalStateException("$leaseHint ($statuses)"))
+            }
+        }
+        AppLog.i(TAG, "push succeeded (${if (withLease) "force-with-lease" else "force"})")
+        return Result.success(Unit)
     }
 
     fun pull(repoPath: String): Result<Unit> {
