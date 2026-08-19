@@ -268,7 +268,20 @@ fun QuickGitNavGraph() {
         ) { backStackEntry ->
             val repoPath = Dest.decode(backStackEntry.arguments!!.getString("repoPath")!!)
             val vm: HistoryViewModel = viewModel(factory = factory)
-            HistoryScreen(repoPath = repoPath, vm = vm, onBack = { navController.popBackStack() })
+            HistoryScreen(
+                repoPath = repoPath,
+                vm = vm,
+                onBack = { navController.popBackStack() },
+                onOpenCommitDiff = { filePath, commitId ->
+                    navController.navigate(Dest.diff(repoPath, filePath, "commit:$commitId"))
+                },
+                onBrowseTreeAtCommit = { commitId ->
+                    navController.navigate(Dest.commitTree(repoPath, commitId))
+                },
+                onBrowseTreeBefore = { parentId ->
+                    navController.navigate(Dest.commitTree(repoPath, parentId))
+                }
+            )
         }
 
         composable(
@@ -325,6 +338,58 @@ fun QuickGitNavGraph() {
             val mode = Dest.decode(backStackEntry.arguments!!.getString("mode")!!)
             val vm: DiffViewModel = viewModel(factory = factory)
             DiffScreen(repoPath = repoPath, filePath = filePath, mode = mode, vm = vm, onBack = { navController.popBackStack() })
+        }
+
+        composable(
+            Dest.COMMIT_TREE,
+            arguments = listOf(
+                navArgument("repoPath") { type = NavType.StringType },
+                navArgument("commitId") { type = NavType.StringType },
+                navArgument("path") { type = NavType.StringType; defaultValue = "" }
+            )
+        ) { backStackEntry ->
+            val repoPath = Dest.decode(backStackEntry.arguments!!.getString("repoPath")!!)
+            val commitId = Dest.decode(backStackEntry.arguments!!.getString("commitId")!!)
+            val path = Dest.decode(backStackEntry.arguments?.getString("path") ?: "")
+            val vm: CommitTreeViewModel = viewModel(factory = factory)
+            CommitTreeScreen(
+                repoPath = repoPath,
+                commitId = commitId,
+                initialPath = path,
+                vm = vm,
+                onBack = { navController.popBackStack() },
+                onOpenFile = { filePath ->
+                    navController.navigate(Dest.commitFile(repoPath, commitId, filePath))
+                },
+                onNavigateDir = { dirPath ->
+                    navController.navigate(Dest.commitTree(repoPath, commitId, dirPath)) {
+                        // Replace so back stack doesn't grow unboundedly for deep trees
+                        popUpTo(Dest.COMMIT_TREE) { inclusive = true }
+                        launchSingleTop = true
+                    }
+                }
+            )
+        }
+
+        composable(
+            Dest.COMMIT_FILE,
+            arguments = listOf(
+                navArgument("repoPath") { type = NavType.StringType },
+                navArgument("commitId") { type = NavType.StringType },
+                navArgument("path") { type = NavType.StringType; defaultValue = "" }
+            )
+        ) { backStackEntry ->
+            val repoPath = Dest.decode(backStackEntry.arguments!!.getString("repoPath")!!)
+            val commitId = Dest.decode(backStackEntry.arguments!!.getString("commitId")!!)
+            val filePath = Dest.decode(backStackEntry.arguments?.getString("path") ?: "")
+            val vm: CommitFileViewModel = viewModel(factory = factory)
+            CommitFileScreen(
+                repoPath = repoPath,
+                commitId = commitId,
+                filePath = filePath,
+                vm = vm,
+                onBack = { navController.popBackStack() }
+            )
         }
 
         composable(

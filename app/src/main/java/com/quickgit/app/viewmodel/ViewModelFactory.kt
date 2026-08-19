@@ -81,6 +81,10 @@ class ViewModelFactory(private val app: Application) : ViewModelProvider.Factory
                 RemoteBrowseViewModel(gitApp.gitHubAccountManager)
             modelClass.isAssignableFrom(RemoteFileViewModel::class.java) ->
                 RemoteFileViewModel(gitApp.gitHubAccountManager)
+            modelClass.isAssignableFrom(CommitTreeViewModel::class.java) ->
+                CommitTreeViewModel(gitApp.repoManager)
+            modelClass.isAssignableFrom(CommitFileViewModel::class.java) ->
+                CommitFileViewModel(gitApp.repoManager)
             else -> throw IllegalArgumentException("Unknown ViewModel: $modelClass")
         }
         return vm as T

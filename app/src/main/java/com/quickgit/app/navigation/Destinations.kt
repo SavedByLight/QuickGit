@@ -24,6 +24,10 @@ object Dest {
     // path segment that Navigation Compose cannot match.
     const val REMOTE_BROWSE = "remote_browse/{owner}/{repo}/{ref}?path={path}"
     const val REMOTE_FILE = "remote_file/{owner}/{repo}/{ref}?path={path}"
+    /** Browse the file tree of a historical commit. path is query param for subdir. */
+    const val COMMIT_TREE = "commit_tree/{repoPath}/{commitId}?path={path}"
+    /** Read-only view of a file at a historical commit. */
+    const val COMMIT_FILE = "commit_file/{repoPath}/{commitId}?path={path}"
 
     fun repoDetail(path: String) = "repo_detail/${encode(path)}"
     fun history(path: String) = "history/${encode(path)}"
@@ -46,6 +50,10 @@ object Dest {
         "remote_browse/${encode(owner)}/${encode(repo)}/${encode(ref)}?path=${encode(path)}"
     fun remoteFile(owner: String, repo: String, ref: String, path: String) =
         "remote_file/${encode(owner)}/${encode(repo)}/${encode(ref)}?path=${encode(path)}"
+    fun commitTree(repoPath: String, commitId: String, path: String = "") =
+        "commit_tree/${encode(repoPath)}/${encode(commitId)}?path=${encode(path)}"
+    fun commitFile(repoPath: String, commitId: String, path: String) =
+        "commit_file/${encode(repoPath)}/${encode(commitId)}?path=${encode(path)}"
 
     private fun encode(s: String) = java.net.URLEncoder.encode(s, "UTF-8")
     fun decode(s: String) = java.net.URLDecoder.decode(s, "UTF-8")

@@ -77,6 +77,13 @@ data class RepoEntry(
     val sizeBytes: Long = 0L
 )
 
+/** A file change within a commit (vs its parent). */
+data class CommitChange(
+    val path: String,
+    val changeType: String, // ADD, MODIFY, DELETE, RENAME, COPY
+    val oldPath: String? = null
+)
+
 /** A repository returned by the GitHub API for the authenticated user. */
 data class GitHubRemoteRepo(
     val id: Long,

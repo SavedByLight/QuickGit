@@ -29,6 +29,7 @@ import org.eclipse.jgit.transport.Transport
 import org.eclipse.jgit.transport.UsernamePasswordCredentialsProvider
 import org.eclipse.jgit.treewalk.CanonicalTreeParser
 import org.eclipse.jgit.treewalk.TreeWalk
+import org.eclipse.jgit.util.io.NullOutputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
@@ -2184,6 +2185,143 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
             }
         }.toList()
         return FileDiff(filePath, lines)
+    }
+
+    /**
+     * List files changed by [commitId] relative to its first parent (or empty tree for root).
+     * Used by History to show the commit's diff summary and open per-file diffs.
+     */
+    fun listCommitChanges(path: String, commitId: String): List<com.quickgit.app.data.models.CommitChange> {
+        openGit(path).use { git ->
+            val repo = git.repository
+            RevWalk(repo).use { walk ->
+                val commit = walk.parseCommit(ObjectId.fromString(commitId))
+                val newTree = commit.tree
+                val oldTree = if (commit.parentCount > 0) walk.parseCommit(commit.getParent(0)).tree else null
+
+                val reader = repo.newObjectReader()
+                try {
+                    val newParser = CanonicalTreeParser().apply { reset(reader, newTree) }
+                    val oldParser = if (oldTree != null) {
+                        CanonicalTreeParser().apply { reset(reader, oldTree) }
+                    } else null
+
+                    DiffFormatter(NullOutputStream.INSTANCE).use { formatter ->
+                        formatter.setRepository(repo)
+                        formatter.setDetectRenames(true)
+                        val diffs = formatter.scan(oldParser, newParser)
+                        return diffs.map { d ->
+                            val type = when (d.changeType) {
+                                org.eclipse.jgit.diff.DiffEntry.ChangeType.ADD -> "ADD"
+                                org.eclipse.jgit.diff.DiffEntry.ChangeType.MODIFY -> "MODIFY"
+                                org.eclipse.jgit.diff.DiffEntry.ChangeType.DELETE -> "DELETE"
+                                org.eclipse.jgit.diff.DiffEntry.ChangeType.RENAME -> "RENAME"
+                                org.eclipse.jgit.diff.DiffEntry.ChangeType.COPY -> "COPY"
+                                else -> d.changeType.name
+                            }
+                            val pathStr = when (d.changeType) {
+                                org.eclipse.jgit.diff.DiffEntry.ChangeType.DELETE -> d.oldPath
+                                else -> d.newPath
+                            }
+                            com.quickgit.app.data.models.CommitChange(
+                                path = pathStr,
+                                changeType = type,
+                                oldPath = if (d.changeType == org.eclipse.jgit.diff.DiffEntry.ChangeType.RENAME ||
+                                    d.changeType == org.eclipse.jgit.diff.DiffEntry.ChangeType.COPY) d.oldPath else null
+                            )
+                        }.sortedBy { it.path.lowercase() }
+                    }
+                } finally {
+                    reader.close()
+                }
+            }
+        }
+    }
+
+    /**
+     * List directory entries in the tree of [commitId] at [relativeDir].
+     * Empty [relativeDir] is the repo root at that commit.
+     */
+    fun listTreeAtCommit(path: String, commitId: String, relativeDir: String = ""): List<RepoEntry> {
+        openGit(path).use { git ->
+            val repo = git.repository
+            RevWalk(repo).use { walk ->
+                val commit = walk.parseCommit(ObjectId.fromString(commitId))
+                val tree = commit.tree
+                TreeWalk(repo).use { tw ->
+                    tw.addTree(tree)
+                    tw.isRecursive = false
+                    if (relativeDir.isNotBlank()) {
+                        // Walk into the subdirectory
+                        val parts = relativeDir.trim('/').split('/')
+                        var found = true
+                        for (part in parts) {
+                            found = false
+                            while (tw.next()) {
+                                if (tw.isSubtree && tw.nameString == part) {
+                                    tw.enterSubtree()
+                                    found = true
+                                    break
+                                }
+                            }
+                            if (!found) return emptyList()
+                        }
+                    }
+                    val entries = mutableListOf<RepoEntry>()
+                    while (tw.next()) {
+                        val name = tw.nameString
+                        if (name == ".git") continue
+                        val rel = if (relativeDir.isBlank()) name else "$relativeDir/$name"
+                        val isDir = tw.isSubtree
+                        val size = if (!isDir) {
+                            try {
+                                repo.open(tw.getObjectId(0)).size
+                            } catch (_: Exception) {
+                                0L
+                            }
+                        } else 0L
+                        entries.add(RepoEntry(name = name, relativePath = rel, isDirectory = isDir, sizeBytes = size))
+                    }
+                    return entries.sortedWith(compareBy<RepoEntry> { !it.isDirectory }.thenBy { it.name.lowercase() })
+                }
+            }
+        }
+    }
+
+    /**
+     * Read a text blob from the tree of [commitId] at [relativePath].
+     * Returns empty string or truncated content for large / binary files.
+     */
+    fun readTextAtCommit(path: String, commitId: String, relativePath: String, maxBytes: Long = 1_500_000L): String {
+        openGit(path).use { git ->
+            val repo = git.repository
+            RevWalk(repo).use { walk ->
+                val commit = walk.parseCommit(ObjectId.fromString(commitId))
+                TreeWalk.forPath(repo, relativePath, commit.tree)?.use { tw ->
+                    if (tw.isSubtree) return "" // directory
+                    val loader = repo.open(tw.getObjectId(0))
+                    if (loader.size > maxBytes) {
+                        return loader.openStream().use { stream ->
+                            val buf = ByteArray(maxBytes.toInt())
+                            val n = stream.read(buf)
+                            String(buf, 0, n, Charsets.UTF_8) + "\n\n… (truncated)"
+                        }
+                    }
+                    return String(loader.bytes, Charsets.UTF_8)
+                } ?: return ""
+            }
+        }
+    }
+
+    /** Resolve parent commit id of [commitId], or null if root. */
+    fun getParentCommitId(path: String, commitId: String): String? {
+        openGit(path).use { git ->
+            val repo = git.repository
+            RevWalk(repo).use { walk ->
+                val commit = walk.parseCommit(ObjectId.fromString(commitId))
+                return if (commit.parentCount > 0) commit.getParent(0).name else null
+            }
+        }
     }
 
     // ---------------- Merge conflicts ----------------

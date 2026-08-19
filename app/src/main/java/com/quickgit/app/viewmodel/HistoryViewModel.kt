@@ -21,7 +21,12 @@ data class HistoryUiState(
     val loading: Boolean = false,
     val errorMessage: String? = null,
     val statusMessage: String? = null,
-    val lastResult: GitOpResult? = null
+    val lastResult: GitOpResult? = null,
+    /** Currently expanded commit for viewing its changes / tree. */
+    val selectedCommitId: String? = null,
+    val selectedChanges: List<com.quickgit.app.data.models.CommitChange> = emptyList(),
+    val changesLoading: Boolean = false,
+    val parentCommitId: String? = null
 )
 
 class HistoryViewModel(private val repoManager: RepoManager) : ViewModel() {
@@ -154,5 +159,45 @@ class HistoryViewModel(private val repoManager: RepoManager) : ViewModel() {
 
     fun consumeResult() {
         _state.value = _state.value.copy(lastResult = null)
+    }
+
+    /** Expand a commit to show its changed files (and enable tree browse). Toggle off if already selected. */
+    fun selectCommit(commitId: String?) {
+        if (commitId == null || commitId == _state.value.selectedCommitId) {
+            _state.value = _state.value.copy(
+                selectedCommitId = null,
+                selectedChanges = emptyList(),
+                parentCommitId = null,
+                changesLoading = false
+            )
+            return
+        }
+        if (!::repoPath.isInitialized) return
+        viewModelScope.launch {
+            _state.value = _state.value.copy(
+                selectedCommitId = commitId,
+                selectedChanges = emptyList(),
+                changesLoading = true,
+                parentCommitId = null
+            )
+            try {
+                val changes = withContext(Dispatchers.IO) {
+                    repoManager.listCommitChanges(repoPath, commitId)
+                }
+                val parent = withContext(Dispatchers.IO) {
+                    repoManager.getParentCommitId(repoPath, commitId)
+                }
+                _state.value = _state.value.copy(
+                    selectedChanges = changes,
+                    parentCommitId = parent,
+                    changesLoading = false
+                )
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(
+                    changesLoading = false,
+                    errorMessage = e.message ?: "Failed to load commit changes"
+                )
+            }
+        }
     }
 }

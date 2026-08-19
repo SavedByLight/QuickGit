@@ -55,7 +55,10 @@ import java.util.Date
 fun HistoryScreen(
     repoPath: String,
     vm: HistoryViewModel,
-    onBack: (() -> Unit)? = null
+    onBack: (() -> Unit)? = null,
+    onOpenCommitDiff: (filePath: String, commitId: String) -> Unit = { _, _ -> },
+    onBrowseTreeAtCommit: (commitId: String) -> Unit = {},
+    onBrowseTreeBefore: (parentCommitId: String) -> Unit = {}
 ) {
     LaunchedEffect(repoPath) { vm.init(repoPath) }
 
@@ -163,7 +166,13 @@ fun HistoryScreen(
                     else -> {
                         LazyColumn(Modifier.fillMaxSize()) {
                             items(state.commits, key = { it.id }) { commit ->
-                                Surface(Modifier.fillMaxWidth()) {
+                                val selected = state.selectedCommitId == commit.id
+                                Surface(
+                                    Modifier.fillMaxWidth(),
+                                    color = if (selected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
+                                    else MaterialTheme.colorScheme.surface,
+                                    onClick = { vm.selectCommit(commit.id) }
+                                ) {
                                     Column(Modifier.padding(16.dp)) {
                                         Row(
                                             Modifier.fillMaxWidth(),
@@ -211,6 +220,75 @@ fun HistoryScreen(
                                             style = MaterialTheme.typography.bodySmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
+
+                                        if (selected) {
+                                            Spacer(Modifier.padding(top = 12.dp))
+                                            Row(
+                                                Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
+                                                OutlinedButton(
+                                                    onClick = { onBrowseTreeAtCommit(commit.id) },
+                                                    modifier = Modifier.weight(1f)
+                                                ) {
+                                                    Text("Tree at commit")
+                                                }
+                                                if (state.parentCommitId != null) {
+                                                    OutlinedButton(
+                                                        onClick = { onBrowseTreeBefore(state.parentCommitId!!) },
+                                                        modifier = Modifier.weight(1f)
+                                                    ) {
+                                                        Text("Tree before")
+                                                    }
+                                                }
+                                            }
+                                            Spacer(Modifier.padding(top = 8.dp))
+                                            Text(
+                                                "Changed files",
+                                                style = MaterialTheme.typography.labelLarge,
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                            if (state.changesLoading) {
+                                                CircularProgressIndicator(
+                                                    Modifier.padding(8.dp).width(24.dp),
+                                                    strokeWidth = 2.dp
+                                                )
+                                            } else if (state.selectedChanges.isEmpty()) {
+                                                Text(
+                                                    "No file changes",
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            } else {
+                                                state.selectedChanges.forEach { change ->
+                                                    val label = when (change.changeType) {
+                                                        "ADD" -> "+ ${change.path}"
+                                                        "DELETE" -> "- ${change.path}"
+                                                        "RENAME" -> "→ ${change.oldPath} → ${change.path}"
+                                                        "COPY" -> "© ${change.path}"
+                                                        else -> "M ${change.path}"
+                                                    }
+                                                    TextButton(
+                                                        onClick = {
+                                                            if (change.changeType != "DELETE") {
+                                                                onOpenCommitDiff(change.path, commit.id)
+                                                            }
+                                                        },
+                                                        enabled = change.changeType != "DELETE"
+                                                    ) {
+                                                        Text(
+                                                            label,
+                                                            style = MaterialTheme.typography.bodySmall,
+                                                            color = when (change.changeType) {
+                                                                "ADD" -> MaterialTheme.colorScheme.primary
+                                                                "DELETE" -> MaterialTheme.colorScheme.error
+                                                                else -> MaterialTheme.colorScheme.onSurface
+                                                            }
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                                 HorizontalDivider()
