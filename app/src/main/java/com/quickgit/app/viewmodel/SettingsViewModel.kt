@@ -51,10 +51,6 @@ data class SettingsUiState(
     val updateAvailable: Boolean = false,
     val updateLatestName: String? = null,
     val updateNotes: String? = null,
-    val updateDownloading: Boolean = false,
-    val updateProgress: Int = 0,
-    val updateNeedsInstallPermission: Boolean = false,
-    val downloadedApkPath: String? = null,
     /** Left NavigationRail layout (matches Linux desktop). Auto / Always / Never. */
     val desktopLayoutMode: DesktopLayoutMode = DesktopLayoutMode.AUTO
 )
@@ -70,8 +66,6 @@ class SettingsViewModel(
 
     private val _state = MutableStateFlow(SettingsUiState())
     val state: StateFlow<SettingsUiState> = _state.asStateFlow()
-
-    private var pendingApkAsset: com.quickgit.app.data.models.ReleaseAsset? = null
 
     init {
         loadForHost("github.com")
@@ -111,13 +105,11 @@ class SettingsViewModel(
                 updateAvailable = false,
                 updateLatestName = null,
                 updateNotes = null,
-                downloadedApkPath = null,
                 statusMessage = null
             )
             val result = withContext(Dispatchers.IO) { appUpdateManager.checkForUpdate() }
             when (result) {
                 is com.quickgit.app.data.UpdateCheckResult.UpToDate -> {
-                    pendingApkAsset = null
                     _state.value = _state.value.copy(
                         updateChecking = false,
                         updateAvailable = false,
@@ -126,7 +118,6 @@ class SettingsViewModel(
                     )
                 }
                 is com.quickgit.app.data.UpdateCheckResult.Available -> {
-                    pendingApkAsset = result.apkAsset
                     _state.value = _state.value.copy(
                         updateChecking = false,
                         updateAvailable = true,
@@ -137,7 +128,6 @@ class SettingsViewModel(
                     )
                 }
                 is com.quickgit.app.data.UpdateCheckResult.Error -> {
-                    pendingApkAsset = null
                     _state.value = _state.value.copy(
                         updateChecking = false,
                         updateAvailable = false,
@@ -153,17 +143,9 @@ class SettingsViewModel(
         appUpdateManager.openReleasesPage()
     }
 
-    @Deprecated("In-app APK install removed; use openReleasesPage()")
-    fun downloadAndInstallUpdate() {
-        openReleasesPage()
-    }
 
 
-    fun installPermissionIntent() = appUpdateManager.installPermissionSettingsIntent()
 
-    fun clearInstallPermissionFlag() {
-        _state.value = _state.value.copy(updateNeedsInstallPermission = false)
-    }
 
     private fun refreshAuthor() {
         _state.value = _state.value.copy(

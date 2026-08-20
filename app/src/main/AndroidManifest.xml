@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- Network (clone / push / GitHub API / auto-update) -->
+    <!-- Network (clone / push / GitHub API / release checks) -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
@@ -15,9 +15,6 @@
 
     <!-- Progress notifications for clone / push / pull (Android 13+) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-
-    <!-- Install APKs downloaded by AppUpdateManager (Android 8+) -->
-    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <!--
       Touchscreen is not required so the app can run on Chromebooks / desktop-class
@@ -59,16 +56,5 @@
                 android:minHeight="400dp"
                 android:gravity="center" />
         </activity>
-
-        <!-- Used by AppUpdateManager to hand the downloaded APK to the package installer -->
-        <provider
-            android:name="androidx.core.content.FileProvider"
-            android:authorities="${applicationId}.fileprovider"
-            android:exported="false"
-            android:grantUriPermissions="true">
-            <meta-data
-                android:name="android.support.FILE_PROVIDER_PATHS"
-                android:resource="@xml/file_paths" />
-        </provider>
     </application>
 </manifest>

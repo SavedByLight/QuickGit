@@ -5,21 +5,16 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
-import androidx.core.content.FileProvider
 import com.quickgit.app.data.github.GitHubApi
 import com.quickgit.app.data.models.Release
 import com.quickgit.app.data.models.ReleaseAsset
-import java.io.File
-import java.io.FileOutputStream
-import java.net.HttpURLConnection
-import java.net.URL
 
 /**
- * Checks GitHub Releases for a newer QuickGit APK (published by
- * `.github/workflows/release.yml`) and downloads/installs it.
+ * Checks GitHub Releases for a newer QuickGit version and can open the
+ * Releases page in the browser. Does **not** download or install APKs
+ * (Play Protect / Play policy friendly).
  *
  * [OWNER] / [REPO] must match the GitHub repository that hosts those releases.
- * Update them if you fork or rename the upstream.
  */
 object AppUpdateConfig {
     const val OWNER = "SavedByLight"
@@ -42,10 +37,6 @@ sealed class UpdateCheckResult {
     data class Error(val message: String) : UpdateCheckResult()
 }
 
-sealed class DownloadResult {
-    data class Success(val apkFile: File) : DownloadResult()
-    data class Error(val message: String) : DownloadResult()
-}
 
 class AppUpdateManager(
     private val context: Context,
@@ -158,7 +149,7 @@ class AppUpdateManager(
             }
 
             val latest = parseReleaseVersion(release)
-            // Notification only — no in-app APK download (Play / sideload policy)
+            // Notify only — never download or install APKs from inside the app
             val apk = release.assets.firstOrNull { it.name.endsWith(".apk", ignoreCase = true) }
 
             if (isNewer(latest, current)) {
@@ -170,104 +161,6 @@ class AppUpdateManager(
             AppLog.e(TAG, "checkForUpdate failed", e)
             UpdateCheckResult.Error(e.message ?: "Update check failed")
         }
-    }
-
-    /**
-     * Downloads [asset] to the app cache. [onProgress] receives 0..100.
-     */
-    fun downloadApk(
-        asset: ReleaseAsset,
-        onProgress: (Int) -> Unit = {}
-    ): DownloadResult {
-        return try {
-            val url = asset.browserDownloadUrl
-            if (url.isBlank()) return DownloadResult.Error("Missing download URL")
-
-            val dir = File(context.cacheDir, "updates").apply { mkdirs() }
-            // Clear previous downloads
-            dir.listFiles()?.forEach { it.delete() }
-            val outFile = File(dir, asset.name.ifBlank { "quickgit-update.apk" })
-
-            val conn = (URL(url).openConnection() as HttpURLConnection).apply {
-                connectTimeout = 20_000
-                readTimeout = 60_000
-                instanceFollowRedirects = true
-                setRequestProperty("Accept", "application/octet-stream")
-                credentialStore.getHttpsToken("github.com")?.takeIf { it.isNotBlank() }?.let {
-                    setRequestProperty("Authorization", "Bearer $it")
-                }
-            }
-
-            try {
-                val code = conn.responseCode
-                if (code !in 200..299) {
-                    return DownloadResult.Error("Download failed (HTTP $code)")
-                }
-                val total = conn.contentLengthLong.takeIf { it > 0 } ?: asset.size
-                conn.inputStream.use { input ->
-                    FileOutputStream(outFile).use { output ->
-                        val buf = ByteArray(64 * 1024)
-                        var read = 0L
-                        while (true) {
-                            val n = input.read(buf)
-                            if (n <= 0) break
-                            output.write(buf, 0, n)
-                            read += n
-                            if (total > 0) {
-                                onProgress(((read * 100) / total).toInt().coerceIn(0, 100))
-                            }
-                        }
-                        output.flush()
-                    }
-                }
-                onProgress(100)
-                AppLog.i(TAG, "Downloaded ${outFile.length()} bytes -> ${outFile.absolutePath}")
-                DownloadResult.Success(outFile)
-            } finally {
-                conn.disconnect()
-            }
-        } catch (e: Exception) {
-            AppLog.e(TAG, "downloadApk failed", e)
-            DownloadResult.Error(e.message ?: "Download failed")
-        }
-    }
-
-    /** Fires the system package installer for a downloaded APK. */
-    fun installApk(apkFile: File): Boolean {
-        if (!apkFile.exists()) return false
-        return try {
-            val uri: Uri = FileProvider.getUriForFile(
-                context,
-                "${context.packageName}.fileprovider",
-                apkFile
-            )
-            val intent = Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(uri, "application/vnd.android.package-archive")
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            }
-            context.startActivity(intent)
-            true
-        } catch (e: Exception) {
-            AppLog.e(TAG, "installApk failed", e)
-            false
-        }
-    }
-
-    /** True if the app is allowed to install packages (Android 8+). */
-    fun canRequestPackageInstalls(): Boolean {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            context.packageManager.canRequestPackageInstalls()
-        } else {
-            true
-        }
-    }
-
-    fun installPermissionSettingsIntent(): Intent {
-        return Intent(
-            android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-            Uri.parse("package:${context.packageName}")
-        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     }
 
     private fun parseReleaseVersion(release: Release): AppVersionInfo {
