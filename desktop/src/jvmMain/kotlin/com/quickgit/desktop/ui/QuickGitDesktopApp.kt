@@ -195,6 +195,7 @@ fun QuickGitDesktopApp(
                         onMessage = ::showMessage
                     )
                     DesktopScreen.Credentials -> CredentialsScreen(
+                        repoManager = repoManager,
                         credentialStore = credentialStore,
                         onMessage = ::showMessage
                     )
@@ -4261,8 +4262,6 @@ fun SettingsScreen(
     updateManager: DesktopAppUpdateManager,
     onMessage: (String) -> Unit
 ) {
-    var authorName by remember { mutableStateOf(repoManager.getCommitAuthorName()) }
-    var authorEmail by remember { mutableStateOf(repoManager.getCommitAuthorEmail()) }
     var reposRoot by remember { mutableStateOf(repoManager.getReposRoot().absolutePath) }
     var gpgSign by remember { mutableStateOf(repoManager.isGpgSigningEnabled()) }
     var checkingUpdate by remember { mutableStateOf(false) }
@@ -4270,12 +4269,6 @@ fun SettingsScreen(
     val scope = rememberCoroutineScope()
 
     Column(Modifier.fillMaxSize().padding(24.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        Text("Commit identity", style = MaterialTheme.typography.titleMedium)
-        OutlinedTextField(value = authorName, onValueChange = { authorName = it }, label = { Text("Name") }, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(value = authorEmail, onValueChange = { authorEmail = it }, label = { Text("Email") }, modifier = Modifier.fillMaxWidth())
-        Button(onClick = { repoManager.setCommitAuthor(authorName, authorEmail); onMessage("Author saved") }) { Text("Save author") }
-
-        HorizontalDivider()
         Text("Repositories root", style = MaterialTheme.typography.titleMedium)
         OutlinedTextField(value = reposRoot, onValueChange = { reposRoot = it }, label = { Text("Path") }, modifier = Modifier.fillMaxWidth())
         Button(onClick = { repoManager.setReposRoot(reposRoot); onMessage("Root updated") }) { Text("Save root") }
@@ -4320,7 +4313,13 @@ fun SettingsScreen(
 }
 
 @Composable
-fun CredentialsScreen(credentialStore: DesktopCredentialStore, onMessage: (String) -> Unit) {
+fun CredentialsScreen(
+    repoManager: DesktopRepoManager,
+    credentialStore: DesktopCredentialStore,
+    onMessage: (String) -> Unit
+) {
+    var authorName by remember { mutableStateOf(repoManager.getCommitAuthorName()) }
+    var authorEmail by remember { mutableStateOf(repoManager.getCommitAuthorEmail()) }
     var githubToken by remember { mutableStateOf(credentialStore.getGithubToken() ?: "") }
     var githubUsername by remember { mutableStateOf(credentialStore.getHttpsUsername("github.com") ?: "") }
     var httpsHost by remember { mutableStateOf("github.com") }
@@ -4333,6 +4332,32 @@ fun CredentialsScreen(credentialStore: DesktopCredentialStore, onMessage: (Strin
     var sshPass by remember { mutableStateOf(credentialStore.getSshPassphrase() ?: "") }
 
     Column(Modifier.fillMaxSize().padding(24.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        Text("Commit identity", style = MaterialTheme.typography.titleMedium)
+        Text(
+            "Used as the author name and email on local commits.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        OutlinedTextField(
+            value = authorName,
+            onValueChange = { authorName = it },
+            label = { Text("Name") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true
+        )
+        OutlinedTextField(
+            value = authorEmail,
+            onValueChange = { authorEmail = it },
+            label = { Text("Email") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true
+        )
+        Button(onClick = {
+            repoManager.setCommitAuthor(authorName, authorEmail)
+            onMessage("Author saved")
+        }) { Text("Save author") }
+
+        HorizontalDivider()
         Text("GitHub account", style = MaterialTheme.typography.titleMedium)
         OutlinedTextField(value = githubUsername, onValueChange = { githubUsername = it }, label = { Text("Username") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
         OutlinedTextField(value = githubToken, onValueChange = { githubToken = it }, label = { Text("Personal access token") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
