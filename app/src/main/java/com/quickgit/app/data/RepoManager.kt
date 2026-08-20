@@ -2474,6 +2474,56 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         AppLog.i(TAG, "deleted working path: $cleaned")
     }
 
+    /**
+     * Renames a file or directory in the working tree (same parent directory).
+     * [newName] is a single path segment (no `/`). Does not stage the change.
+     * @return the new relative path from the repo root
+     */
+    fun renameWorkingPath(repoPath: String, relativePath: String, newName: String): String {
+        val cleaned = relativePath.trim().trimStart('/').replace("\\", "/")
+        val name = newName.trim()
+        if (cleaned.isBlank()) throw IllegalArgumentException("Path is required")
+        if (cleaned.contains("..")) throw IllegalArgumentException("Invalid path")
+        if (cleaned == ".git" || cleaned.startsWith(".git/")) {
+            throw IllegalArgumentException("Refusing to rename .git")
+        }
+        if (name.isBlank()) throw IllegalArgumentException("New name is required")
+        if (name.contains('/') || name.contains('\\') || name.contains("..") || name == "." || name == "..") {
+            throw IllegalArgumentException("Invalid name")
+        }
+        if (name == ".git") throw IllegalArgumentException("Invalid name")
+        val root = File(repoPath).canonicalFile
+        val source = File(repoPath, cleaned).canonicalFile
+        if (!source.path.startsWith(root.path + File.separator) && source.path != root.path) {
+            throw IllegalArgumentException("Path escapes repository")
+        }
+        if (!source.exists()) throw IllegalArgumentException("Not found: $cleaned")
+        val parentRel = cleaned.substringBeforeLast('/', missingDelimiterValue = "")
+        val destRel = if (parentRel.isBlank()) name else "$parentRel/$name"
+        val dest = File(repoPath, destRel).canonicalFile
+        if (!dest.path.startsWith(root.path + File.separator) && dest.path != root.path) {
+            throw IllegalArgumentException("Destination escapes repository")
+        }
+        if (dest.exists()) throw IllegalArgumentException("Already exists: $destRel")
+        if (!source.renameTo(dest)) {
+            if (source.isDirectory) {
+                source.copyRecursively(dest, overwrite = false)
+                if (!source.deleteRecursively()) {
+                    dest.deleteRecursively()
+                    throw IllegalStateException("Could not rename: $cleaned")
+                }
+            } else {
+                source.copyTo(dest, overwrite = false)
+                if (!source.delete()) {
+                    dest.delete()
+                    throw IllegalStateException("Could not rename: $cleaned")
+                }
+            }
+        }
+        AppLog.i(TAG, "renamed working path: $cleaned -> $destRel")
+        return destRel
+    }
+
 
     /** Resolves a human-readable file name for a content Uri picked via the system file picker. */
     fun displayNameFor(uri: android.net.Uri): String {

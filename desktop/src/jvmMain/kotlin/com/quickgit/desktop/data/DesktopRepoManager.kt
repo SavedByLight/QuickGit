@@ -1221,4 +1221,58 @@ class DesktopRepoManager(
             Result.success(Unit)
         }
     }
+
+    /**
+     * Renames a file or directory in the working tree (same parent directory).
+     * [newName] is a single path segment. Does not stage the change.
+     * @return the new relative path from the repo root
+     */
+    fun renameWorkingPath(repoPath: String, relativePath: String, newName: String): Result<String> {
+        return try {
+            val cleaned = relativePath.trim().trimStart('/').replace("\\", "/")
+            val name = newName.trim()
+            if (cleaned.isBlank()) return Result.failure(IllegalArgumentException("Path is required"))
+            if (cleaned.contains("..")) return Result.failure(IllegalArgumentException("Invalid path"))
+            if (cleaned == ".git" || cleaned.startsWith(".git/")) {
+                return Result.failure(IllegalArgumentException("Refusing to rename .git"))
+            }
+            if (name.isBlank()) return Result.failure(IllegalArgumentException("New name is required"))
+            if (name.contains('/') || name.contains('\\') || name.contains("..") || name == "." || name == "..") {
+                return Result.failure(IllegalArgumentException("Invalid name"))
+            }
+            if (name == ".git") return Result.failure(IllegalArgumentException("Invalid name"))
+            val root = File(repoPath).canonicalFile
+            val source = File(repoPath, cleaned).canonicalFile
+            if (!source.path.startsWith(root.path + File.separator) && source.path != root.path) {
+                return Result.failure(IllegalArgumentException("Path escapes repository"))
+            }
+            if (!source.exists()) return Result.failure(IllegalArgumentException("Not found: $cleaned"))
+            val parentRel = cleaned.substringBeforeLast('/', missingDelimiterValue = "")
+            val destRel = if (parentRel.isBlank()) name else "$parentRel/$name"
+            val dest = File(repoPath, destRel).canonicalFile
+            if (!dest.path.startsWith(root.path + File.separator) && dest.path != root.path) {
+                return Result.failure(IllegalArgumentException("Destination escapes repository"))
+            }
+            if (dest.exists()) return Result.failure(IllegalArgumentException("Already exists: $destRel"))
+            if (!source.renameTo(dest)) {
+                if (source.isDirectory) {
+                    source.copyRecursively(dest, overwrite = false)
+                    if (!source.deleteRecursively()) {
+                        dest.deleteRecursively()
+                        return Result.failure(IllegalStateException("Could not rename: $cleaned"))
+                    }
+                } else {
+                    source.copyTo(dest, overwrite = false)
+                    if (!source.delete()) {
+                        dest.delete()
+                        return Result.failure(IllegalStateException("Could not rename: $cleaned"))
+                    }
+                }
+            }
+            Result.success(destRel)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
 }

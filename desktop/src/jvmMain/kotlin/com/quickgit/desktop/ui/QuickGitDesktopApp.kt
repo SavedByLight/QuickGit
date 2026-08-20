@@ -1339,6 +1339,8 @@ fun FilesEditorTab(repoPath: String, repoManager: DesktopRepoManager, onMessage:
     var listing by remember { mutableStateOf(true) }
     var overwriteTarget by remember { mutableStateOf<java.io.File?>(null) }
     var pendingUpload by remember { mutableStateOf<java.io.File?>(null) }
+    var entryToRename by remember { mutableStateOf<FsEntry?>(null) }
+    var renameName by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
     val root = remember(repoPath) { java.io.File(repoPath) }
 
@@ -1554,6 +1556,19 @@ fun FilesEditorTab(repoPath: String, repoManager: DesktopRepoManager, onMessage:
                                     )
                                 }
                             }
+                            IconButton(
+                                onClick = {
+                                    entryToRename = entry
+                                    renameName = entry.name
+                                },
+                                modifier = Modifier.size(32.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.DriveFileRenameOutline,
+                                    contentDescription = "Rename",
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
                             if (entry.isDirectory) {
                                 Icon(
                                     Icons.Default.ChevronRight,
@@ -1704,6 +1719,59 @@ fun FilesEditorTab(repoPath: String, repoManager: DesktopRepoManager, onMessage:
                         pendingUpload = null
                     }
                 ) { Text("Cancel") }
+            }
+        )
+    }
+
+    entryToRename?.let { entry ->
+        AlertDialog(
+            onDismissRequest = { entryToRename = null },
+            title = { Text(if (entry.isDirectory) "Rename folder" else "Rename file") },
+            text = {
+                OutlinedTextField(
+                    value = renameName,
+                    onValueChange = { renameName = it.filter { c -> c != '/' && c != '\\' } },
+                    label = { Text("New name") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val name = renameName.trim()
+                        if (name.isBlank() || name == entry.name) {
+                            entryToRename = null
+                            return@Button
+                        }
+                        scope.launch {
+                            val result = withContext(Dispatchers.IO) {
+                                repoManager.renameWorkingPath(repoPath, entry.relativePath, name)
+                            }
+                            entryToRename = null
+                            result.fold(
+                                onSuccess = { newRel ->
+                                    onMessage("Renamed to ${newRel.substringAfterLast('/')}")
+                                    if (selectedFile == entry.relativePath) {
+                                        selectedFile = newRel
+                                    } else if (selectedFile?.startsWith(entry.relativePath + "/") == true) {
+                                        selectedFile = newRel + selectedFile!!.removePrefix(entry.relativePath)
+                                    }
+                                    if (entry.isDirectory && (currentDir == entry.relativePath || currentDir.startsWith(entry.relativePath + "/"))) {
+                                        currentDir = if (currentDir == entry.relativePath) newRel
+                                        else newRel + currentDir.removePrefix(entry.relativePath)
+                                    }
+                                    listDir(currentDir)
+                                },
+                                onFailure = { onMessage("Rename failed: ${it.message}") }
+                            )
+                        }
+                    },
+                    enabled = renameName.trim().isNotBlank() && renameName.trim() != entry.name
+                ) { Text("Rename") }
+            },
+            dismissButton = {
+                TextButton(onClick = { entryToRename = null }) { Text("Cancel") }
             }
         )
     }

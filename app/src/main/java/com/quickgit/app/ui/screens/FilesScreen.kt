@@ -16,6 +16,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DriveFileRenameOutline
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Folder
@@ -72,6 +73,8 @@ fun FilesScreen(
     var createMenuExpanded by remember { mutableStateOf(false) }
     var showCreateDialog by remember { mutableStateOf(false) }
     var entryToDelete by remember { mutableStateOf<com.quickgit.app.data.models.RepoEntry?>(null) }
+    var entryToRename by remember { mutableStateOf<com.quickgit.app.data.models.RepoEntry?>(null) }
+    var renameName by remember { mutableStateOf("") }
     var createFolderMode by remember { mutableStateOf(false) }
     var newName by remember { mutableStateOf("") }
 
@@ -261,6 +264,15 @@ fun FilesScreen(
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 }
+                                IconButton(onClick = {
+                                    entryToRename = entry
+                                    renameName = entry.name
+                                }) {
+                                    Icon(
+                                        Icons.Default.DriveFileRenameOutline,
+                                        contentDescription = "Rename"
+                                    )
+                                }
                                 IconButton(onClick = { entryToDelete = entry }) {
                                     Icon(
                                         Icons.Default.Delete,
@@ -305,6 +317,36 @@ fun FilesScreen(
             },
             dismissButton = {
                 TextButton(onClick = { entryToDelete = null }) { Text("Cancel") }
+            }
+        )
+    }
+
+    entryToRename?.let { entry ->
+        AlertDialog(
+            onDismissRequest = { entryToRename = null },
+            title = { Text(if (entry.isDirectory) "Rename folder" else "Rename file") },
+            text = {
+                OutlinedTextField(
+                    value = renameName,
+                    onValueChange = { renameName = it.filter { c -> c != '/' && c != '\\' } },
+                    label = { Text("New name") },
+                    singleLine = true
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val name = renameName.trim()
+                        if (name.isNotBlank() && name != entry.name) {
+                            vm.renameEntry(entry, name)
+                        }
+                        entryToRename = null
+                    },
+                    enabled = renameName.trim().isNotBlank() && renameName.trim() != entry.name
+                ) { Text("Rename") }
+            },
+            dismissButton = {
+                TextButton(onClick = { entryToRename = null }) { Text("Cancel") }
             }
         )
     }

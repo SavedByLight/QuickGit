@@ -118,6 +118,21 @@ class FilesViewModel(private val repoManager: RepoManager) : ViewModel() {
         }
     }
 
+    fun renameEntry(entry: com.quickgit.app.data.models.RepoEntry, newName: String) {
+        viewModelScope.launch {
+            try {
+                val newRel = withContext(Dispatchers.IO) {
+                    repoManager.renameWorkingPath(repoPath, entry.relativePath, newName)
+                }
+                val kind = if (entry.isDirectory) "folder" else "file"
+                _state.value = _state.value.copy(statusMessage = "Renamed $kind to ${newRel.substringAfterLast('/')}")
+                openDir(_state.value.currentDir)
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(error = e.message ?: "Could not rename")
+            }
+        }
+    }
+
 
     /**
      * Begins importing one or more files picked from local/device storage into the current
