@@ -159,31 +159,44 @@ class DesktopRepoManager(
      */
     fun initLocalRepo(folderName: String, initialBranch: String = "main"): Result<File> {
         val name = folderName.trim()
-        if (name.isBlank()) return Result.failure(IllegalArgumentException("Folder name required"))
-        if (name.contains('/') || name.contains('\\') || name.contains("..")) {
-            return Result.failure(IllegalArgumentException("Invalid folder name"))
+        if (name.isBlank()) return Result.failure(IllegalArgumentException("Repository name is required"))
+        if (name.contains('/') || name.contains('\\') || name == "." || name == "..") {
+            return Result.failure(IllegalArgumentException("Invalid repository name"))
         }
         val branch = initialBranch.trim().ifBlank { "main" }
-        val destination = File(getReposRoot(), name)
+        val root = getReposRoot()
+        if (!root.exists() && !root.mkdirs()) {
+            return Result.failure(IllegalStateException("Cannot create repos root: ${root.absolutePath}"))
+        }
+        if (!root.canWrite()) {
+            return Result.failure(IllegalStateException("Repos root is not writable: ${root.absolutePath}"))
+        }
+        val destination = File(root, name)
         if (destination.exists() && (destination.listFiles()?.isNotEmpty() == true || File(destination, ".git").exists())) {
-            return Result.failure(IllegalStateException("'$name' already exists under ${getReposRoot().absolutePath}"))
+            return Result.failure(IllegalStateException("'$name' already exists under ${root.absolutePath}"))
         }
         return try {
             destination.mkdirs()
-            Git.init().setDirectory(destination).call().use { git ->
-                // Point HEAD at unborn branch (no commits yet)
+            val init = Git.init().setDirectory(destination).setBare(false)
+            try {
+                // JGit 6+: preferred API for initial branch name
+                val m = init.javaClass.methods.firstOrNull { it.name == "setInitialBranch" && it.parameterCount == 1 }
+                m?.invoke(init, branch)
+            } catch (_: Exception) { /* older JGit */ }
+            init.call().use { git ->
                 val refUpdate = git.repository.updateRef(org.eclipse.jgit.lib.Constants.HEAD)
                 refUpdate.link("refs/heads/$branch")
-                // Sensible desktop defaults
                 val cfg = git.repository.config
                 cfg.setBoolean("core", null, "filemode", true)
                 cfg.setString("init", null, "defaultBranch", branch)
                 cfg.save()
             }
+            AppLog.i(TAG, "initLocalRepo OK → ${destination.absolutePath}")
             Result.success(destination)
         } catch (e: Exception) {
-            destination.deleteRecursively()
-            Result.failure(e)
+            AppLog.e(TAG, "initLocalRepo failed: $name", e)
+            try { destination.deleteRecursively() } catch (_: Exception) { }
+            Result.failure(IllegalStateException(e.message ?: "Failed to create local repository", e))
         }
     }
 

@@ -260,12 +260,24 @@ class GitHubApi(private val token: String?) {
         (request("POST", "/repos/$owner/$repo/forks", JSONObject()) as JSONObject).toRemoteRepo()
     }
 
-    /** Creates a new repo owned by the authenticated user. */
-    fun createRepo(name: String, description: String?, isPrivate: Boolean): Result<GitHubRemoteRepo> = runCatching {
+    /**
+     * Creates a new repo owned by the authenticated user.
+     * [autoInit] creates an initial commit (README) so a subsequent clone succeeds.
+     */
+    fun createRepo(
+        name: String,
+        description: String?,
+        isPrivate: Boolean,
+        defaultBranch: String = "main",
+        autoInit: Boolean = true
+    ): Result<GitHubRemoteRepo> = runCatching {
         val payload = JSONObject()
             .put("name", name)
             .put("private", isPrivate)
+            .put("auto_init", autoInit)
         if (!description.isNullOrBlank()) payload.put("description", description)
+        val branch = defaultBranch.trim().ifBlank { "main" }
+        if (branch.isNotBlank()) payload.put("default_branch", branch)
         (request("POST", "/user/repos", payload) as JSONObject).toRemoteRepo()
     }
 
@@ -908,8 +920,22 @@ private fun JSONObject.toPullRequest(): PullRequest {
             val text = stream?.let { s -> BufferedReader(InputStreamReader(s, StandardCharsets.UTF_8)).use { it.readText() } } ?: ""
 
             if (status !in 200..299) {
-                val msg = runCatching { JSONObject(text).optString("message") }.getOrNull()
-                    ?.takeIf { it.isNotBlank() } ?: "GitHub returned HTTP $status"
+                val msg = runCatching {
+                    val o = JSONObject(text)
+                    val base = o.optString("message").takeIf { it.isNotBlank() } ?: "GitHub returned HTTP $status"
+                    val details = o.optJSONArray("errors")?.let { arr ->
+                        (0 until arr.length()).mapNotNull { i ->
+                            val e = arr.optJSONObject(i) ?: return@mapNotNull null
+                            e.optString("message").takeIf { it.isNotBlank() }
+                                ?: listOfNotNull(
+                                    e.optString("resource").takeIf { it.isNotBlank() },
+                                    e.optString("field").takeIf { it.isNotBlank() },
+                                    e.optString("code").takeIf { it.isNotBlank() }
+                                ).joinToString(" ").takeIf { it.isNotBlank() }
+                        }.filter { it.isNotBlank() }.joinToString("; ")
+                    }.orEmpty()
+                    if (details.isNotBlank()) "$base ($details)" else base
+                }.getOrNull() ?: "GitHub returned HTTP $status"
                 AppLog.w(TAG, "HTTP $status for $method $path: $msg")
                 throw HttpStatusException(status, msg)
             }
