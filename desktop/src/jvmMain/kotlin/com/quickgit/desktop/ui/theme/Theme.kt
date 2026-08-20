@@ -94,7 +94,7 @@ private val ExpressiveTypography = Typography(
 
 @Composable
 fun QuickGitTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
+    darkTheme: Boolean = true, // desktop defaults to dark grey chrome
     content: @Composable () -> Unit
 ) {
     MaterialTheme(

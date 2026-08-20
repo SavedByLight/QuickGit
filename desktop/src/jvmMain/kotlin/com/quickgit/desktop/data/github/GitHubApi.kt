@@ -544,6 +544,72 @@ class GitHubApi(private val token: String?) {
         (request("GET", "/repos/$owner/$repo/releases/latest") as JSONObject).toRelease()
     }
 
+    /**
+     * Download a release asset to [destFile].
+     * Prefer API asset id (authenticated) over browser URL when available.
+     */
+    fun downloadReleaseAsset(
+        owner: String,
+        repo: String,
+        asset: ReleaseAsset,
+        destFile: java.io.File,
+        onProgress: ((Long) -> Unit)? = null
+    ): Result<java.io.File> = runCatching {
+        destFile.parentFile?.mkdirs()
+        // Authenticated API download (works for private repos)
+        val apiPath = "/repos/$owner/$repo/releases/assets/${asset.id}"
+        var currentUrl = java.net.URL("https://api.github.com$apiPath")
+        var redirects = 0
+        while (redirects < 8) {
+            val conn = currentUrl.openConnection() as java.net.HttpURLConnection
+            try {
+                conn.instanceFollowRedirects = false
+                conn.requestMethod = "GET"
+                conn.connectTimeout = 30_000
+                conn.readTimeout = 120_000
+                conn.setRequestProperty("Accept", "application/octet-stream")
+                conn.setRequestProperty("X-GitHub-Api-Version", "2022-11-28")
+                if (currentUrl.host.contains("github.com") && !token.isNullOrBlank()) {
+                    conn.setRequestProperty("Authorization", "Bearer $token")
+                }
+                val status = conn.responseCode
+                if (status in 300..399) {
+                    val location = conn.getHeaderField("Location")
+                        ?: throw java.io.IOException("Redirect without Location")
+                    currentUrl = java.net.URL(currentUrl, location)
+                    redirects++
+                    continue
+                }
+                if (status !in 200..299) {
+                    // Fallback to browser_download_url if API fails
+                    if (asset.browserDownloadUrl.isNotBlank() && redirects == 0) {
+                        currentUrl = java.net.URL(asset.browserDownloadUrl)
+                        redirects++
+                        continue
+                    }
+                    throw java.io.IOException("Download failed HTTP $status")
+                }
+                conn.inputStream.use { input ->
+                    java.io.BufferedOutputStream(java.io.FileOutputStream(destFile)).use { out ->
+                        val buf = ByteArray(64 * 1024)
+                        var total = 0L
+                        while (true) {
+                            val n = input.read(buf)
+                            if (n <= 0) break
+                            out.write(buf, 0, n)
+                            total += n
+                            onProgress?.invoke(total)
+                        }
+                    }
+                }
+                return@runCatching destFile
+            } finally {
+                conn.disconnect()
+            }
+        }
+        throw java.io.IOException("Too many redirects downloading asset")
+    }
+
     private fun JSONObject.toRelease(): Release {
         val assetsArr = optJSONArray("assets")
         val assets = if (assetsArr == null) emptyList() else (0 until assetsArr.length()).map { i ->

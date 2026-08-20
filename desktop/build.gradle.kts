@@ -50,7 +50,7 @@ compose.desktop {
     application {
         mainClass = "com.quickgit.desktop.MainKt"
         // CI stamps version via -Pquickgit.version (and sed on packageVersion)
-        val appVer = (project.findProperty("quickgit.version") as String?) ?: "1.0.0"
+        val appVer = (project.findProperty("quickgit.version") as String?) ?: "2.0.0"
         jvmArgs += listOf("-Dquickgit.version=$appVer")
 
         nativeDistributions {

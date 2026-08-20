@@ -49,8 +49,26 @@ enum class DesktopScreen {
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
+private fun formatBytes(n: Long): String {
+    if (n < 1024) return "$n B"
+    if (n < 1024 * 1024) return "${"%.1f".format(n / 1024.0)} KB"
+    if (n < 1024L * 1024 * 1024) return "${"%.1f".format(n / (1024.0 * 1024))} MB"
+    return "${"%.2f".format(n / (1024.0 * 1024 * 1024))} GB"
+}
+
+private fun statusColor(status: String, conclusion: String?): Color {
+    return when {
+        conclusion == "success" -> Color(0xFF3FB950)
+        conclusion == "failure" || conclusion == "timed_out" -> Color(0xFFF85149)
+        conclusion == "cancelled" -> Color(0xFF8B949E)
+        status == "in_progress" || status == "queued" -> Color(0xFFD29922)
+        else -> Color(0xFF8B949E)
+    }
+}
+
 @Composable
 fun QuickGitDesktopApp(
+
     repoManager: DesktopRepoManager,
     credentialStore: DesktopCredentialStore,
     updateManager: DesktopAppUpdateManager = DesktopAppUpdateManager(credentialStore)
@@ -2446,22 +2464,115 @@ fun WorkflowsTab(
             } else {
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     items(jobs, key = { it.id }) { job ->
+                        var logText by remember(job.id) { mutableStateOf<String?>(null) }
+                        var logLoading by remember(job.id) { mutableStateOf(false) }
+                        var showLog by remember(job.id) { mutableStateOf(false) }
                         Card(Modifier.fillMaxWidth()) {
                             Column(Modifier.padding(12.dp)) {
-                                Text(job.name, fontWeight = FontWeight.Medium)
-                                Text(
-                                    "${job.status}${job.conclusion?.let { " · $it" } ?: ""}",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                                if (job.steps.isNotEmpty()) {
-                                    Spacer(Modifier.height(6.dp))
-                                    job.steps.forEach { step ->
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Box(
+                                        Modifier
+                                            .size(10.dp)
+                                            .background(
+                                                statusColor(job.status, job.conclusion),
+                                                shape = MaterialTheme.shapes.extraSmall
+                                            )
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    Column(Modifier.weight(1f)) {
+                                        Text(job.name, fontWeight = FontWeight.Medium)
                                         Text(
-                                            "  ${step.number}. ${step.name} — ${step.status}${step.conclusion?.let { " ($it)" } ?: ""}",
-                                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            "${job.status}${job.conclusion?.let { " · $it" } ?: ""}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = statusColor(job.status, job.conclusion)
                                         )
+                                    }
+                                    val or = ownerRepo
+                                    TextButton(
+                                        onClick = {
+                                            if (or == null) return@TextButton
+                                            if (showLog && logText != null) {
+                                                showLog = false
+                                                return@TextButton
+                                            }
+                                            scope.launch {
+                                                logLoading = true
+                                                showLog = true
+                                                val r = withContext(Dispatchers.IO) {
+                                                    githubApi.getJobLogs(or.owner, or.repo, job.id)
+                                                }
+                                                logLoading = false
+                                                r.fold(
+                                                    onSuccess = { logText = it },
+                                                    onFailure = {
+                                                        logText = "Failed to load log: ${it.message}"
+                                                        onMessage("Log: ${it.message}")
+                                                    }
+                                                )
+                                            }
+                                        },
+                                        enabled = or != null && !logLoading
+                                    ) {
+                                        Text(
+                                            when {
+                                                logLoading -> "Loading…"
+                                                showLog && logText != null -> "Hide log"
+                                                else -> "View log"
+                                            }
+                                        )
+                                    }
+                                }
+                                if (job.steps.isNotEmpty()) {
+                                    Spacer(Modifier.height(8.dp))
+                                    Text("Steps", style = MaterialTheme.typography.labelMedium)
+                                    Spacer(Modifier.height(4.dp))
+                                    job.steps.forEach { step ->
+                                        Row(
+                                            Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Box(
+                                                Modifier
+                                                    .size(8.dp)
+                                                    .background(
+                                                        statusColor(step.status, step.conclusion),
+                                                        shape = MaterialTheme.shapes.extraSmall
+                                                    )
+                                            )
+                                            Spacer(Modifier.width(8.dp))
+                                            Text(
+                                                "${step.number}. ${step.name}",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                            Text(
+                                                step.status + (step.conclusion?.let { " · $it" } ?: ""),
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = statusColor(step.status, step.conclusion)
+                                            )
+                                        }
+                                    }
+                                }
+                                if (showLog) {
+                                    Spacer(Modifier.height(8.dp))
+                                    if (logLoading) {
+                                        CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                                    } else {
+                                        SelectionContainer {
+                                            Text(
+                                                logText ?: "",
+                                                style = MaterialTheme.typography.bodySmall.copy(
+                                                    fontFamily = FontFamily.Monospace
+                                                ),
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .heightIn(max = 320.dp)
+                                                    .verticalScroll(rememberScrollState())
+                                                    .background(Color(0xFF0D1117))
+                                                    .padding(8.dp),
+                                                color = Color(0xFFC9D1D9)
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -2475,7 +2586,9 @@ fun WorkflowsTab(
 
     Column(Modifier.fillMaxSize().padding(16.dp)) {
         Row(
-            Modifier.fillMaxWidth(),
+            Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
@@ -2484,7 +2597,7 @@ fun WorkflowsTab(
                 onClick = { selectedWorkflowId = null },
                 label = { Text("All workflows") }
             )
-            workflows.take(8).forEach { wf ->
+            workflows.forEach { wf ->
                 FilterChip(
                     selected = selectedWorkflowId == wf.id,
                     onClick = { selectedWorkflowId = wf.id },
@@ -2525,30 +2638,50 @@ fun WorkflowsTab(
                     Card(
                         Modifier.fillMaxWidth().clickable { loadRunDetail(run) }
                     ) {
-                        Column(Modifier.padding(12.dp)) {
-                            Text(
-                                run.displayTitle.ifBlank { run.name },
-                                fontWeight = FontWeight.Medium,
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis
+                        Row(
+                            Modifier.padding(12.dp).fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            // Status colour bar
+                            Box(
+                                Modifier
+                                    .width(4.dp)
+                                    .height(48.dp)
+                                    .background(
+                                        statusColor(run.status, run.conclusion),
+                                        shape = MaterialTheme.shapes.extraSmall
+                                    )
                             )
-                            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Spacer(Modifier.width(12.dp))
+                            Column(Modifier.weight(1f)) {
                                 Text(
-                                    run.status + (run.conclusion?.let { " · $it" } ?: ""),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    run.displayTitle.ifBlank { run.name },
+                                    fontWeight = FontWeight.Medium,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
                                 )
-                                Text(
-                                    run.headBranch ?: "",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                                Text(
-                                    run.event,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
+                                Spacer(Modifier.height(4.dp))
+                                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                    Text(
+                                        run.status + (run.conclusion?.let { " · $it" } ?: ""),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = statusColor(run.status, run.conclusion)
+                                    )
+                                    if (!run.headBranch.isNullOrBlank()) {
+                                        Text(
+                                            run.headBranch!!,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    Text(
+                                        run.event,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
                             }
+                            TextButton(onClick = { loadRunDetail(run) }) { Text("Open") }
                         }
                     }
                 }
@@ -2652,6 +2785,7 @@ fun ReleasesTab(
                         Text("Assets", fontWeight = FontWeight.SemiBold)
                         Spacer(Modifier.height(8.dp))
                         rel.assets.forEach { asset ->
+                            var downloading by remember(asset.id) { mutableStateOf(false) }
                             Card(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
                                 Row(
                                     Modifier.padding(12.dp).fillMaxWidth(),
@@ -2660,10 +2794,49 @@ fun ReleasesTab(
                                     Column(Modifier.weight(1f)) {
                                         Text(asset.name, fontWeight = FontWeight.Medium)
                                         Text(
-                                            "${asset.size} bytes · ${asset.downloadCount} downloads",
+                                            formatBytes(asset.size) + " · ${asset.downloadCount} downloads",
                                             style = MaterialTheme.typography.bodySmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
+                                    }
+                                    val or = ownerRepo
+                                    Button(
+                                        onClick = {
+                                            if (or == null) {
+                                                onMessage("No owner/repo")
+                                                return@Button
+                                            }
+                                            scope.launch {
+                                                downloading = true
+                                                val destDir = java.io.File(
+                                                    System.getProperty("user.home"),
+                                                    "Downloads/QuickGit"
+                                                )
+                                                destDir.mkdirs()
+                                                val dest = java.io.File(destDir, asset.name)
+                                                val r = withContext(Dispatchers.IO) {
+                                                    githubApi.downloadReleaseAsset(
+                                                        or.owner, or.repo, asset, dest
+                                                    )
+                                                }
+                                                downloading = false
+                                                r.fold(
+                                                    { onMessage("Saved to ${it.absolutePath}") },
+                                                    { onMessage("Download failed: ${it.message}") }
+                                                )
+                                            }
+                                        },
+                                        enabled = !downloading && or != null
+                                    ) {
+                                        if (downloading) {
+                                            CircularProgressIndicator(
+                                                Modifier.size(16.dp),
+                                                strokeWidth = 2.dp,
+                                                color = MaterialTheme.colorScheme.onPrimary
+                                            )
+                                        } else {
+                                            Text("Download")
+                                        }
                                     }
                                 }
                             }
