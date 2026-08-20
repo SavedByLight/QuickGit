@@ -51,6 +51,7 @@ data class SettingsUiState(
     val updateAvailable: Boolean = false,
     val updateLatestName: String? = null,
     val updateNotes: String? = null,
+    val updateReleasesUrl: String? = null,
     /** Left NavigationRail layout (matches Linux desktop). Auto / Always / Never. */
     val desktopLayoutMode: DesktopLayoutMode = DesktopLayoutMode.AUTO
 )
@@ -100,11 +101,13 @@ class SettingsViewModel(
 
     fun checkForUpdate() {
         viewModelScope.launch {
+            appUpdateManager.clearSnooze()
             _state.value = _state.value.copy(
                 updateChecking = true,
                 updateAvailable = false,
                 updateLatestName = null,
                 updateNotes = null,
+                updateReleasesUrl = null,
                 statusMessage = null
             )
             val result = withContext(Dispatchers.IO) { appUpdateManager.checkForUpdate() }
@@ -123,6 +126,7 @@ class SettingsViewModel(
                         updateAvailable = true,
                         updateLatestName = result.latest.versionName,
                         updateNotes = result.release.body,
+                        updateReleasesUrl = appUpdateManager.releasesPageUrl(result.release),
                         statusMessage = "Update available: ${result.latest.versionName}",
                         isError = false
                     )
@@ -139,8 +143,16 @@ class SettingsViewModel(
         }
     }
 
-    fun openReleasesPage() {
-        appUpdateManager.openReleasesPage()
+    fun openReleasesPageUrl(): String {
+        return _state.value.updateReleasesUrl
+            ?: appUpdateManager.releasesPageUrl(null)
+    }
+
+    fun dismissUpdatePrompt() {
+        _state.value = _state.value.copy(
+            updateAvailable = false,
+            updateReleasesUrl = null
+        )
     }
 
 

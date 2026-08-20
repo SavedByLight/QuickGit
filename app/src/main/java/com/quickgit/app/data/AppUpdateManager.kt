@@ -1,24 +1,33 @@
 package com.quickgit.app.data
 
 import android.content.Context
-import android.content.Intent
 import android.content.pm.PackageManager
-import android.net.Uri
 import android.os.Build
 import com.quickgit.app.data.github.GitHubApi
 import com.quickgit.app.data.models.Release
 import com.quickgit.app.data.models.ReleaseAsset
 
 /**
- * Checks GitHub Releases for a newer QuickGit version and can open the
- * Releases page in the browser. Does **not** download or install APKs
- * (Play Protect / Play policy friendly).
- *
- * [OWNER] / [REPO] must match the GitHub repository that hosts those releases.
+ * Checks GitHub Releases for a newer QuickGit version and exposes the Releases
+ * URL for an in-app WebView. Does **not** download or install APKs.
  */
 object AppUpdateConfig {
     const val OWNER = "SavedByLight"
     const val REPO = "QuickGit"
+
+    fun releasesUrl(): String =
+        "https://github.com/$OWNER/$REPO/releases"
+
+    fun releaseUrl(tagName: String): String =
+        "https://github.com/$OWNER/$REPO/releases/tag/${tagName.trim().removePrefix("v").let { if (tagName.startsWith("v")) "v$it" else tagName }}"
+            .let { url ->
+                // Prefer exact tag from API when available
+                if (tagName.isNotBlank()) {
+                    "https://github.com/$OWNER/$REPO/releases/tag/$tagName"
+                } else {
+                    releasesUrl()
+                }
+            }
 }
 
 data class AppVersionInfo(
@@ -37,7 +46,6 @@ sealed class UpdateCheckResult {
     data class Error(val message: String) : UpdateCheckResult()
 }
 
-
 class AppUpdateManager(
     private val context: Context,
     private val credentialStore: CredentialStore
@@ -54,18 +62,12 @@ class AppUpdateManager(
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     }
 
-    /**
-     * True when the user asked not to be auto-prompted for updates right now
-     * (timed snooze still active, or "never").
-     * Manual "Check for updates" in Settings ignores this.
-     */
     fun isAutoPromptSuppressed(): Boolean {
         if (prefs.getBoolean(KEY_NEVER, false)) return true
         val until = prefs.getLong(KEY_SNOOZE_UNTIL_MS, 0L)
         return until > System.currentTimeMillis()
     }
 
-    /** Suppress auto prompts for [days] days from now. */
     fun snoozeForDays(days: Int) {
         require(days > 0)
         val until = System.currentTimeMillis() + days * 24L * 60L * 60L * 1000L
@@ -76,7 +78,6 @@ class AppUpdateManager(
         AppLog.i(TAG, "Update prompt snoozed for $days days (until $until)")
     }
 
-    /** Never auto-prompt again (until the user clears it via a future Settings option). */
     fun snoozeNever() {
         prefs.edit()
             .putBoolean(KEY_NEVER, true)
@@ -85,7 +86,6 @@ class AppUpdateManager(
         AppLog.i(TAG, "Update auto-prompt disabled permanently")
     }
 
-    /** Clear any snooze / never so the next launch can prompt again. */
     fun clearSnooze() {
         prefs.edit()
             .remove(KEY_SNOOZE_UNTIL_MS)
@@ -93,17 +93,13 @@ class AppUpdateManager(
             .apply()
     }
 
-    
-    /** Open the GitHub Releases page in the browser (no in-app download). */
-    fun openReleasesPage() {
-        val url = "https://github.com/${AppUpdateConfig.OWNER}/${AppUpdateConfig.REPO}/releases"
-        try {
-            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            context.startActivity(intent)
-        } catch (e: Exception) {
-            AppLog.e(TAG, "openReleasesPage failed", e)
+    /** URL to show in the in-app WebView (specific release when known). */
+    fun releasesPageUrl(release: Release? = null): String {
+        val tag = release?.tagName?.takeIf { it.isNotBlank() }
+        return if (tag != null) {
+            "https://github.com/${AppUpdateConfig.OWNER}/${AppUpdateConfig.REPO}/releases/tag/$tag"
+        } else {
+            AppUpdateConfig.releasesUrl()
         }
     }
 
@@ -114,7 +110,7 @@ class AppUpdateManager(
             if (Build.VERSION.SDK_INT >= 33) {
                 val info = pm.getPackageInfo(pkg, PackageManager.PackageInfoFlags.of(0))
                 AppVersionInfo(
-                    versionName = info.versionName ?: "?",
+                    versionName = normalizeVersionName(info.versionName ?: "0.0.0"),
                     versionCode = info.longVersionCode
                 )
             } else {
@@ -122,39 +118,73 @@ class AppUpdateManager(
                 val info = pm.getPackageInfo(pkg, 0)
                 @Suppress("DEPRECATION")
                 AppVersionInfo(
-                    versionName = info.versionName ?: "?",
+                    versionName = normalizeVersionName(info.versionName ?: "0.0.0"),
                     versionCode = info.versionCode.toLong()
                 )
             }
         } catch (e: Exception) {
-            AppVersionInfo("?", 0L)
+            AppLog.e(TAG, "currentVersion failed", e)
+            AppVersionInfo("0.0.0", 0L)
         }
     }
 
     /**
-     * Fetches the latest GitHub Release and compares it to the installed version.
-     * Uses the stored github.com token when present (private repos); otherwise
-     * unauthenticated public API access.
+     * Fetches releases and picks the highest version greater than the installed app.
+     * Uses listReleases (not only /latest) so we don't miss a higher tag.
      */
     fun checkForUpdate(): UpdateCheckResult {
         val current = currentVersion()
+        AppLog.i(TAG, "checkForUpdate: installed ${current.versionName} (code ${current.versionCode})")
         return try {
             val token = credentialStore.getHttpsToken("github.com")
             val api = GitHubApi(token)
-            val release = api.getLatestRelease(AppUpdateConfig.OWNER, AppUpdateConfig.REPO)
-                .getOrElse { return UpdateCheckResult.Error(it.message ?: "Failed to fetch latest release") }
 
-            if (release.draft) {
+            // Prefer full list so we can pick the max semver; fall back to /latest
+            val releases = api.listReleases(AppUpdateConfig.OWNER, AppUpdateConfig.REPO, perPage = 30)
+                .getOrElse { listErr ->
+                    AppLog.w(TAG, "listReleases failed: ${listErr.message}; trying getLatestRelease")
+                    api.getLatestRelease(AppUpdateConfig.OWNER, AppUpdateConfig.REPO)
+                        .map { listOf(it) }
+                        .getOrElse {
+                            return UpdateCheckResult.Error(
+                                it.message ?: listErr.message ?: "Failed to fetch releases"
+                            )
+                        }
+                }
+
+            val candidates = releases.filter { !it.draft && !it.prerelease }
+                .ifEmpty { releases.filter { !it.draft } }
+
+            if (candidates.isEmpty()) {
+                AppLog.i(TAG, "No non-draft releases found")
                 return UpdateCheckResult.UpToDate(current)
             }
 
-            val latest = parseReleaseVersion(release)
-            // Notify only — never download or install APKs from inside the app
-            val apk = release.assets.firstOrNull { it.name.endsWith(".apk", ignoreCase = true) }
+            var best: Pair<Release, AppVersionInfo>? = null
+            for (rel in candidates) {
+                val info = parseReleaseVersion(rel)
+                if (best == null || compareVersionNames(info.versionName, best.second.versionName) > 0) {
+                    best = rel to info
+                } else if (
+                    best != null &&
+                    compareVersionNames(info.versionName, best.second.versionName) == 0 &&
+                    info.versionCode > best.second.versionCode
+                ) {
+                    best = rel to info
+                }
+            }
+
+            val (release, latest) = best!!
+            AppLog.i(
+                TAG,
+                "best release tag=${release.tagName} name=${latest.versionName} code=${latest.versionCode}"
+            )
 
             if (isNewer(latest, current)) {
+                val apk = release.assets.firstOrNull { it.name.endsWith(".apk", ignoreCase = true) }
                 UpdateCheckResult.Available(current, latest, release, apk)
             } else {
+                AppLog.i(TAG, "Installed version is up to date relative to ${latest.versionName}")
                 UpdateCheckResult.UpToDate(current)
             }
         } catch (e: Exception) {
@@ -163,33 +193,58 @@ class AppUpdateManager(
         }
     }
 
+    private fun normalizeVersionName(raw: String): String {
+        return raw.trim()
+            .removePrefix("QuickGit")
+            .trim()
+            .removePrefix("v")
+            .trim()
+            .ifBlank { "0.0.0" }
+    }
+
     private fun parseReleaseVersion(release: Release): AppVersionInfo {
-        // Prefer tag like "v1.0.42" / "1.0.42" — last segment as versionCode when numeric.
-        val tag = release.tagName.removePrefix("v").trim()
-        val name = release.name.removePrefix("QuickGit").trim().removePrefix("v").trim()
-            .ifBlank { tag }
-        val code = tag.substringAfterLast('.').toLongOrNull()
-            ?: name.substringAfterLast('.').toLongOrNull()
-            ?: 0L
+        val tag = normalizeVersionName(release.tagName)
+        val name = normalizeVersionName(release.name)
         val versionName = when {
-            tag.matches(Regex("""\d+(\.\d+)*""")) -> tag
+            tag.matches(Regex("""\d+(\.\d+)*([.-][\w.]+)?""")) -> tag.substringBefore("-").substringBefore("+")
+                .let { if (it.matches(Regex("""\d+(\.\d+)*"""))) it else tag }
             name.matches(Regex("""\d+(\.\d+)*""")) -> name
-            else -> tag.ifBlank { name }
+            else -> tag.ifBlank { name }.ifBlank { "0.0.0" }
         }
+        // Prefer a full monotonic code from x.y.z when possible
+        val parts = versionName.split('.').mapNotNull { it.toLongOrNull() }
+        val codeFromName = when (parts.size) {
+            0 -> 0L
+            1 -> parts[0]
+            2 -> parts[0] * 1_000_000 + parts[1] * 1_000
+            else -> parts[0] * 1_000_000 + parts[1] * 1_000 + parts[2]
+        }
+        val codeFromTagSuffix = release.tagName.removePrefix("v").substringAfterLast('.').toLongOrNull() ?: 0L
+        val code = maxOf(codeFromName, codeFromTagSuffix)
         return AppVersionInfo(versionName = versionName, versionCode = code)
     }
 
+    /**
+     * True if [latest] is a newer app version than [current].
+     * Compares semver names first, then versionCode.
+     */
     private fun isNewer(latest: AppVersionInfo, current: AppVersionInfo): Boolean {
-        if (latest.versionCode > 0 && current.versionCode > 0) {
+        val byName = compareVersionNames(latest.versionName, current.versionName)
+        if (byName != 0) {
+            AppLog.i(TAG, "isNewer by name: ${latest.versionName} vs ${current.versionName} -> $byName")
+            return byName > 0
+        }
+        if (latest.versionCode > 0 && current.versionCode > 0 && latest.versionCode != current.versionCode) {
+            AppLog.i(TAG, "isNewer by code: ${latest.versionCode} vs ${current.versionCode}")
             return latest.versionCode > current.versionCode
         }
-        return compareVersionNames(latest.versionName, current.versionName) > 0
+        return false
     }
 
-    /** Simple dotted numeric compare: "1.0.12" vs "1.0.9". */
+    /** Dotted numeric compare: "2.0.1" vs "1.0.270". */
     private fun compareVersionNames(a: String, b: String): Int {
-        val pa = a.split('.').map { it.toIntOrNull() ?: 0 }
-        val pb = b.split('.').map { it.toIntOrNull() ?: 0 }
+        val pa = normalizeVersionName(a).split('.', '-', '+').map { it.toIntOrNull() ?: 0 }
+        val pb = normalizeVersionName(b).split('.', '-', '+').map { it.toIntOrNull() ?: 0 }
         val n = maxOf(pa.size, pb.size)
         for (i in 0 until n) {
             val x = pa.getOrElse(i) { 0 }

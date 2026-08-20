@@ -22,6 +22,7 @@ import androidx.compose.ui.unit.dp
 import com.quickgit.app.data.AppUpdateConfig
 import com.quickgit.app.data.DesktopLayoutMode
 import com.quickgit.app.ui.adaptive.AdaptiveContent
+import com.quickgit.app.ui.components.ReleasesWebView
 import com.quickgit.app.ui.theme.GitGreen
 import com.quickgit.app.viewmodel.SettingsViewModel
 
@@ -33,6 +34,9 @@ fun SettingsScreen(
     onBack: () -> Unit
 ) {
     val state by vm.state.collectAsState()
+
+    var showReleasesWeb by remember { mutableStateOf(false) }
+    var releasesWebUrl by remember { mutableStateOf<String?>(null) }
 
     val folderPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocumentTree()
@@ -574,7 +578,10 @@ fun SettingsScreen(
                     Text(if (state.updateChecking) "Checking…" else "Check for updates")
                 }
                 if (state.updateAvailable) {
-                    Button(onClick = { vm.openReleasesPage() }) {
+                    Button(onClick = {
+                        releasesWebUrl = vm.openReleasesPageUrl()
+                        showReleasesWeb = true
+                    }) {
                         Text("Open Releases")
                     }
                 }
@@ -590,5 +597,18 @@ fun SettingsScreen(
             }
         }
         } // AdaptiveContent
+
+        if (showReleasesWeb) {
+            val url = releasesWebUrl ?: vm.openReleasesPageUrl()
+            ReleasesWebView(
+                url = url,
+                onClose = {
+                    showReleasesWeb = false
+                    releasesWebUrl = null
+                    vm.dismissUpdatePrompt()
+                }
+            )
+        }
+
     }
 }
