@@ -211,6 +211,13 @@ class WorkflowsViewModel(
         }
     }
 
+    suspend fun loadDispatchInputs(workflow: Workflow): List<com.quickgit.app.data.models.WorkflowInput> {
+        val ref = project ?: return emptyList()
+        return withContext(Dispatchers.IO) {
+            workflowManager.listDispatchInputs(ref, workflow, branch = _state.value.defaultBranch)
+        }
+    }
+
     fun dispatch(workflowId: Long, refName: String, inputs: Map<String, String> = emptyMap()) {
         val ref = project ?: return
         viewModelScope.launch {

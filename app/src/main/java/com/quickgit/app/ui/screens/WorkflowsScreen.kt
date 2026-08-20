@@ -225,10 +225,20 @@ fun WorkflowsScreen(
     }
 
     showDispatch?.let { wf ->
+        var inputDefs by remember(wf.id) {
+            mutableStateOf<List<com.quickgit.app.data.models.WorkflowInput>>(emptyList())
+        }
+        var inputsLoading by remember(wf.id) { mutableStateOf(true) }
+        LaunchedEffect(wf.id) {
+            inputsLoading = true
+            inputDefs = vm.loadDispatchInputs(wf)
+            inputsLoading = false
+        }
         DispatchDialog(
             workflow = wf,
-            busy = state.busy,
+            busy = state.busy || inputsLoading,
             defaultRef = state.defaultBranch,
+            inputDefs = inputDefs,
             onDismiss = { showDispatch = null },
             onDispatch = { ref, inputs ->
                 vm.dispatch(wf.id, ref, inputs)
@@ -861,17 +871,24 @@ private fun DispatchDialog(
     workflow: Workflow,
     busy: Boolean,
     defaultRef: String,
+    inputDefs: List<com.quickgit.app.data.models.WorkflowInput> = emptyList(),
     onDismiss: () -> Unit,
     onDispatch: (ref: String, inputs: Map<String, String>) -> Unit
 ) {
     var ref by remember { mutableStateOf(defaultRef) }
+    val inputValues = remember(inputDefs) {
+        mutableStateMapOf<String, String>().apply {
+            inputDefs.forEach { put(it.name, it.default.orEmpty()) }
+        }
+    }
+    val requiredMissing = inputDefs.any { it.required && inputValues[it.name].isNullOrBlank() }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Run “${workflow.name}”") },
         text = {
-            Column {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
                 Text(
-                    "This triggers a workflow_dispatch event. Provide the branch, tag, or SHA to run against.",
+                    "This triggers a workflow_dispatch event. Provide the branch/tag/SHA and any workflow inputs.",
                     style = MaterialTheme.typography.bodyMedium
                 )
                 Spacer(Modifier.height(12.dp))
@@ -882,12 +899,47 @@ private fun DispatchDialog(
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
+                if (inputDefs.isNotEmpty()) {
+                    Spacer(Modifier.height(12.dp))
+                    Text("Inputs", style = MaterialTheme.typography.titleSmall)
+                    Spacer(Modifier.height(8.dp))
+                    inputDefs.forEach { def ->
+                        OutlinedTextField(
+                            value = inputValues[def.name].orEmpty(),
+                            onValueChange = { inputValues[def.name] = it },
+                            label = {
+                                Text(
+                                    buildString {
+                                        append(def.name)
+                                        if (def.required) append(" *")
+                                    }
+                                )
+                            },
+                            placeholder = {
+                                if (!def.description.isNullOrBlank()) {
+                                    Text(def.description!!, maxLines = 2)
+                                }
+                            },
+                            supportingText = {
+                                if (!def.description.isNullOrBlank()) {
+                                    Text(def.description!!)
+                                }
+                            },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
+                        )
+                    }
+                }
             }
         },
         confirmButton = {
             Button(
-                onClick = { if (ref.isNotBlank()) onDispatch(ref.trim(), emptyMap()) },
-                enabled = !busy && ref.isNotBlank()
+                onClick = {
+                    if (ref.isNotBlank()) {
+                        onDispatch(ref.trim(), inputValues.toMap().filter { it.value.isNotEmpty() || inputDefs.any { d -> d.name == it.key && d.required } })
+                    }
+                },
+                enabled = !busy && ref.isNotBlank() && !requiredMissing
             ) {
                 if (busy) {
                     CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)

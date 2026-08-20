@@ -410,6 +410,136 @@ class GitHubApi(private val token: String?) {
         (0 until arr.length()).map { i -> arr.getJSONObject(i).toWorkflowJob() }
     }
 
+
+    /**
+     * Load workflow YAML from the default branch and parse workflow_dispatch inputs.
+     * Lightweight indentation-based parser (no full YAML library).
+     */
+    fun listWorkflowDispatchInputs(
+        owner: String,
+        repo: String,
+        workflowPath: String,
+        ref: String = "HEAD"
+    ): Result<List<WorkflowInput>> = runCatching {
+        if (workflowPath.isBlank()) return@runCatching emptyList()
+        val encoded = workflowPath.trimStart('/').split('/').joinToString("/") {
+            java.net.URLEncoder.encode(it, "UTF-8").replace("+", "%20")
+        }
+        val obj = request("GET", "/repos/$owner/$repo/contents/$encoded?ref=$ref") as JSONObject
+        val encoding = obj.optString("encoding", "")
+        val contentB64 = obj.optString("content", "").replace("\n", "")
+        if (encoding != "base64" || contentB64.isBlank()) return@runCatching emptyList()
+        val yaml = String(java.util.Base64.getDecoder().decode(contentB64), Charsets.UTF_8)
+        parseWorkflowDispatchInputs(yaml)
+    }
+
+    internal fun parseWorkflowDispatchInputs(yaml: String): List<WorkflowInput> {
+        val lines = yaml.lines()
+        // Find "workflow_dispatch:" then an "inputs:" block under it
+        var i = 0
+        var foundDispatch = false
+        var dispatchIndent = -1
+        while (i < lines.size) {
+            val raw = lines[i]
+            val trimmed = raw.trimStart()
+            val indent = raw.length - trimmed.length
+            if (!foundDispatch) {
+                if (trimmed.startsWith("workflow_dispatch:")) {
+                    foundDispatch = true
+                    dispatchIndent = indent
+                }
+                i++
+                continue
+            }
+            // Still under workflow_dispatch?
+            if (trimmed.isNotEmpty() && !trimmed.startsWith("#") && indent <= dispatchIndent) {
+                break
+            }
+            if (trimmed.startsWith("inputs:")) {
+                return parseInputsBlock(lines, i + 1, indent)
+            }
+            i++
+        }
+        return emptyList()
+    }
+
+    private fun parseInputsBlock(lines: List<String>, start: Int, inputsKeyIndent: Int): List<WorkflowInput> {
+        val result = mutableListOf<WorkflowInput>()
+        var i = start
+        var currentName: String? = null
+        var description: String? = null
+        var required = false
+        var default: String? = null
+        var type = "string"
+        var inputIndent = -1
+
+        fun flush() {
+            val n = currentName ?: return
+            result += WorkflowInput(
+                name = n,
+                description = description,
+                required = required,
+                default = default,
+                type = type
+            )
+            currentName = null
+            description = null
+            required = false
+            default = null
+            type = "string"
+        }
+
+        while (i < lines.size) {
+            val raw = lines[i]
+            val trimmed = raw.trimStart()
+            val indent = raw.length - trimmed.length
+            if (trimmed.isEmpty() || trimmed.startsWith("#")) {
+                i++
+                continue
+            }
+            // Left the inputs block
+            if (indent <= inputsKeyIndent) {
+                flush()
+                break
+            }
+            // New input key: "version:" at one level deeper than inputs:
+            if (trimmed.endsWith(":") && !trimmed.contains(" ") &&
+                (inputIndent < 0 || indent == inputIndent) &&
+                !trimmed.startsWith("description:") &&
+                !trimmed.startsWith("required:") &&
+                !trimmed.startsWith("default:") &&
+                !trimmed.startsWith("type:") &&
+                !trimmed.startsWith("options:")
+            ) {
+                flush()
+                currentName = trimmed.removeSuffix(":").trim()
+                inputIndent = indent
+                i++
+                continue
+            }
+            if (currentName != null) {
+                when {
+                    trimmed.startsWith("description:") -> {
+                        description = trimmed.substringAfter("description:").trim().trim('"', '\'')
+                    }
+                    trimmed.startsWith("required:") -> {
+                        required = trimmed.substringAfter("required:").trim().equals("true", true)
+                    }
+                    trimmed.startsWith("default:") -> {
+                        default = trimmed.substringAfter("default:").trim().trim('"', '\'')
+                    }
+                    trimmed.startsWith("type:") -> {
+                        type = trimmed.substringAfter("type:").trim().trim('"', '\'')
+                    }
+                }
+            }
+            i++
+        }
+        flush()
+        return result
+    }
+
+
     /**
      * Trigger a workflow_dispatch event.
      * [ref] is the branch/tag/SHA; [inputs] are optional key/value pairs for the workflow's inputs.

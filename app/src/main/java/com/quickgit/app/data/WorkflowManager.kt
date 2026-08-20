@@ -235,13 +235,25 @@ class WorkflowManager(
         refName: String,
         inputs: Map<String, String> = emptyMap()
     ): PrOpResult {
-        AppLog.i(TAG, "dispatch: ${ref.projectPath} workflow=$workflowId ref=$refName")
+        AppLog.i(TAG, "dispatch: ${ref.projectPath} workflow=$workflowId ref=$refName inputs=${inputs.keys}")
         return if (ref.isGitLab) {
             // Triggering a new pipeline requires POST /projects/:id/pipeline — optional later
             PrOpResult.Error("Manual pipeline trigger is not supported yet on GitLab from QuickGit")
         } else {
             githubApi().dispatchWorkflow(ref.owner, ref.repo, workflowId, refName, inputs).toPrOpResult(ref.host)
         }
+    }
+
+    /** Parse workflow_dispatch inputs from the workflow YAML on the default branch. */
+    fun listDispatchInputs(
+        ref: ProjectRef,
+        workflow: Workflow,
+        branch: String = "main"
+    ): List<com.quickgit.app.data.models.WorkflowInput> {
+        if (ref.isGitLab) return emptyList()
+        return githubApi()
+            .listWorkflowDispatchInputs(ref.owner, ref.repo, workflow.path, ref = branch)
+            .getOrElse { emptyList() }
     }
 
     fun cancelRun(ref: ProjectRef, runId: Long): PrOpResult {

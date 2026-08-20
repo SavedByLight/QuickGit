@@ -37,6 +37,7 @@ import androidx.compose.ui.unit.sp
 import com.quickgit.desktop.data.*
 import com.quickgit.desktop.data.github.GitHubApi
 import com.quickgit.desktop.data.gitlab.GitLabApi
+import com.quickgit.desktop.data.models.WorkflowInput
 import com.quickgit.desktop.data.models.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -2349,6 +2350,11 @@ fun WorkflowsTab(
     var detailRun by remember { mutableStateOf<WorkflowRun?>(null) }
     var jobs by remember { mutableStateOf<List<WorkflowJob>>(emptyList()) }
     var detailLoading by remember { mutableStateOf(false) }
+    var dispatchWorkflow by remember { mutableStateOf<Workflow?>(null) }
+    var dispatchRef by remember { mutableStateOf("main") }
+    var dispatchInputs by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    var dispatchInputDefs by remember { mutableStateOf<List<WorkflowInput>>(emptyList()) }
+    var dispatchBusy by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
     fun reload() {
@@ -2619,6 +2625,34 @@ fun WorkflowsTab(
                 )
             }
             Spacer(Modifier.weight(1f))
+            val selectedWf = workflows.firstOrNull { it.id == selectedWorkflowId }
+            Button(
+                onClick = {
+                    val wf = selectedWf ?: workflows.firstOrNull()
+                    if (wf == null) {
+                        onMessage("No workflow selected")
+                        return@Button
+                    }
+                    val or = ownerRepo
+                    if (or == null) {
+                        onMessage("Not a GitHub remote")
+                        return@Button
+                    }
+                    dispatchWorkflow = wf
+                    dispatchRef = "main"
+                    scope.launch {
+                        dispatchBusy = true
+                        val defs = withContext(Dispatchers.IO) {
+                            githubApi.listWorkflowDispatchInputs(or.owner, or.repo, wf.path)
+                                .getOrElse { emptyList() }
+                        }
+                        dispatchInputDefs = defs
+                        dispatchInputs = defs.associate { it.name to (it.default.orEmpty()) }
+                        dispatchBusy = false
+                    }
+                },
+                enabled = !loading && workflows.isNotEmpty()
+            ) { Text("Run workflow…") }
             IconButton(onClick = { reload() }, enabled = !loading) {
                 Icon(Icons.Default.Refresh, "Refresh")
             }
@@ -2687,6 +2721,96 @@ fun WorkflowsTab(
                 }
             }
         }
+    }
+
+
+    dispatchWorkflow?.let { wf ->
+        AlertDialog(
+            onDismissRequest = { dispatchWorkflow = null },
+            title = { Text("Run “${wf.name}”") },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    Text(
+                        "Triggers workflow_dispatch. Set the ref and any inputs defined in the workflow YAML.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = dispatchRef,
+                        onValueChange = { dispatchRef = it },
+                        label = { Text("Ref (branch / tag / SHA)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    if (dispatchInputDefs.isNotEmpty()) {
+                        Spacer(Modifier.height(12.dp))
+                        Text("Inputs", style = MaterialTheme.typography.titleSmall)
+                        Spacer(Modifier.height(8.dp))
+                        dispatchInputDefs.forEach { def ->
+                            OutlinedTextField(
+                                value = dispatchInputs[def.name].orEmpty(),
+                                onValueChange = { v ->
+                                    dispatchInputs = dispatchInputs + (def.name to v)
+                                },
+                                label = {
+                                    Text(if (def.required) "${def.name} *" else def.name)
+                                },
+                                supportingText = {
+                                    if (!def.description.isNullOrBlank()) Text(def.description!!)
+                                },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
+                            )
+                        }
+                    } else if (dispatchBusy) {
+                        Spacer(Modifier.height(8.dp))
+                        CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                    }
+                }
+            },
+            confirmButton = {
+                val requiredOk = dispatchInputDefs.none {
+                    it.required && dispatchInputs[it.name].isNullOrBlank()
+                }
+                Button(
+                    onClick = {
+                        val or = ownerRepo ?: return@Button
+                        scope.launch {
+                            dispatchBusy = true
+                            val r = withContext(Dispatchers.IO) {
+                                githubApi.dispatchWorkflow(
+                                    or.owner,
+                                    or.repo,
+                                    wf.id,
+                                    dispatchRef.trim(),
+                                    dispatchInputs.filter { it.value.isNotEmpty() ||
+                                        dispatchInputDefs.any { d -> d.name == it.key && d.required } }
+                                )
+                            }
+                            dispatchBusy = false
+                            r.fold(
+                                {
+                                    onMessage("Workflow dispatched")
+                                    dispatchWorkflow = null
+                                    reload()
+                                },
+                                { onMessage("Dispatch failed: ${it.message}") }
+                            )
+                        }
+                    },
+                    enabled = !dispatchBusy && dispatchRef.isNotBlank() && requiredOk
+                ) {
+                    if (dispatchBusy) {
+                        CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                    } else {
+                        Text("Run workflow")
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { dispatchWorkflow = null }) { Text("Cancel") }
+            }
+        )
     }
 }
 
