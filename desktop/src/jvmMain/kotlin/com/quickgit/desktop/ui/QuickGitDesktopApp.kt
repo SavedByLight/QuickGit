@@ -2976,6 +2976,7 @@ fun BrowseAccountScreen(
     var cloning by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     val pageSize = 100
+    val orgScroll = rememberScrollState()
 
     fun loadRepos(org: String?, reset: Boolean = true) {
         scope.launch {
@@ -3007,43 +3008,102 @@ fun BrowseAccountScreen(
         }
     }
 
+    /** Fetch every page of /user/orgs so all memberships appear as chips. */
+    suspend fun loadAllOrganizations(): List<String> {
+        val all = mutableListOf<String>()
+        var page = 1
+        while (true) {
+            val batch = withContext(Dispatchers.IO) {
+                githubApi.listUserOrganizations(perPage = 100, page = page).getOrElse { emptyList() }
+            }
+            if (batch.isEmpty()) break
+            all += batch
+            if (batch.size < 100) break
+            page++
+            if (page > 20) break // safety
+        }
+        return all.distinct().sortedBy { it.lowercase() }
+    }
+
     LaunchedEffect(Unit) {
         val token = credentialStore.getGithubToken() ?: credentialStore.getHttpsToken("github.com")
         if (token.isNullOrBlank()) {
             onMessage("Add a GitHub token in Credentials first")
             return@LaunchedEffect
         }
-        withContext(Dispatchers.IO) {
-            githubApi.listUserOrganizations().onSuccess { orgs = it }
-        }
+        orgs = loadAllOrganizations()
         loadRepos(null)
     }
 
     Column(Modifier.fillMaxSize().padding(16.dp)) {
         Text("Your GitHub repositories", style = MaterialTheme.typography.titleLarge)
         Spacer(Modifier.height(8.dp))
-        // Org chips
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip(selected = selectedOrg == null, onClick = { selectedOrg = null; loadRepos(null) }, label = { Text("Personal") })
+        // Org chips — horizontal scroll so the row stays one line and does not push content down
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .horizontalScroll(orgScroll),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            FilterChip(
+                selected = selectedOrg == null,
+                onClick = { selectedOrg = null; loadRepos(null) },
+                label = { Text("Personal") }
+            )
             orgs.forEach { org ->
-                FilterChip(selected = selectedOrg == org, onClick = { selectedOrg = org; loadRepos(org) }, label = { Text(org) })
+                FilterChip(
+                    selected = selectedOrg == org,
+                    onClick = { selectedOrg = org; loadRepos(org) },
+                    label = { Text(org) }
+                )
             }
         }
         Spacer(Modifier.height(8.dp))
-        OutlinedTextField(value = query, onValueChange = { query = it }, label = { Text("Filter") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+        OutlinedTextField(
+            value = query,
+            onValueChange = { query = it },
+            label = { Text("Filter repositories") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true
+        )
         Spacer(Modifier.height(8.dp))
-        if (loading) CircularProgressIndicator()
-        else {
+        Text(
+            if (loading) "Loading…" else "${repos.size} repositories" +
+                if (query.isNotBlank()) " (filtered)" else "",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(4.dp))
+        if (loading && repos.isEmpty()) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator()
+            }
+        } else {
             val filtered = repos.filter {
                 query.isBlank() || it.fullName.contains(query, true) || it.name.contains(query, true)
             }
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                items(filtered) { repo ->
+            // weight(1f) so the list fills remaining space under the fixed header (filter stays on top)
+            LazyColumn(
+                Modifier.fillMaxWidth().weight(1f),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                items(filtered, key = { it.id }) { repo ->
                     Card(Modifier.fillMaxWidth()) {
-                        Row(Modifier.padding(12.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Row(
+                            Modifier.padding(12.dp).fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
                             Column(Modifier.weight(1f)) {
                                 Text(repo.fullName, fontWeight = FontWeight.Medium)
-                                repo.description?.let { Text(it, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                                repo.description?.let {
+                                    Text(
+                                        it,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
                                 Text(
                                     buildString {
                                         if (repo.isPrivate) append("private · ")
@@ -3071,15 +3131,25 @@ fun BrowseAccountScreen(
                                 },
                                 enabled = cloning == null
                             ) {
-                                if (cloning == repo.fullName) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)
-                                else Text("Clone")
+                                if (cloning == repo.fullName) {
+                                    CircularProgressIndicator(
+                                        Modifier.size(16.dp),
+                                        strokeWidth = 2.dp,
+                                        color = MaterialTheme.colorScheme.onPrimary
+                                    )
+                                } else {
+                                    Text("Clone")
+                                }
                             }
                         }
                     }
                 }
                 if (hasMoreRepos && query.isBlank()) {
                     item {
-                        Box(Modifier.fillMaxWidth().padding(vertical = 12.dp), contentAlignment = Alignment.Center) {
+                        Box(
+                            Modifier.fillMaxWidth().padding(vertical = 12.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
                             if (loadingMore) {
                                 CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
                             } else {
@@ -3089,6 +3159,16 @@ fun BrowseAccountScreen(
                                 ) { Text("Load more") }
                             }
                         }
+                    }
+                }
+                if (filtered.isEmpty() && !loading) {
+                    item {
+                        Text(
+                            if (query.isNotBlank()) "No repositories match "$query""
+                            else "No repositories found",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(16.dp)
+                        )
                     }
                 }
             }
