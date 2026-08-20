@@ -294,7 +294,11 @@ class DesktopRepoManager(
     }
 
     fun stage(repoPath: String, paths: List<String>) {
-        open(File(repoPath)).use { git ->
+        val root = File(repoPath)
+        paths.forEach { rel ->
+            try { LfsSupport.cleanIfNeeded(root, rel) } catch (_: Exception) { /* non-fatal */ }
+        }
+        open(root).use { git ->
             val add = git.add()
             paths.forEach { add.addFilepattern(it) }
             add.call()
@@ -302,10 +306,15 @@ class DesktopRepoManager(
     }
 
     fun stageAll(repoPath: String) {
-        open(File(repoPath)).use { git ->
+        val root = File(repoPath)
+        open(root).use { git ->
+            val status = git.status().call()
+            val candidates = (status.untracked + status.modified + status.changed).distinct()
+            candidates.forEach { rel ->
+                try { LfsSupport.cleanIfNeeded(root, rel) } catch (_: Exception) { /* non-fatal */ }
+            }
             git.add().addFilepattern(".").call()
             // Also stage deletions
-            val status = git.status().call()
             status.missing.forEach { git.rm().addFilepattern(it).call() }
         }
     }
@@ -589,6 +598,128 @@ class DesktopRepoManager(
                     email = c.authorIdent.emailAddress,
                     time = c.authorIdent.`when`.time
                 )
+            }
+        }
+    }
+
+    data class CommitChange(
+        val path: String,
+        val changeType: String,
+        val oldPath: String? = null
+    )
+
+    data class TreeEntry(
+        val name: String,
+        val relativePath: String,
+        val isDirectory: Boolean,
+        val sizeBytes: Long = 0L
+    )
+
+    fun listCommitChanges(repoPath: String, commitId: String): List<CommitChange> {
+        open(File(repoPath)).use { git ->
+            val repo = git.repository
+            RevWalk(repo).use { walk ->
+                val commit = walk.parseCommit(ObjectId.fromString(commitId))
+                val newTree = commit.tree
+                val oldTree = if (commit.parentCount > 0) walk.parseCommit(commit.getParent(0)).tree else null
+                val reader = repo.newObjectReader()
+                try {
+                    val newParser = CanonicalTreeParser().apply { reset(reader, newTree) }
+                    val oldParser = if (oldTree != null) CanonicalTreeParser().apply { reset(reader, oldTree) } else null
+                    DiffFormatter(org.eclipse.jgit.util.io.NullOutputStream.INSTANCE).use { formatter ->
+                        formatter.setRepository(repo)
+                        formatter.setDetectRenames(true)
+                        return formatter.scan(oldParser, newParser).map { d ->
+                            val type = when (d.changeType) {
+                                org.eclipse.jgit.diff.DiffEntry.ChangeType.ADD -> "ADD"
+                                org.eclipse.jgit.diff.DiffEntry.ChangeType.MODIFY -> "MODIFY"
+                                org.eclipse.jgit.diff.DiffEntry.ChangeType.DELETE -> "DELETE"
+                                org.eclipse.jgit.diff.DiffEntry.ChangeType.RENAME -> "RENAME"
+                                org.eclipse.jgit.diff.DiffEntry.ChangeType.COPY -> "COPY"
+                                else -> d.changeType.name
+                            }
+                            val pathStr = if (d.changeType == org.eclipse.jgit.diff.DiffEntry.ChangeType.DELETE) d.oldPath else d.newPath
+                            CommitChange(
+                                path = pathStr,
+                                changeType = type,
+                                oldPath = if (d.changeType == org.eclipse.jgit.diff.DiffEntry.ChangeType.RENAME ||
+                                    d.changeType == org.eclipse.jgit.diff.DiffEntry.ChangeType.COPY) d.oldPath else null
+                            )
+                        }.sortedBy { it.path.lowercase() }
+                    }
+                } finally {
+                    reader.close()
+                }
+            }
+        }
+    }
+
+    fun listTreeAtCommit(repoPath: String, commitId: String, relativeDir: String = ""): List<TreeEntry> {
+        open(File(repoPath)).use { git ->
+            val repo = git.repository
+            RevWalk(repo).use { walk ->
+                val commit = walk.parseCommit(ObjectId.fromString(commitId))
+                TreeWalk(repo).use { tw ->
+                    tw.addTree(commit.tree)
+                    tw.isRecursive = false
+                    if (relativeDir.isNotBlank()) {
+                        val parts = relativeDir.trim('/').split('/')
+                        for (part in parts) {
+                            var found = false
+                            while (tw.next()) {
+                                if (tw.isSubtree && tw.nameString == part) {
+                                    tw.enterSubtree()
+                                    found = true
+                                    break
+                                }
+                            }
+                            if (!found) return emptyList()
+                        }
+                    }
+                    val entries = mutableListOf<TreeEntry>()
+                    while (tw.next()) {
+                        val name = tw.nameString
+                        if (name == ".git") continue
+                        val rel = if (relativeDir.isBlank()) name else "$relativeDir/$name"
+                        val isDir = tw.isSubtree
+                        val size = if (!isDir) {
+                            try { repo.open(tw.getObjectId(0)).size } catch (_: Exception) { 0L }
+                        } else 0L
+                        entries.add(TreeEntry(name, rel, isDir, size))
+                    }
+                    return entries.sortedWith(compareBy<TreeEntry> { !it.isDirectory }.thenBy { it.name.lowercase() })
+                }
+            }
+        }
+    }
+
+    fun readTextAtCommit(repoPath: String, commitId: String, relativePath: String, maxBytes: Long = 1_500_000L): String {
+        open(File(repoPath)).use { git ->
+            val repo = git.repository
+            RevWalk(repo).use { walk ->
+                val commit = walk.parseCommit(ObjectId.fromString(commitId))
+                TreeWalk.forPath(repo, relativePath, commit.tree)?.use { tw ->
+                    if (tw.isSubtree) return ""
+                    val loader = repo.open(tw.getObjectId(0))
+                    if (loader.size > maxBytes) {
+                        return loader.openStream().use { stream ->
+                            val buf = ByteArray(maxBytes.toInt())
+                            val n = stream.read(buf)
+                            String(buf, 0, n, Charsets.UTF_8) + "\n\n… (truncated)"
+                        }
+                    }
+                    return String(loader.bytes, Charsets.UTF_8)
+                } ?: return ""
+            }
+        }
+    }
+
+    fun getParentCommitId(repoPath: String, commitId: String): String? {
+        open(File(repoPath)).use { git ->
+            val repo = git.repository
+            RevWalk(repo).use { walk ->
+                val commit = walk.parseCommit(ObjectId.fromString(commitId))
+                return if (commit.parentCount > 0) commit.getParent(0).name else null
             }
         }
     }
@@ -921,5 +1052,122 @@ class DesktopRepoManager(
                 git.repository.config.getString("remote", "origin", "url")
             }
         } catch (_: Exception) { null }
+    }
+
+    // ---------- Git LFS ----------
+
+    private fun lfsAuth(remoteUrl: String): Pair<String?, String?> {
+        val host = credentialStore.hostFromRemoteUrl(remoteUrl)
+            ?: remoteUrl.removePrefix("https://").removePrefix("http://").substringBefore('/')
+        return credentialStore.getHttpsUsername(host) to credentialStore.getHttpsToken(host)
+    }
+
+    fun lfsInstall(repoPath: String): Result<String> = try {
+        Result.success(LfsSupport.install(File(repoPath)))
+    } catch (e: Exception) {
+        Result.failure(e)
+    }
+
+    fun lfsTrack(repoPath: String, pattern: String): Result<String> = try {
+        Result.success(LfsSupport.track(File(repoPath), pattern))
+    } catch (e: Exception) {
+        Result.failure(e)
+    }
+
+    fun lfsUntrack(repoPath: String, pattern: String): Result<String> = try {
+        Result.success(LfsSupport.untrack(File(repoPath), pattern))
+    } catch (e: Exception) {
+        Result.failure(e)
+    }
+
+    fun lfsStatus(repoPath: String): Result<LfsSupport.LfsStatus> = try {
+        Result.success(LfsSupport.status(File(repoPath)))
+    } catch (e: Exception) {
+        Result.failure(e)
+    }
+
+    fun fetchLfs(repoPath: String, onProgress: (String) -> Unit = {}): Result<String> {
+        return try {
+            val remoteUrl = getRemoteUrl(repoPath)
+                ?: return Result.failure(IllegalStateException("No origin remote"))
+            if (!LfsSupport.isSupportedRemote(remoteUrl)) {
+                return Result.failure(IllegalStateException("LFS requires an HTTPS remote"))
+            }
+            val (user, token) = lfsAuth(remoteUrl)
+            val result = LfsSupport.fetchAndSmudge(
+                repoRoot = File(repoPath),
+                remoteUrl = remoteUrl,
+                username = user,
+                token = token,
+                onProgress = onProgress
+            )
+            AppLog.i(TAG, "fetchLfs: ${result.message}")
+            if (result.failed > 0 && result.downloaded == 0 && result.alreadyPresent == 0) {
+                Result.failure(IllegalStateException(result.message))
+            } else {
+                Result.success(result.message)
+            }
+        } catch (e: Exception) {
+            AppLog.e(TAG, "fetchLfs failed", e)
+            Result.failure(e)
+        }
+    }
+
+    fun pushLfs(repoPath: String, onProgress: (String) -> Unit = {}): Result<String> {
+        return try {
+            val remoteUrl = getRemoteUrl(repoPath)
+                ?: return Result.failure(IllegalStateException("No origin remote"))
+            if (!LfsSupport.isSupportedRemote(remoteUrl)) {
+                return Result.failure(IllegalStateException("LFS requires an HTTPS remote"))
+            }
+            val (user, token) = lfsAuth(remoteUrl)
+            val result = LfsSupport.uploadLocalObjects(
+                repoRoot = File(repoPath),
+                remoteUrl = remoteUrl,
+                username = user,
+                token = token,
+                onProgress = onProgress
+            )
+            AppLog.i(TAG, "pushLfs: ${result.message}")
+            if (result.failed > 0 && result.downloaded == 0) {
+                Result.failure(IllegalStateException(result.message))
+            } else {
+                Result.success(result.message)
+            }
+        } catch (e: Exception) {
+            AppLog.e(TAG, "pushLfs failed", e)
+            Result.failure(e)
+        }
+    }
+
+    /** After a successful git pull, download/smudge any LFS pointers (best-effort). */
+    fun pullWithLfs(repoPath: String, onProgress: (String) -> Unit = {}): Result<Unit> {
+        val pullResult = pull(repoPath)
+        if (pullResult.isFailure) return pullResult
+        val lfs = fetchLfs(repoPath, onProgress)
+        return if (lfs.isFailure) {
+            AppLog.w(TAG, "pull OK but LFS: ${lfs.exceptionOrNull()?.message}")
+            Result.success(Unit) // git pull succeeded
+        } else {
+            Result.success(Unit)
+        }
+    }
+
+    /** Git push then LFS upload (best-effort LFS after successful push). */
+    fun pushWithLfs(
+        repoPath: String,
+        force: Boolean = false,
+        forceWithLease: Boolean = false,
+        onProgress: (String) -> Unit = {}
+    ): Result<Unit> {
+        val pushResult = push(repoPath, force = force, forceWithLease = forceWithLease) { onProgress(it) }
+        if (pushResult.isFailure) return pushResult
+        val lfs = pushLfs(repoPath, onProgress)
+        return if (lfs.isFailure) {
+            AppLog.w(TAG, "push OK but LFS: ${lfs.exceptionOrNull()?.message}")
+            Result.success(Unit)
+        } else {
+            Result.success(Unit)
+        }
     }
 }

@@ -66,9 +66,15 @@ fun RepoDetailScreenDesktop(
 
     val state by vm.state.collectAsState()
     val snackbarHost = remember { SnackbarHostState() }
+    var pullMenuExpanded by remember { mutableStateOf(false) }
     var pushMenuExpanded by remember { mutableStateOf(false) }
+    var lfsMenuExpanded by remember { mutableStateOf(false) }
     var showForcePushConfirm by remember { mutableStateOf(false) }
     var forcePushUseLease by remember { mutableStateOf(true) }
+    var showLfsTrack by remember { mutableStateOf(false) }
+    var showLfsUntrack by remember { mutableStateOf(false) }
+    var lfsTrackPattern by remember { mutableStateOf("*.psd") }
+    var lfsUntrackPattern by remember { mutableStateOf("*.psd") }
 
     LaunchedEffect(state.lastResult, state.statusMessage) {
         state.statusMessage?.let {
@@ -104,7 +110,28 @@ fun RepoDetailScreenDesktop(
                     style = MaterialTheme.typography.titleMedium,
                     modifier = Modifier.weight(1f)
                 )
-                Button(onClick = { vm.pull() }, enabled = !state.busy) { Text("Pull") }
+                Box {
+                    Button(onClick = { pullMenuExpanded = true }, enabled = !state.busy) {
+                        Text("Pull ▾")
+                    }
+                    DropdownMenu(
+                        expanded = pullMenuExpanded,
+                        onDismissRequest = { pullMenuExpanded = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Git pull") },
+                            onClick = { pullMenuExpanded = false; vm.pull() }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("LFS pull only") },
+                            onClick = { pullMenuExpanded = false; vm.fetchLfs() }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Git pull + LFS") },
+                            onClick = { pullMenuExpanded = false; vm.pullWithLfs() }
+                        )
+                    }
+                }
                 Spacer(Modifier.width(8.dp))
                 Box {
                     Button(onClick = { pushMenuExpanded = true }, enabled = !state.busy) {
@@ -120,6 +147,14 @@ fun RepoDetailScreenDesktop(
                                 pushMenuExpanded = false
                                 vm.push(force = false)
                             }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("LFS push only") },
+                            onClick = { pushMenuExpanded = false; vm.pushLfs() }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Git push + LFS") },
+                            onClick = { pushMenuExpanded = false; vm.pushWithLfs() }
                         )
                         HorizontalDivider()
                         DropdownMenuItem(
@@ -150,6 +185,41 @@ fun RepoDetailScreenDesktop(
                         )
                     }
                 }
+                Spacer(Modifier.width(8.dp))
+                Box {
+                    OutlinedButton(onClick = { lfsMenuExpanded = true }, enabled = !state.busy) {
+                        Text("LFS ▾")
+                    }
+                    DropdownMenu(
+                        expanded = lfsMenuExpanded,
+                        onDismissRequest = { lfsMenuExpanded = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("LFS install") },
+                            onClick = { lfsMenuExpanded = false; vm.lfsInstall() }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("LFS track…") },
+                            onClick = { lfsMenuExpanded = false; showLfsTrack = true }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("LFS untrack…") },
+                            onClick = { lfsMenuExpanded = false; showLfsUntrack = true }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("LFS status") },
+                            onClick = { lfsMenuExpanded = false; vm.lfsStatus() }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("LFS pull") },
+                            onClick = { lfsMenuExpanded = false; vm.fetchLfs() }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("LFS push") },
+                            onClick = { lfsMenuExpanded = false; vm.pushLfs() }
+                        )
+                    }
+                }
                 if (state.busy) {
                     Spacer(Modifier.width(8.dp))
                     CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
@@ -173,6 +243,70 @@ fun RepoDetailScreenDesktop(
                 }
             }
         }
+    }
+
+    if (showLfsTrack) {
+        AlertDialog(
+            onDismissRequest = { showLfsTrack = false },
+            title = { Text("Track with Git LFS") },
+            text = {
+                Column {
+                    Text(
+                        "Files matching this pattern will be stored in LFS when staged.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = lfsTrackPattern,
+                        onValueChange = { lfsTrackPattern = it },
+                        label = { Text("Pattern (e.g. *.psd)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showLfsTrack = false
+                    vm.lfsTrack(lfsTrackPattern)
+                }) { Text("Track") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showLfsTrack = false }) { Text("Cancel") }
+            }
+        )
+    }
+
+    if (showLfsUntrack) {
+        AlertDialog(
+            onDismissRequest = { showLfsUntrack = false },
+            title = { Text("Untrack from Git LFS") },
+            text = {
+                Column {
+                    Text(
+                        "Remove this pattern from .gitattributes (stops new files from using LFS).",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = lfsUntrackPattern,
+                        onValueChange = { lfsUntrackPattern = it },
+                        label = { Text("Pattern (e.g. *.psd)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showLfsUntrack = false
+                    vm.lfsUntrack(lfsUntrackPattern)
+                }) { Text("Untrack") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showLfsUntrack = false }) { Text("Cancel") }
+            }
+        )
     }
 
     if (showForcePushConfirm) {

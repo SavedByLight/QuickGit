@@ -511,21 +511,27 @@ fun RepoDetailScreen(
     val tabs = listOf("Changes", "Files", "Branches", "Issues", "PRs", "Actions", "Releases", "History")
     val scope = rememberCoroutineScope()
     var busy by remember { mutableStateOf(false) }
+    var pullMenuExpanded by remember { mutableStateOf(false) }
     var pushMenuExpanded by remember { mutableStateOf(false) }
+    var lfsMenuExpanded by remember { mutableStateOf(false) }
     var showForcePushConfirm by remember { mutableStateOf(false) }
     var forcePushUseLease by remember { mutableStateOf(true) }
+    var showLfsTrack by remember { mutableStateOf(false) }
+    var lfsTrackPattern by remember { mutableStateOf("*.psd") }
     val gitRed = Color(0xFFCF222E)
 
-    fun doPush(force: Boolean = false, forceWithLease: Boolean = false) {
+    fun doPush(force: Boolean = false, forceWithLease: Boolean = false, withLfs: Boolean = false) {
         scope.launch {
             busy = true
             val r = withContext(Dispatchers.IO) {
-                repoManager.push(repoPath, force = force, forceWithLease = forceWithLease)
+                if (withLfs) repoManager.pushWithLfs(repoPath, force = force, forceWithLease = forceWithLease)
+                else repoManager.push(repoPath, force = force, forceWithLease = forceWithLease)
             }
             busy = false
             val label = when {
                 forceWithLease -> "Force with lease"
                 force -> "Force push"
+                withLfs -> "Push + LFS"
                 else -> "Push"
             }
             r.fold({ onMessage("$label OK") }, { onMessage("$label failed: ${it.message}") })
@@ -536,14 +542,38 @@ fun RepoDetailScreen(
         Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back") }
             Text(repoPath.substringAfterLast('/'), style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-            Button(onClick = {
-                scope.launch {
-                    busy = true
-                    val r = withContext(Dispatchers.IO) { repoManager.pull(repoPath) }
-                    busy = false
-                    r.fold({ onMessage("Pull OK") }, { onMessage("Pull failed: ${it.message}") })
+            Box {
+                Button(onClick = { pullMenuExpanded = true }, enabled = !busy) { Text("Pull ▾") }
+                DropdownMenu(expanded = pullMenuExpanded, onDismissRequest = { pullMenuExpanded = false }) {
+                    DropdownMenuItem(text = { Text("Git pull") }, onClick = {
+                        pullMenuExpanded = false
+                        scope.launch {
+                            busy = true
+                            val r = withContext(Dispatchers.IO) { repoManager.pull(repoPath) }
+                            busy = false
+                            r.fold({ onMessage("Pull OK") }, { onMessage("Pull failed: ${it.message}") })
+                        }
+                    })
+                    DropdownMenuItem(text = { Text("LFS pull only") }, onClick = {
+                        pullMenuExpanded = false
+                        scope.launch {
+                            busy = true
+                            val r = withContext(Dispatchers.IO) { repoManager.fetchLfs(repoPath) }
+                            busy = false
+                            r.fold({ onMessage("LFS: $it") }, { onMessage("LFS pull failed: ${it.message}") })
+                        }
+                    })
+                    DropdownMenuItem(text = { Text("Git pull + LFS") }, onClick = {
+                        pullMenuExpanded = false
+                        scope.launch {
+                            busy = true
+                            val r = withContext(Dispatchers.IO) { repoManager.pullWithLfs(repoPath) }
+                            busy = false
+                            r.fold({ onMessage("Pull + LFS OK") }, { onMessage("Pull + LFS failed: ${it.message}") })
+                        }
+                    })
                 }
-            }, enabled = !busy) { Text("Pull") }
+            }
             Spacer(Modifier.width(8.dp))
             Box {
                 Button(onClick = { pushMenuExpanded = true }, enabled = !busy) { Text("Push ▾") }
@@ -556,6 +586,25 @@ fun RepoDetailScreen(
                         onClick = {
                             pushMenuExpanded = false
                             doPush()
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("LFS push only") },
+                        onClick = {
+                            pushMenuExpanded = false
+                            scope.launch {
+                                busy = true
+                                val r = withContext(Dispatchers.IO) { repoManager.pushLfs(repoPath) }
+                                busy = false
+                                r.fold({ onMessage("LFS: $it") }, { onMessage("LFS push failed: ${it.message}") })
+                            }
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Git push + LFS") },
+                        onClick = {
+                            pushMenuExpanded = false
+                            doPush(withLfs = true)
                         }
                     )
                     HorizontalDivider()
@@ -577,7 +626,98 @@ fun RepoDetailScreen(
                     )
                 }
             }
+            Spacer(Modifier.width(8.dp))
+            Box {
+                OutlinedButton(onClick = { lfsMenuExpanded = true }, enabled = !busy) { Text("LFS ▾") }
+                DropdownMenu(expanded = lfsMenuExpanded, onDismissRequest = { lfsMenuExpanded = false }) {
+                    DropdownMenuItem(text = { Text("LFS install") }, onClick = {
+                        lfsMenuExpanded = false
+                        scope.launch {
+                            busy = true
+                            val r = withContext(Dispatchers.IO) { repoManager.lfsInstall(repoPath) }
+                            busy = false
+                            r.fold({ onMessage(it) }, { onMessage("LFS install failed: ${it.message}") })
+                        }
+                    })
+                    DropdownMenuItem(text = { Text("LFS track…") }, onClick = {
+                        lfsMenuExpanded = false
+                        showLfsTrack = true
+                    })
+                    DropdownMenuItem(text = { Text("LFS status") }, onClick = {
+                        lfsMenuExpanded = false
+                        scope.launch {
+                            busy = true
+                            val r = withContext(Dispatchers.IO) { repoManager.lfsStatus(repoPath) }
+                            busy = false
+                            r.fold(
+                                {
+                                    onMessage(
+                                        "LFS: ${it.pointerCount} pointers, ${it.missingObjectCount} missing, " +
+                                            "tracked: ${it.trackedPatterns.joinToString().ifBlank { "(none)" }}"
+                                    )
+                                },
+                                { onMessage("LFS status failed: ${it.message}") }
+                            )
+                        }
+                    })
+                    DropdownMenuItem(text = { Text("LFS pull") }, onClick = {
+                        lfsMenuExpanded = false
+                        scope.launch {
+                            busy = true
+                            val r = withContext(Dispatchers.IO) { repoManager.fetchLfs(repoPath) }
+                            busy = false
+                            r.fold({ onMessage("LFS: $it") }, { onMessage("LFS pull failed: ${it.message}") })
+                        }
+                    })
+                    DropdownMenuItem(text = { Text("LFS push") }, onClick = {
+                        lfsMenuExpanded = false
+                        scope.launch {
+                            busy = true
+                            val r = withContext(Dispatchers.IO) { repoManager.pushLfs(repoPath) }
+                            busy = false
+                            r.fold({ onMessage("LFS: $it") }, { onMessage("LFS push failed: ${it.message}") })
+                        }
+                    })
+                }
+            }
             if (busy) { Spacer(Modifier.width(8.dp)); CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) }
+        }
+        if (showLfsTrack) {
+            AlertDialog(
+                onDismissRequest = { showLfsTrack = false },
+                title = { Text("Track with Git LFS") },
+                text = {
+                    Column {
+                        Text(
+                            "Files matching this pattern will be stored in LFS when staged.",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = lfsTrackPattern,
+                            onValueChange = { lfsTrackPattern = it },
+                            label = { Text("Pattern (e.g. *.psd)") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        showLfsTrack = false
+                        val pattern = lfsTrackPattern
+                        scope.launch {
+                            busy = true
+                            val r = withContext(Dispatchers.IO) { repoManager.lfsTrack(repoPath, pattern) }
+                            busy = false
+                            r.fold({ onMessage(it) }, { onMessage("LFS track failed: ${it.message}") })
+                        }
+                    }) { Text("Track") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showLfsTrack = false }) { Text("Cancel") }
+                }
+            )
         }
         if (showForcePushConfirm) {
             AlertDialog(
