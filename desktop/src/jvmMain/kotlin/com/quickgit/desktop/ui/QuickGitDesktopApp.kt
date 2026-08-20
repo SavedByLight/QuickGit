@@ -3164,7 +3164,7 @@ fun BrowseAccountScreen(
                 if (filtered.isEmpty() && !loading) {
                     item {
                         Text(
-                            if (query.isNotBlank()) "No repositories match "$query""
+                            if (query.isNotBlank()) "No repositories match \"$query\""
                             else "No repositories found",
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(16.dp)
