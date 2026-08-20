@@ -17,6 +17,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
@@ -518,7 +519,7 @@ fun RepoDetailScreen(
     var forcePushUseLease by remember { mutableStateOf(true) }
     var showLfsTrack by remember { mutableStateOf(false) }
     var lfsTrackPattern by remember { mutableStateOf("*.psd") }
-    val gitRed = Color(0xFFCF222E)
+    val gitRed = com.quickgit.desktop.ui.theme.GitRed
 
     fun doPush(force: Boolean = false, forceWithLease: Boolean = false, withLfs: Boolean = false) {
         scope.launch {
@@ -1218,183 +1219,14 @@ private fun isProbablyTextFile(name: String): Boolean {
     return ext !in binary
 }
 
-/** Simple syntax highlighting for source text (keywords / strings / comments / numbers). */
-private fun highlightSourceCode(source: String, fileName: String): androidx.compose.ui.text.AnnotatedString {
-    val ext = fileName.substringAfterLast('.', missingDelimiterValue = "").lowercase()
-    val keywords = when (ext) {
-        "kt", "kts" -> setOf(
-            "package", "import", "class", "object", "interface", "fun", "val", "var", "if", "else",
-            "when", "for", "while", "return", "null", "true", "false", "this", "super", "is", "in",
-            "as", "try", "catch", "finally", "throw", "data", "sealed", "enum", "companion",
-            "private", "public", "protected", "internal", "override", "open", "abstract", "suspend",
-            "lateinit", "by", "where", "typealias", "inline", "reified", "const", "outer", "inner"
-        )
-        "java" -> setOf(
-            "package", "import", "class", "interface", "enum", "extends", "implements", "public",
-            "private", "protected", "static", "final", "void", "int", "long", "boolean", "double",
-            "float", "char", "byte", "short", "new", "return", "if", "else", "for", "while", "do",
-            "switch", "case", "break", "continue", "try", "catch", "finally", "throw", "throws",
-            "this", "super", "null", "true", "false", "abstract", "synchronized", "volatile",
-            "native", "strictfp", "transient", "instanceof", "assert", "record", "var", "sealed",
-            "permits", "non-sealed"
-        )
-        "py" -> setOf(
-            "def", "class", "return", "if", "elif", "else", "for", "while", "import", "from", "as",
-            "try", "except", "finally", "raise", "with", "yield", "lambda", "pass", "break",
-            "continue", "True", "False", "None", "and", "or", "not", "in", "is", "global",
-            "nonlocal", "assert", "async", "await", "del", "print"
-        )
-        "js", "mjs", "cjs", "jsx", "ts", "tsx" -> setOf(
-            "function", "const", "let", "var", "return", "if", "else", "for", "while", "do",
-            "switch", "case", "break", "continue", "try", "catch", "finally", "throw", "new",
-            "class", "extends", "super", "this", "import", "export", "default", "from", "as",
-            "async", "await", "typeof", "instanceof", "true", "false", "null", "undefined",
-            "interface", "type", "enum", "implements", "public", "private", "protected", "readonly"
-        )
-        "go" -> setOf(
-            "package", "import", "func", "return", "if", "else", "for", "range", "switch", "case",
-            "break", "continue", "go", "defer", "select", "chan", "map", "struct", "interface",
-            "type", "var", "const", "true", "false", "nil", "make", "new"
-        )
-        "rs" -> setOf(
-            "fn", "let", "mut", "const", "struct", "enum", "impl", "trait", "pub", "mod", "use",
-            "if", "else", "match", "for", "while", "loop", "return", "break", "continue", "self",
-            "Self", "true", "false", "where", "async", "await", "crate", "super", "ref", "move"
-        )
-        "c", "h", "cpp", "cc", "cxx", "hpp", "hh" -> setOf(
-            "int", "long", "short", "char", "void", "float", "double", "bool", "return", "if",
-            "else", "for", "while", "do", "switch", "case", "break", "continue", "struct", "class",
-            "public", "private", "protected", "namespace", "using", "template", "typename", "const",
-            "static", "extern", "sizeof", "typedef", "enum", "true", "false", "nullptr", "new", "delete"
-        )
-        "rb" -> setOf(
-            "def", "class", "module", "end", "if", "elsif", "else", "unless", "while", "until",
-            "for", "do", "begin", "rescue", "ensure", "return", "yield", "self", "nil", "true",
-            "false", "and", "or", "not", "require", "include", "attr_reader", "attr_writer", "attr_accessor"
-        )
-        "php" -> setOf(
-            "function", "class", "interface", "trait", "public", "private", "protected", "static",
-            "return", "if", "else", "elseif", "foreach", "for", "while", "do", "switch", "case",
-            "break", "continue", "try", "catch", "finally", "throw", "new", "echo", "print",
-            "true", "false", "null", "namespace", "use", "extends", "implements"
-        )
-        "swift" -> setOf(
-            "func", "var", "let", "class", "struct", "enum", "protocol", "extension", "import",
-            "return", "if", "else", "guard", "for", "while", "switch", "case", "break", "continue",
-            "true", "false", "nil", "self", "Self", "public", "private", "internal", "fileprivate",
-            "static", "override", "init", "deinit", "throws", "try", "catch", "async", "await"
-        )
-        "sh", "bash", "zsh" -> setOf(
-            "if", "then", "else", "elif", "fi", "for", "while", "do", "done", "case", "esac",
-            "function", "return", "in", "select", "until", "export", "local", "readonly", "true", "false"
-        )
-        "sql" -> setOf(
-            "SELECT", "FROM", "WHERE", "INSERT", "UPDATE", "DELETE", "CREATE", "TABLE", "INDEX",
-            "JOIN", "LEFT", "RIGHT", "INNER", "OUTER", "ON", "AS", "AND", "OR", "NOT", "NULL",
-            "PRIMARY", "KEY", "FOREIGN", "REFERENCES", "ORDER", "BY", "GROUP", "HAVING", "LIMIT",
-            "VALUES", "INTO", "SET", "ALTER", "DROP", "DISTINCT", "COUNT", "SUM", "AVG"
-        )
-        "css", "scss", "sass", "less" -> setOf(
-            "important", "from", "to", "and", "or", "not", "only", "var", "calc", "url", "rgb", "rgba"
-        )
-        "html", "htm", "xml" -> setOf(
-            "html", "head", "body", "div", "span", "script", "style", "link", "meta", "title",
-            "class", "id", "href", "src", "type", "rel", "DOCTYPE"
-        )
-        else -> emptySet()
-    }
-
-    val lineComment = when (ext) {
-        "py", "rb", "sh", "bash", "zsh", "yml", "yaml", "toml" -> "#"
-        "sql" -> "--"
-        "html", "htm", "xml", "css", "scss" -> null
-        else -> "//"
-    }
-    val blockCommentStart = when (ext) {
-        "py" -> "\"\"\""
-        "html", "htm", "xml" -> "<!--"
-        else -> "/*"
-    }
-    val blockCommentEnd = when (ext) {
-        "py" -> "\"\"\""
-        "html", "htm", "xml" -> "-->"
-        else -> "*/"
-    }
-
-    val colorKeyword = Color(0xFFCC7832)
-    val colorString = Color(0xFF6A8759)
-    val colorComment = Color(0xFF808080)
-    val colorNumber = Color(0xFF6897BB)
-    val colorDefault = Color(0xFFA9B7C6)
-
-    return buildAnnotatedString {
-        var i = 0
-        val n = source.length
-        while (i < n) {
-            // Block comments
-            if (source.startsWith(blockCommentStart, i) &&
-                !(ext == "py" && blockCommentStart == "\"\"\"" && i > 0)
-            ) {
-                val end = source.indexOf(blockCommentEnd, i + blockCommentStart.length)
-                    .let { if (it < 0) n else it + blockCommentEnd.length }
-                withStyle(SpanStyle(color = colorComment)) { append(source.substring(i, end)) }
-                i = end
-                continue
-            }
-            // Line comments
-            if (lineComment != null && source.startsWith(lineComment, i)) {
-                val end = source.indexOf('\n', i).let { if (it < 0) n else it }
-                withStyle(SpanStyle(color = colorComment)) { append(source.substring(i, end)) }
-                i = end
-                continue
-            }
-            // Strings
-            if (source[i] == '"' || source[i] == '\'' || source[i] == '`') {
-                val quote = source[i]
-                var j = i + 1
-                while (j < n) {
-                    if (source[j] == '\\' && j + 1 < n) {
-                        j += 2
-                        continue
-                    }
-                    if (source[j] == quote) {
-                        j++
-                        break
-                    }
-                    if (source[j] == '\n' && quote != '`') break
-                    j++
-                }
-                withStyle(SpanStyle(color = colorString)) { append(source.substring(i, j)) }
-                i = j
-                continue
-            }
-            // Numbers
-            if (source[i].isDigit()) {
-                var j = i + 1
-                while (j < n && (source[j].isDigit() || source[j] == '.' || source[j] == 'x' || source[j] == 'X' ||
-                            source[j] in 'a'..'f' || source[j] in 'A'..'F' || source[j] == 'L' || source[j] == 'f')
-                ) j++
-                withStyle(SpanStyle(color = colorNumber)) { append(source.substring(i, j)) }
-                i = j
-                continue
-            }
-            // Identifiers / keywords
-            if (source[i].isLetter() || source[i] == '_' || source[i] == '$') {
-                var j = i + 1
-                while (j < n && (source[j].isLetterOrDigit() || source[j] == '_' || source[j] == '$')) j++
-                val word = source.substring(i, j)
-                val isKw = keywords.contains(word) ||
-                    (ext == "sql" && keywords.contains(word.uppercase()))
-                withStyle(SpanStyle(color = if (isKw) colorKeyword else colorDefault)) {
-                    append(word)
-                }
-                i = j
-                continue
-            }
-            withStyle(SpanStyle(color = colorDefault)) { append(source[i]) }
-            i++
-        }
-    }
+/** Syntax highlight using the same palette/logic as the Android tablet app. */
+private fun highlightSourceCode(source: String, fileName: String, dark: Boolean = true): AnnotatedString {
+    val lang = SyntaxHighlight.languageFromPath(fileName)
+    val palette = SyntaxHighlight.defaultPalette(
+        base = if (dark) Color(0xFFE1E2E8) else Color(0xFF191C20),
+        dark = dark
+    )
+    return SyntaxHighlight.highlight(source, lang, palette)
 }
 
 @Composable
@@ -1653,17 +1485,18 @@ fun FilesEditorTab(repoPath: String, repoManager: DesktopRepoManager, onMessage:
             } else {
                 val name = selectedFile!!.substringAfterLast('/')
                 var editing by remember(selectedFile) { mutableStateOf(false) }
-                // Always-on syntax colouring (view + edit), matching the Android editor.
+                val darkUi = androidx.compose.foundation.isSystemInDarkTheme()
+                // Always-on syntax colouring (view + edit), matching the Android tablet editor.
                 val codeStyle = TextStyle(
                     fontFamily = FontFamily.Monospace,
                     fontSize = 13.sp,
                     lineHeight = 20.sp,
-                    color = Color(0xFFA9B7C6)
+                    color = if (darkUi) Color(0xFFE1E2E8) else Color(0xFF191C20)
                 )
-                val highlightTransform = remember(name) {
+                val highlightTransform = remember(name, darkUi) {
                     VisualTransformation { text ->
                         TransformedText(
-                            highlightSourceCode(text.text, name),
+                            highlightSourceCode(text.text, name, dark = darkUi),
                             OffsetMapping.Identity
                         )
                     }
@@ -1704,7 +1537,7 @@ fun FilesEditorTab(repoPath: String, repoManager: DesktopRepoManager, onMessage:
                     Box(
                         Modifier
                             .fillMaxSize()
-                            .background(Color(0xFF2B2B2B))
+                            .background(if (darkUi) Color(0xFF111318) else Color(0xFFF8F9FF))
                             .horizontalScroll(rememberScrollState())
                             .verticalScroll(rememberScrollState())
                             .padding(12.dp)
@@ -1720,12 +1553,12 @@ fun FilesEditorTab(repoPath: String, repoManager: DesktopRepoManager, onMessage:
                     }
                 } else {
                     // Syntax-coloured code reader (identical palette to edit mode)
-                    val highlighted = remember(content, name) { highlightSourceCode(content, name) }
+                    val highlighted = remember(content, name, darkUi) { highlightSourceCode(content, name, dark = darkUi) }
                     SelectionContainer(Modifier.fillMaxSize()) {
                         Box(
                             Modifier
                                 .fillMaxSize()
-                                .background(Color(0xFF2B2B2B))
+                                .background(if (darkUi) Color(0xFF111318) else Color(0xFFF8F9FF))
                                 .horizontalScroll(rememberScrollState())
                                 .verticalScroll(rememberScrollState())
                                 .padding(12.dp)
@@ -3326,14 +3159,15 @@ fun RemoteCodeReaderDialog(
                         CircularProgressIndicator()
                     }
                 } else if (fileContent != null && fileName != null) {
-                    val highlighted = remember(fileContent, fileName) {
-                        highlightSourceCode(fileContent!!, fileName!!)
+                    val darkUi = androidx.compose.foundation.isSystemInDarkTheme()
+                    val highlighted = remember(fileContent, fileName, darkUi) {
+                        highlightSourceCode(fileContent!!, fileName!!, dark = darkUi)
                     }
                     SelectionContainer(
                         Modifier
                             .fillMaxWidth()
                             .weight(1f)
-                            .background(Color(0xFF2B2B2B))
+                            .background(if (darkUi) Color(0xFF111318) else Color(0xFFF8F9FF))
                     ) {
                         Box(
                             Modifier
