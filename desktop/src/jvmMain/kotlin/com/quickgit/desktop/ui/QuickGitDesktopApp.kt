@@ -28,6 +28,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.gestures.animateScrollTo
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.OffsetMapping
@@ -3468,25 +3469,54 @@ fun BrowseAccountScreen(
     Column(Modifier.fillMaxSize().padding(16.dp)) {
         Text("Your GitHub repositories", style = MaterialTheme.typography.titleLarge)
         Spacer(Modifier.height(8.dp))
-        // Org chips — horizontal scroll so the row stays one line and does not push content down
+        // Org chips — horizontal scroll with explicit arrows (trackpads/mice often miss the row)
         Row(
-            Modifier
-                .fillMaxWidth()
-                .horizontalScroll(orgScroll),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            FilterChip(
-                selected = selectedOrg == null,
-                onClick = { selectedOrg = null; loadRepos(null) },
-                label = { Text("Personal") }
-            )
-            orgs.forEach { org ->
+            val canScrollLeft = orgScroll.value > 0
+            val canScrollRight = orgScroll.value < orgScroll.maxValue
+            IconButton(
+                onClick = {
+                    scope.launch {
+                        val target = (orgScroll.value - 240).coerceAtLeast(0)
+                        orgScroll.animateScrollTo(target)
+                    }
+                },
+                enabled = canScrollLeft
+            ) {
+                Icon(Icons.Default.ChevronLeft, contentDescription = "Scroll organizations left")
+            }
+            Row(
+                Modifier
+                    .weight(1f)
+                    .horizontalScroll(orgScroll),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 FilterChip(
-                    selected = selectedOrg == org,
-                    onClick = { selectedOrg = org; loadRepos(org) },
-                    label = { Text(org) }
+                    selected = selectedOrg == null,
+                    onClick = { selectedOrg = null; loadRepos(null) },
+                    label = { Text("Personal") }
                 )
+                orgs.forEach { org ->
+                    FilterChip(
+                        selected = selectedOrg == org,
+                        onClick = { selectedOrg = org; loadRepos(org) },
+                        label = { Text(org) }
+                    )
+                }
+            }
+            IconButton(
+                onClick = {
+                    scope.launch {
+                        val target = (orgScroll.value + 240).coerceAtMost(orgScroll.maxValue)
+                        orgScroll.animateScrollTo(target)
+                    }
+                },
+                enabled = canScrollRight
+            ) {
+                Icon(Icons.Default.ChevronRight, contentDescription = "Scroll organizations right")
             }
         }
         Spacer(Modifier.height(8.dp))
