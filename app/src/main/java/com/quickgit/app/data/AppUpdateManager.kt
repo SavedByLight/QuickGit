@@ -37,7 +37,7 @@ sealed class UpdateCheckResult {
         val current: AppVersionInfo,
         val latest: AppVersionInfo,
         val release: Release,
-        val apkAsset: ReleaseAsset
+        val apkAsset: ReleaseAsset? = null
     ) : UpdateCheckResult()
     data class Error(val message: String) : UpdateCheckResult()
 }
@@ -102,6 +102,20 @@ class AppUpdateManager(
             .apply()
     }
 
+    
+    /** Open the GitHub Releases page in the browser (no in-app download). */
+    fun openReleasesPage() {
+        val url = "https://github.com/${AppUpdateConfig.OWNER}/${AppUpdateConfig.REPO}/releases"
+        try {
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+        } catch (e: Exception) {
+            AppLog.e(TAG, "openReleasesPage failed", e)
+        }
+    }
+
     fun currentVersion(): AppVersionInfo {
         val pm = context.packageManager
         val pkg = context.packageName
@@ -144,8 +158,8 @@ class AppUpdateManager(
             }
 
             val latest = parseReleaseVersion(release)
+            // Notification only — no in-app APK download (Play / sideload policy)
             val apk = release.assets.firstOrNull { it.name.endsWith(".apk", ignoreCase = true) }
-                ?: return UpdateCheckResult.Error("Latest release has no APK asset")
 
             if (isNewer(latest, current)) {
                 UpdateCheckResult.Available(current, latest, release, apk)

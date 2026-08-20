@@ -4069,16 +4069,13 @@ fun SettingsScreen(
                     val result = withContext(Dispatchers.IO) { updateManager.checkForUpdate() }
                     checkingUpdate = false
                     when (result) {
-                        is DesktopUpdateCheckResult.UpToDate -> updateStatus = "Up to date (${result.current.versionName})"
-                        is DesktopUpdateCheckResult.Available -> {
-                            updateStatus = "Downloading ${result.latest.versionName}…"
-                            val dl = withContext(Dispatchers.IO) { updateManager.downloadUpdate(result.downloadUrl, result.assetName) }
-                            dl.fold(
-                                onSuccess = { f -> updateStatus = "Saved ${f.absolutePath}"; updateManager.openFile(f) },
-                                onFailure = { updateStatus = "Download failed: ${it.message}"; updateManager.openReleasePage() }
-                            )
-                        }
-                        is DesktopUpdateCheckResult.Error -> updateStatus = "Check failed: ${result.message}"
+                        is DesktopUpdateCheckResult.UpToDate ->
+                            updateStatus = "Up to date (${result.current.versionName})"
+                        is DesktopUpdateCheckResult.Available ->
+                            updateStatus =
+                                "QuickGit ${result.latest.versionName} is available — open Releases to download."
+                        is DesktopUpdateCheckResult.Error ->
+                            updateStatus = "Check failed: ${result.message}"
                     }
                 }
             }, enabled = !checkingUpdate) { Text(if (checkingUpdate) "Checking…" else "Check for updates") }

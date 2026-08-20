@@ -132,16 +132,14 @@ class DesktopAppUpdateManager(
                     break
                 }
             }
-            if (chosenUrl.isNullOrBlank() || chosenName.isNullOrBlank()) {
-                return DesktopUpdateCheckResult.Error("No desktop package for this OS in latest release")
-            }
+            // Prefer OS-matched asset; still notify with empty URL so user can open Releases
             DesktopUpdateCheckResult.Available(
                 current = current,
                 latest = DesktopVersionInfo(tag, latestCode),
                 releaseName = releaseName,
                 releaseNotes = notes,
-                downloadUrl = chosenUrl,
-                assetName = chosenName
+                downloadUrl = chosenUrl.orEmpty(),
+                assetName = chosenName.orEmpty()
             )
         } catch (e: Exception) {
             DesktopUpdateCheckResult.Error(e.message ?: "Update check failed")

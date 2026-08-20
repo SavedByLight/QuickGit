@@ -84,64 +84,35 @@ private fun UpdateAvailableDialog(
     updateManager: DesktopAppUpdateManager,
     onDismiss: () -> Unit
 ) {
-    var downloading by remember { mutableStateOf(false) }
-    var progress by remember { mutableStateOf(0) }
-    var status by remember { mutableStateOf<String?>(null) }
-    val scope = rememberCoroutineScope()
-
     AlertDialog(
-        onDismissRequest = { if (!downloading) onDismiss() },
-        title = { Text("Update available") },
+        onDismissRequest = onDismiss,
+        title = { Text("New release available") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    "QuickGit ${available.latest.versionName} is available " +
+                    "QuickGit ${available.latest.versionName} is on GitHub Releases " +
                         "(you have ${available.current.versionName})."
                 )
-                Text("Package: ${available.assetName}", style = MaterialTheme.typography.bodySmall)
-                if (downloading) {
-                    LinearProgressIndicator(
-                        progress = { progress / 100f },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Text("Downloading… $progress%", style = MaterialTheme.typography.bodySmall)
-                }
-                status?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                Text(
+                    "Open the Releases page to download the package for your platform. " +
+                        "In-app install is not used.",
+                    style = MaterialTheme.typography.bodySmall
+                )
             }
         },
         confirmButton = {
-            TextButton(
+            Button(
                 onClick = {
-                    scope.launch {
-                        downloading = true
-                        status = null
-                        val result = withContext(Dispatchers.IO) {
-                            updateManager.downloadUpdate(
-                                available.downloadUrl,
-                                available.assetName
-                            ) { progress = it }
-                        }
-                        downloading = false
-                        result.fold(
-                            onSuccess = { file ->
-                                status = "Saved to ${file.absolutePath}"
-                                updateManager.openFile(file)
-                            },
-                            onFailure = { status = "Download failed: ${it.message}" }
-                        )
-                    }
-                },
-                enabled = !downloading
-            ) { Text(if (downloading) "Downloading…" else "Download") }
+                    updateManager.openReleasePage()
+                    onDismiss()
+                }
+            ) { Text("Open Releases") }
         },
         dismissButton = {
-            Row {
-                TextButton(onClick = {
-                    updateManager.snoozeForDays(7)
-                    onDismiss()
-                }, enabled = !downloading) { Text("Remind in 7 days") }
-                TextButton(onClick = onDismiss, enabled = !downloading) { Text("Later") }
-            }
+            TextButton(onClick = {
+                updateManager.snoozeForDays(7)
+                onDismiss()
+            }) { Text("Later") }
         }
     )
 }

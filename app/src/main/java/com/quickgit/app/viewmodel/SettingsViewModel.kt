@@ -149,53 +149,16 @@ class SettingsViewModel(
         }
     }
 
-    fun downloadAndInstallUpdate() {
-        val asset = pendingApkAsset ?: return
-        viewModelScope.launch {
-            if (!appUpdateManager.canRequestPackageInstalls()) {
-                _state.value = _state.value.copy(updateNeedsInstallPermission = true)
-                return@launch
-            }
-            _state.value = _state.value.copy(
-                updateDownloading = true,
-                updateProgress = 0,
-                updateNeedsInstallPermission = false,
-                statusMessage = null
-            )
-            val result = withContext(Dispatchers.IO) {
-                appUpdateManager.downloadApk(asset) { pct ->
-                    _state.value = _state.value.copy(updateProgress = pct)
-                }
-            }
-            when (result) {
-                is com.quickgit.app.data.DownloadResult.Success -> {
-                    _state.value = _state.value.copy(
-                        updateDownloading = false,
-                        updateProgress = 100,
-                        downloadedApkPath = result.apkFile.absolutePath,
-                        statusMessage = "Download complete — opening installer…",
-                        isError = false
-                    )
-                    val ok = appUpdateManager.installApk(result.apkFile)
-                    if (!ok) {
-                        _state.value = _state.value.copy(
-                            statusMessage = "Could not open the package installer",
-                            isError = true
-                        )
-                    }
-                }
-                is com.quickgit.app.data.DownloadResult.Error -> {
-                    _state.value = _state.value.copy(
-                        updateDownloading = false,
-                        statusMessage = result.message,
-                        isError = true
-                    )
-                }
-            }
-        }
+    fun openReleasesPage() {
+        appUpdateManager.openReleasesPage()
     }
 
-    /** Returns the settings intent for unknown-sources; UI starts it. */
+    @Deprecated("In-app APK install removed; use openReleasesPage()")
+    fun downloadAndInstallUpdate() {
+        openReleasesPage()
+    }
+
+
     fun installPermissionIntent() = appUpdateManager.installPermissionSettingsIntent()
 
     fun clearInstallPermissionFlag() {

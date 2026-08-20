@@ -538,7 +538,7 @@ fun SettingsScreen(
             Text(
                 "Current version ${state.appVersionName} (${state.appVersionCode}). " +
                     "Checks GitHub Releases on ${AppUpdateConfig.OWNER}/${AppUpdateConfig.REPO} " +
-                    "for a newer APK published by the release workflow.",
+                    "for a newer release. Opens the GitHub Releases page — no in-app install.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -559,31 +559,10 @@ fun SettingsScreen(
                 }
                 Spacer(Modifier.height(8.dp))
             }
-            if (state.updateDownloading) {
-                LinearProgressIndicator(
-                    progress = { state.updateProgress / 100f },
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "Downloading… ${state.updateProgress}%",
-                    style = MaterialTheme.typography.bodySmall
-                )
-                Spacer(Modifier.height(8.dp))
-            }
-            val context = LocalContext.current
-            LaunchedEffect(state.updateNeedsInstallPermission) {
-                if (state.updateNeedsInstallPermission) {
-                    try {
-                        context.startActivity(vm.installPermissionIntent())
-                    } catch (_: Exception) { }
-                    vm.clearInstallPermissionFlag()
-                }
-            }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(
                     onClick = { vm.checkForUpdate() },
-                    enabled = !state.updateChecking && !state.updateDownloading
+                    enabled = !state.updateChecking
                 ) {
                     if (state.updateChecking) {
                         CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
@@ -595,11 +574,8 @@ fun SettingsScreen(
                     Text(if (state.updateChecking) "Checking…" else "Check for updates")
                 }
                 if (state.updateAvailable) {
-                    Button(
-                        onClick = { vm.downloadAndInstallUpdate() },
-                        enabled = !state.updateDownloading
-                    ) {
-                        Text(if (state.updateDownloading) "Downloading…" else "Download & install")
+                    Button(onClick = { vm.openReleasesPage() }) {
+                        Text("Open Releases")
                     }
                 }
             }
