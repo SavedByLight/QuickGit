@@ -28,7 +28,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.gestures.animateScrollTo
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.OffsetMapping
@@ -1405,32 +1404,6 @@ fun FilesEditorTab(repoPath: String, repoManager: DesktopRepoManager, onMessage:
         }
     }
 
-    fun copyUpload(src: java.io.File, dest: java.io.File, overwrite: Boolean) {
-        scope.launch {
-            try {
-                val summary = withContext(Dispatchers.IO) {
-                    if (src.isDirectory) {
-                        mergeCopyDirectory(src, dest, overwriteExistingFiles = overwrite)
-                    } else {
-                        if (dest.exists() && !overwrite) return@withContext null
-                        if (dest.isDirectory) throw IllegalStateException("A folder named '${dest.name}' already exists")
-                        dest.parentFile?.mkdirs()
-                        src.copyTo(dest, overwrite = true)
-                        if (overwrite) "Replaced ${dest.name}" else "Uploaded ${dest.name}"
-                    }
-                } ?: return@launch
-                onMessage(summary)
-                listDir(currentDir)
-                if (src.isFile) {
-                    val rel = dest.relativeTo(root).path.replace('\\', '/')
-                    if (isProbablyTextFile(dest.name)) openFile(rel)
-                }
-            } catch (e: Exception) {
-                onMessage("Upload failed: ${e.message}")
-            }
-        }
-    }
-
     /** Merge [src] directory into [dest]; create dest if missing. Overwrite files when requested. */
     fun mergeCopyDirectory(src: java.io.File, dest: java.io.File, overwriteExistingFiles: Boolean): String {
         if (dest.isFile) throw IllegalStateException("A file named '${dest.name}' already exists")
@@ -1468,6 +1441,32 @@ fun FilesEditorTab(repoPath: String, repoManager: DesktopRepoManager, onMessage:
             "Merged folder ${dest.name} (no file changes)"
         } else {
             "Imported folder ${dest.name}: ${parts.joinToString(", ")}"
+        }
+    }
+
+    fun copyUpload(src: java.io.File, dest: java.io.File, overwrite: Boolean) {
+        scope.launch {
+            try {
+                val summary = withContext(Dispatchers.IO) {
+                    if (src.isDirectory) {
+                        mergeCopyDirectory(src, dest, overwriteExistingFiles = overwrite)
+                    } else {
+                        if (dest.exists() && !overwrite) return@withContext null
+                        if (dest.isDirectory) throw IllegalStateException("A folder named '${dest.name}' already exists")
+                        dest.parentFile?.mkdirs()
+                        src.copyTo(dest, overwrite = true)
+                        if (overwrite) "Replaced ${dest.name}" else "Uploaded ${dest.name}"
+                    }
+                } ?: return@launch
+                onMessage(summary)
+                listDir(currentDir)
+                if (src.isFile) {
+                    val rel = dest.relativeTo(root).path.replace('\\', '/')
+                    if (isProbablyTextFile(dest.name)) openFile(rel)
+                }
+            } catch (e: Exception) {
+                onMessage("Upload failed: ${e.message}")
+            }
         }
     }
 
@@ -1763,14 +1762,10 @@ fun FilesEditorTab(repoPath: String, repoManager: DesktopRepoManager, onMessage:
             text = {
                 Text(
                     if (isFolder) {
-                        ""${dest.name}" already exists in this folder.
-
-" +
+                        "\"${dest.name}\" already exists in this folder.\n\n" +
                             "Merge the selected folder into it? Existing files with the same name will be overwritten."
                     } else {
-                        ""${dest.name}" already exists in this folder.
-
-Replace it with the selected file?"
+                        "\"${dest.name}\" already exists in this folder.\n\nReplace it with the selected file?"
                     }
                 )
             },
@@ -3480,7 +3475,7 @@ fun BrowseAccountScreen(
                 onClick = {
                     scope.launch {
                         val target = (orgScroll.value - 240).coerceAtLeast(0)
-                        orgScroll.animateScrollTo(target)
+                        orgScroll.scrollTo(target)
                     }
                 },
                 enabled = canScrollLeft
@@ -3511,7 +3506,7 @@ fun BrowseAccountScreen(
                 onClick = {
                     scope.launch {
                         val target = (orgScroll.value + 240).coerceAtMost(orgScroll.maxValue)
-                        orgScroll.animateScrollTo(target)
+                        orgScroll.scrollTo(target)
                     }
                 },
                 enabled = canScrollRight
