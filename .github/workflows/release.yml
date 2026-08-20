@@ -1,16 +1,23 @@
 name: Build and Release
 
-# Runs on every push to main — i.e. after every commit that lands on main
-# (including merged PRs). Each run gets its own monotonically increasing
-# version number derived from the workflow run number, builds the phone,
-# Wear OS, native desktop (Linux + Windows), tags the commit, and publishes
-# a GitHub Release with all artifacts attached.
+# Manual only. Run from Actions → Build and Release → Run workflow.
+# Set "version" to the release number (e.g. 2.0.1). Artifacts and the GitHub
+# Release are published as QuickGit x.x.x with a changelog of every commit
+# since the previous tag.
 on:
-  push:
-    branches: [ main ]
-  workflow_dispatch: {} # allows manually re-running from the Actions tab
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g. 2.0.1) — becomes QuickGit x.x.x'
+        required: true
+        type: string
+      version_code:
+        description: 'Android versionCode (integer). Leave blank to use run number.'
+        required: false
+        type: string
+        default: ''
 
-# Prevent two releases from racing each other if commits land close together.
+# Prevent two releases from racing each other if runs overlap.
 concurrency:
   group: release
   cancel-in-progress: false
@@ -19,25 +26,77 @@ permissions:
   contents: write # needed to push tags and create releases
 
 jobs:
-  # ── Shared version stamp ──────────────────────────────────────────────────
+  # ── Shared version stamp (from workflow_dispatch input) ───────────────────
   version:
     runs-on: ubuntu-latest
     outputs:
       code: ${{ steps.version.outputs.code }}
       name: ${{ steps.version.outputs.name }}
       tag: ${{ steps.version.outputs.tag }}
+      changelog: ${{ steps.changelog.outputs.changelog }}
     steps:
-      - name: Compute version number
+      - name: Checkout (for previous tag / changelog)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve version from input
         id: version
         run: |
-          VERSION_CODE="${{ github.run_number }}"
-          # 2.0.x series: each release bumps the patch to the workflow run number
-          VERSION_NAME="2.0.${{ github.run_number }}"
+          set -euo pipefail
+          # Accept "2.0.1" or "v2.0.1" or "QuickGit 2.0.1"
+          RAW="${{ inputs.version }}"
+          RAW="${RAW#QuickGit }"
+          RAW="${RAW#quickgit }"
+          RAW="${RAW#v}"
+          VERSION_NAME="$(echo "$RAW" | tr -d '[:space:]')"
+          if [[ ! "$VERSION_NAME" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.]+)?$ ]]; then
+            echo "Invalid version '$VERSION_NAME'. Use x.y.z (e.g. 2.0.1)."
+            exit 1
+          fi
+          if [ -n "${{ inputs.version_code }}" ]; then
+            VERSION_CODE="${{ inputs.version_code }}"
+          else
+            # Derive a monotonic integer from x.y.z: major*1000000 + minor*1000 + patch
+            IFS=. read -r MAJ MIN PAT <<<"${VERSION_NAME%%-*}"
+            PAT="${PAT%%[^0-9]*}"
+            VERSION_CODE=$(( MAJ * 1000000 + MIN * 1000 + PAT ))
+          fi
           TAG="v${VERSION_NAME}"
           echo "code=$VERSION_CODE" >> "$GITHUB_OUTPUT"
           echo "name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "Version: $VERSION_NAME (code $VERSION_CODE), tag $TAG"
+          echo "Version: QuickGit $VERSION_NAME (code $VERSION_CODE), tag $TAG"
+
+      - name: Build changelog since previous release
+        id: changelog
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.version.outputs.tag }}"
+          # Prefer the latest previous tag by version sort; fall back to first parent range
+          PREV="$(git tag -l 'v*' --sort=-v:refname | grep -v "^${TAG}$" | head -n1 || true)"
+          {
+            echo "changelog<<CHANGELOG_EOF"
+            echo "## What's changed"
+            echo ""
+            if [ -n "$PREV" ]; then
+              echo "Commits since \`${PREV}\`:"
+              echo ""
+              # Subject + short hash; skip merge noise optionally still include merges
+              git log "${PREV}..HEAD" --pretty=format:'- %s (%h)' --no-merges
+              echo ""
+              echo ""
+              COUNT="$(git rev-list --count "${PREV}..HEAD" --no-merges 2>/dev/null || echo 0)"
+              echo "_${COUNT} commit(s) since ${PREV}_"
+            else
+              echo "First tagged release (no previous tag found)."
+              echo ""
+              git log -20 --pretty=format:'- %s (%h)' --no-merges
+              echo ""
+            fi
+            echo "CHANGELOG_EOF"
+          } >> "$GITHUB_OUTPUT"
+          echo "Previous tag: ${PREV:-none}"
 
   # ── Android + Linux desktop ───────────────────────────────────────────────
   build-linux-android:
@@ -367,10 +426,10 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # ── Tag + GitHub Release (always 1.0.<run_number>; Windows is best-effort) ─
-  # Continues the previous behaviour: every successful main build publishes a
-  # GitHub Release tagged v1.0.<github.run_number>. Windows MSI is attached when
-  # the windows job succeeds; a Windows failure must not block Android/Linux releases.
+  # ── Tag + GitHub Release (manual version; Windows is best-effort) ─────────
+  # Publishes QuickGit x.x.x from the workflow_dispatch version input.
+  # Windows MSI is attached when the windows job succeeds; a Windows failure
+  # must not block Android/Linux releases.
   publish-release:
     needs: [version, build-linux-android, build-windows]
     if: |
@@ -411,7 +470,7 @@ jobs:
           if [ -f "dist/quickgit-${{ needs.version.outputs.name }}-windows-x64.msi" ]; then
             echo "Windows MSI present"
           else
-            echo "WARNING: Windows MSI missing (Linux/Android release will still publish as 1.0.${{ needs.version.outputs.name }})"
+            echo "WARNING: Windows MSI missing (Linux/Android release will still publish as QuickGit ${{ needs.version.outputs.name }})"
           fi
 
       - name: Tag the release commit
@@ -443,9 +502,15 @@ jobs:
           tag_name: ${{ needs.version.outputs.tag }}
           name: QuickGit ${{ needs.version.outputs.name }}
           body: |
-            Automated build from commit ${{ github.sha }}.
+            **QuickGit ${{ needs.version.outputs.name }}**
 
-            **Artifacts**
+            Built from commit `${{ github.sha }}`.
+
+            ${{ needs.version.outputs.changelog }}
+
+            ---
+
+            ### Artifacts
             - `quickgit-${{ needs.version.outputs.name }}.apk` — phone / tablet (Android)
             - `quickgit-wear-${{ needs.version.outputs.name }}.apk` — Wear OS
             - `quickgit-${{ needs.version.outputs.name }}-linux-amd64.deb` — native Linux (.deb; Debian/Ubuntu)
@@ -453,12 +518,5 @@ jobs:
             - `quickgit-${{ needs.version.outputs.name }}-linux-x86_64.AppImage` — native Linux (AppImage)
             - `quickgit-${{ needs.version.outputs.name }}-windows-x64.msi` — native Windows (MSI; included when the Windows job succeeds)
 
-            Version scheme is unchanged: every successful main build publishes **v1.0.<run_number>** (e.g. 1.0.251).
-
-            Desktop builds (Linux and Windows) share the same UI: Actions, Releases, Issues, PRs, and the rest of the tabbed repo detail experience.
-
             **Desktop auto-update:** Linux (.deb / .rpm / AppImage) and Windows (.msi) builds check this Releases page for newer packages for their platform.
-
-            **Commit message:**
-            ${{ github.event.head_commit.message }}
           files: ${{ steps.files.outputs.list }}
