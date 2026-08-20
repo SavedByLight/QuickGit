@@ -344,7 +344,95 @@ fun SettingsScreen(
             }
 
             Spacer(Modifier.height(28.dp))
-            HorizontalDivider()
+            
+            HorizontalDivider(Modifier.padding(vertical = 20.dp))
+            Text("Gerrit account", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "Connect a Gerrit host to clone repositories. Use your Gerrit username and an " +
+                    "HTTP password from Gerrit → Settings → HTTP Credentials (not necessarily your web login password).",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(8.dp))
+            if (state.gerritConnected && state.gerritUsername != null) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        Icons.Default.CheckCircle,
+                        contentDescription = null,
+                        tint = GitGreen,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        "Connected as ${state.gerritUsername} on ${state.gerritHost}",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+            }
+            var gerritHost by remember { mutableStateOf(state.gerritHost.ifBlank { "" }) }
+            var gerritUser by remember { mutableStateOf(state.gerritUsername.orEmpty()) }
+            var gerritPassword by remember { mutableStateOf("") }
+            LaunchedEffect(state.gerritHost) {
+                if (state.gerritHost.isNotBlank() && gerritHost != state.gerritHost) {
+                    gerritHost = state.gerritHost
+                }
+            }
+            LaunchedEffect(state.gerritUsername) {
+                if (!state.gerritUsername.isNullOrBlank() && gerritUser.isBlank()) {
+                    gerritUser = state.gerritUsername.orEmpty()
+                }
+            }
+            OutlinedTextField(
+                value = gerritHost,
+                onValueChange = { gerritHost = it },
+                label = { Text("Gerrit host") },
+                placeholder = { Text("gerrit.example.com") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = gerritUser,
+                onValueChange = { gerritUser = it },
+                label = { Text("Username") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = gerritPassword,
+                onValueChange = { gerritPassword = it },
+                label = { Text("HTTP password") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation()
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = {
+                        vm.connectGerrit(gerritHost, gerritUser, gerritPassword)
+                        gerritPassword = ""
+                    },
+                    enabled = gerritHost.isNotBlank() && gerritUser.isNotBlank() &&
+                        gerritPassword.isNotBlank() && !state.connecting
+                ) {
+                    if (state.connecting) {
+                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(8.dp))
+                    }
+                    Text(if (state.gerritConnected) "Reconnect Gerrit" else "Connect Gerrit")
+                }
+                if (state.gerritConnected) {
+                    OutlinedButton(onClick = { vm.disconnectGerrit() }) {
+                        Text("Disconnect")
+                    }
+                }
+            }
+
+HorizontalDivider()
             Spacer(Modifier.height(28.dp))
 
             Text("SSH key", style = MaterialTheme.typography.titleMedium)

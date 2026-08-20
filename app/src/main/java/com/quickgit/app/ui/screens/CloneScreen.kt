@@ -55,7 +55,7 @@ fun CloneScreen(
                 value = url,
                 onValueChange = { url = it },
                 label = { Text("Repository URL") },
-                placeholder = { Text("https://github.com/user/repo.git") },
+                placeholder = { Text("https://github.com/… or https://gerrit…/a/project") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true
             )
@@ -66,6 +66,26 @@ fun CloneScreen(
             ) {
                 Text("Browse my GitHub repositories")
             }
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(
+                onClick = { vm.openGerritBrowser() },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = state.gerritConnected || true
+            ) {
+                Text(
+                    if (state.gerritConnected)
+                        "Browse Gerrit projects (${state.gerritHost})"
+                    else
+                        "Browse Gerrit projects (connect under Credentials)"
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Gerrit HTTPS clones use https://host/a/project/path. After you connect under " +
+                    "Credentials, QuickGit applies your HTTP password automatically.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
             Spacer(Modifier.height(20.dp))
             Text("Clone into", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(4.dp))
@@ -150,4 +170,53 @@ fun CloneScreen(
         }
         } // AdaptiveContent
     }
+
+    if (state.showGerritBrowser) {
+        AlertDialog(
+            onDismissRequest = { vm.closeGerritBrowser() },
+            title = { Text("Gerrit projects") },
+            text = {
+                Column(Modifier.heightIn(max = 420.dp)) {
+                    if (state.gerritLoading) {
+                        CircularProgressIndicator()
+                    } else if (state.gerritError != null) {
+                        Text(state.gerritError!!, color = MaterialTheme.colorScheme.error)
+                    } else if (state.gerritProjects.isEmpty()) {
+                        Text("No projects found (or none visible to your account).")
+                    } else {
+                        Column(Modifier.verticalScroll(rememberScrollState())) {
+                            state.gerritProjects.forEach { project ->
+                                TextButton(
+                                    onClick = {
+                                        val cloneUrl = vm.cloneUrlForGerritProject(project.name)
+                                        if (cloneUrl != null) {
+                                            url = cloneUrl
+                                            vm.previewDefaultDestination(cloneUrl)
+                                        }
+                                        vm.closeGerritBrowser()
+                                    },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Column(Modifier.fillMaxWidth()) {
+                                        Text(project.name, style = MaterialTheme.typography.bodyLarge)
+                                        project.description?.let {
+                                            Text(
+                                                it,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { vm.closeGerritBrowser() }) { Text("Close") }
+            }
+        )
+    }
+
 }

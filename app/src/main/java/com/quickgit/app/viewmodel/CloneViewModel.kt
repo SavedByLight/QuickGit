@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 
 data class CloneUiState(
@@ -22,11 +23,18 @@ data class CloneUiState(
     /** When true, destination is the default under reposRoot (no SAF pick required). */
     val usingDefaultDestination: Boolean = true,
     /** 1 = shallow (default), 0 = full history, N = --depth N */
-    val depth: Int = 1
+    val depth: Int = 1,
+    val gerritConnected: Boolean = false,
+    val gerritHost: String = "",
+    val gerritProjects: List<com.quickgit.app.data.models.GerritProject> = emptyList(),
+    val gerritLoading: Boolean = false,
+    val gerritError: String? = null,
+    val showGerritBrowser: Boolean = false
 )
 
 class CloneViewModel(
     private val repoManager: RepoManager,
+    private val gerritAccountManager: com.quickgit.app.data.GerritAccountManager,
     private val app: Application
 ) : ViewModel() {
     private val _state = MutableStateFlow(CloneUiState())
@@ -34,6 +42,58 @@ class CloneViewModel(
 
     private var pickedDestination: File? = null
     private val notifier = GitProgressNotifier(app)
+
+    init {
+        refreshGerritConnection()
+    }
+
+    fun refreshGerritConnection() {
+        gerritAccountManager.restoreHost()
+        val h = gerritAccountManager.host
+        _state.value = _state.value.copy(
+            gerritConnected = h.isNotBlank() && gerritAccountManager.isConnected(h),
+            gerritHost = h
+        )
+    }
+
+    fun openGerritBrowser() {
+        refreshGerritConnection()
+        if (!_state.value.gerritConnected) {
+            _state.value = _state.value.copy(
+                gerritError = "Connect a Gerrit host under Credentials first",
+                showGerritBrowser = false
+            )
+            return
+        }
+        _state.value = _state.value.copy(showGerritBrowser = true, gerritError = null)
+        loadGerritProjects()
+    }
+
+    fun closeGerritBrowser() {
+        _state.value = _state.value.copy(showGerritBrowser = false)
+    }
+
+    fun loadGerritProjects() {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(gerritLoading = true, gerritError = null)
+            val (projects, result) = withContext(Dispatchers.IO) {
+                gerritAccountManager.listProjects()
+            }
+            _state.value = _state.value.copy(
+                gerritLoading = false,
+                gerritProjects = projects,
+                gerritError = when (result) {
+                    is com.quickgit.app.data.models.PrOpResult.Error -> result.message
+                    is com.quickgit.app.data.models.PrOpResult.AuthRequired ->
+                        "Auth failed for ${result.host}"
+                    else -> null
+                }
+            )
+        }
+    }
+
+    fun cloneUrlForGerritProject(name: String): String? =
+        gerritAccountManager.cloneUrl(name)
 
     /** Suggest a default folder name from a git URL (last path segment without .git). */
     fun defaultFolderNameFor(url: String): String {

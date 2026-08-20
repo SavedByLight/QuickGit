@@ -5,6 +5,7 @@ import com.quickgit.app.data.AppPreferences
 import com.quickgit.app.data.AppUpdateManager
 import com.quickgit.app.data.CredentialStore
 import com.quickgit.app.data.GitHubAccountManager
+import com.quickgit.app.data.GerritAccountManager
 import com.quickgit.app.data.GitLabAccountManager
 import com.quickgit.app.data.GitProgressNotifier
 import com.quickgit.app.data.IssueManager
@@ -23,6 +24,7 @@ class QuickGitApp : Application() {
     lateinit var gitHubAccountManager: GitHubAccountManager
         private set
     lateinit var gitLabAccountManager: GitLabAccountManager
+    lateinit var gerritAccountManager: GerritAccountManager
         private set
     lateinit var issueManager: IssueManager
         private set
@@ -44,6 +46,7 @@ class QuickGitApp : Application() {
         pullRequestManager = PullRequestManager(repoManager, credentialStore)
         gitHubAccountManager = GitHubAccountManager(credentialStore)
         gitLabAccountManager = GitLabAccountManager(credentialStore)
+        gerritAccountManager = GerritAccountManager(credentialStore)
         issueManager = IssueManager(repoManager, credentialStore)
         workflowManager = WorkflowManager(repoManager, credentialStore)
         releaseManager = ReleaseManager(repoManager, credentialStore)

@@ -142,6 +142,17 @@ class CredentialStore(private val context: Context) {
             .apply()
     }
 
+    fun setPreferredGerritHost(host: String) {
+        prefs.edit().putString("gerrit_preferred_host", host.trim().lowercase()).apply()
+    }
+
+    fun getPreferredGerritHost(): String? =
+        prefs.getString("gerrit_preferred_host", null)?.takeIf { it.isNotBlank() }
+
+    fun clearPreferredGerritHost() {
+        prefs.edit().remove("gerrit_preferred_host").apply()
+    }
+
     // ==================== SSH key ====================
     fun hasSshKey(): Boolean = !prefs.getString("ssh_private_key", null).isNullOrBlank()
 
