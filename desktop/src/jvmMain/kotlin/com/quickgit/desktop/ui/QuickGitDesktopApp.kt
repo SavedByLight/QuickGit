@@ -3055,12 +3055,57 @@ fun CloneScreen(
     var progress by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    val gerrit = remember { com.quickgit.desktop.data.GerritAccountManager(credentialStore) }
+    var showGerrit by remember { mutableStateOf(false) }
+    var gerritProjects by remember { mutableStateOf<List<com.quickgit.desktop.data.models.GerritProject>>(emptyList()) }
+    var gerritLoading by remember { mutableStateOf(false) }
+    var gerritError by remember { mutableStateOf<String?>(null) }
+    val gerritHost = gerrit.host
+    val gerritConnected = gerrit.isConnected()
 
     Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Text("Clone a repository", style = MaterialTheme.typography.headlineSmall)
-        OutlinedTextField(value = url, onValueChange = { url = it }, label = { Text("Repository URL") }, modifier = Modifier.fillMaxWidth(), singleLine = true, placeholder = { Text("https://github.com/user/repo.git") })
+        OutlinedTextField(
+            value = url,
+            onValueChange = { url = it },
+            label = { Text("Repository URL") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            placeholder = { Text("https://github.com/… or https://gerrit…/a/project") }
+        )
         OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Folder name (optional)") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
         Text("Clones into: ${repoManager.getReposRoot().absolutePath}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(
+                onClick = {
+                    if (!gerrit.isConnected()) {
+                        onMessage("Connect a Gerrit host under Credentials first")
+                        return@OutlinedButton
+                    }
+                    showGerrit = true
+                    scope.launch {
+                        gerritLoading = true
+                        gerritError = null
+                        val r = withContext(Dispatchers.IO) { gerrit.listProjects() }
+                        gerritLoading = false
+                        r.fold(
+                            onSuccess = { gerritProjects = it },
+                            onFailure = { gerritError = it.message; gerritProjects = emptyList() }
+                        )
+                    }
+                }
+            ) {
+                Text(
+                    if (gerritConnected) "Browse Gerrit projects ($gerritHost)"
+                    else "Browse Gerrit projects"
+                )
+            }
+        }
+        Text(
+            "Gerrit HTTPS clones use https://host/a/project/path. Credentials saved under Creds are applied automatically.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
         if (progress != null) {
             Text(progress!!)
             LinearProgressIndicator(Modifier.fillMaxWidth())
@@ -3083,7 +3128,45 @@ fun CloneScreen(
             enabled = url.isNotBlank() && !busy,
             modifier = Modifier.align(Alignment.End)
         ) { Text(if (busy) "Cloning…" else "Clone") }
-        Text("Tip: use Browse to clone from your GitHub account and organizations.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("Tip: use Browse for GitHub, or Gerrit projects after connecting under Credentials.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+
+    if (showGerrit) {
+        AlertDialog(
+            onDismissRequest = { showGerrit = false },
+            title = { Text("Gerrit projects") },
+            text = {
+                Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) {
+                    when {
+                        gerritLoading -> CircularProgressIndicator()
+                        gerritError != null -> Text(gerritError!!, color = MaterialTheme.colorScheme.error)
+                        gerritProjects.isEmpty() -> Text("No projects found.")
+                        else -> gerritProjects.forEach { project ->
+                            TextButton(
+                                onClick = {
+                                    gerrit.cloneUrl(project.name)?.let { cloneUrl ->
+                                        url = cloneUrl
+                                        if (name.isBlank()) name = project.name.substringAfterLast('/')
+                                    }
+                                    showGerrit = false
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(Modifier.fillMaxWidth()) {
+                                    Text(project.name)
+                                    project.description?.let {
+                                        Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showGerrit = false }) { Text("Close") }
+            }
+        )
     }
 }
 
@@ -4124,6 +4207,79 @@ fun CredentialsScreen(credentialStore: DesktopCredentialStore, onMessage: (Strin
             credentialStore.setGitlabToken(gitlabToken.ifBlank { null })
             onMessage("GitLab credentials saved for $gitlabHost")
         }) { Text("Save GitLab credentials") }
+
+        HorizontalDivider()
+        Text("Gerrit", style = MaterialTheme.typography.titleMedium)
+        Text(
+            "Use your Gerrit username and HTTP password (Settings → HTTP Credentials on the Gerrit web UI).",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        var gerritHost by remember {
+            mutableStateOf(credentialStore.getPreferredGerritHost().orEmpty())
+        }
+        var gerritUser by remember {
+            mutableStateOf(
+                credentialStore.getPreferredGerritHost()?.let { credentialStore.getHttpsUsername(it) }.orEmpty()
+            )
+        }
+        var gerritPassword by remember { mutableStateOf("") }
+        var gerritBusy by remember { mutableStateOf(false) }
+        val gerritScope = rememberCoroutineScope()
+        OutlinedTextField(
+            value = gerritHost,
+            onValueChange = { gerritHost = it },
+            label = { Text("Host") },
+            placeholder = { Text("gerrit.example.com") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true
+        )
+        OutlinedTextField(
+            value = gerritUser,
+            onValueChange = { gerritUser = it },
+            label = { Text("Username") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true
+        )
+        OutlinedTextField(
+            value = gerritPassword,
+            onValueChange = { gerritPassword = it },
+            label = { Text("HTTP password") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+                onClick = {
+                    gerritScope.launch {
+                        gerritBusy = true
+                        val mgr = com.quickgit.desktop.data.GerritAccountManager(credentialStore)
+                        val r = withContext(Dispatchers.IO) {
+                            mgr.connect(gerritHost, gerritUser, gerritPassword)
+                        }
+                        gerritBusy = false
+                        r.fold(
+                            onSuccess = {
+                                gerritPassword = ""
+                                onMessage("Connected to Gerrit as ${it.username} on ${it.host}")
+                            },
+                            onFailure = { onMessage("Gerrit connect failed: ${it.message}") }
+                        )
+                    }
+                },
+                enabled = gerritHost.isNotBlank() && gerritUser.isNotBlank() &&
+                    gerritPassword.isNotBlank() && !gerritBusy
+            ) { Text(if (gerritBusy) "Connecting…" else "Connect Gerrit") }
+            OutlinedButton(
+                onClick = {
+                    val mgr = com.quickgit.desktop.data.GerritAccountManager(credentialStore)
+                    val h = gerritHost.ifBlank { mgr.host }
+                    mgr.disconnect(h)
+                    gerritPassword = ""
+                    onMessage("Disconnected Gerrit")
+                }
+            ) { Text("Disconnect") }
+        }
 
         HorizontalDivider()
         Text("Per-host HTTPS", style = MaterialTheme.typography.titleMedium)

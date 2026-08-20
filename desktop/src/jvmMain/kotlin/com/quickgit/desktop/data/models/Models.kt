@@ -179,6 +179,16 @@ data class GitLabProject(
     val starCount: Int = 0
 )
 
+/** A Gerrit project (repository) as returned by the REST API. */
+data class GerritProject(
+    val id: String,
+    val name: String,
+    val state: String?,
+    val description: String?,
+    val webUrl: String
+)
+
+
 /** GitLab Merge Request (MR). */
 data class MergeRequest(
     val iid: Int,                 // project-scoped ID (shown in UI)

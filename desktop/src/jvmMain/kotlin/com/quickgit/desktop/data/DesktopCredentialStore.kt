@@ -69,6 +69,12 @@ class DesktopCredentialStore {
         setHttpsToken(host, token)
     }
 
+    fun getPreferredGerritHost(): String? = get("gerrit_preferred_host")
+    fun setPreferredGerritHost(host: String?) {
+        if (host.isNullOrBlank()) remove("gerrit_preferred_host")
+        else put("gerrit_preferred_host", host.trim().lowercase())
+    }
+
     fun getSshPrivateKey(): String? = get("ssh_private_key")
     fun setSshPrivateKey(key: String?) {
         if (key.isNullOrBlank()) remove("ssh_private_key")
