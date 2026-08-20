@@ -82,6 +82,10 @@ fun FilesScreen(
         contract = ActivityResultContracts.OpenMultipleDocuments()
     ) { uris -> if (!uris.isNullOrEmpty()) vm.importFiles(uris) }
 
+    val importFolderLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree()
+    ) { uri -> uri?.let { vm.importFolder(it) } }
+
     LaunchedEffect(state.error, state.statusMessage, state.openAfterCreate) {
         state.error?.let {
             snackbarHostState.showSnackbar(it)
@@ -169,11 +173,19 @@ fun FilesScreen(
                         }
                     )
                     DropdownMenuItem(
-                        text = { Text("Add from device") },
+                        text = { Text("Add files from device") },
                         leadingIcon = { Icon(Icons.Default.UploadFile, contentDescription = null) },
                         onClick = {
                             createMenuExpanded = false
                             importFilesLauncher.launch(arrayOf("*/*"))
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Add folder from device") },
+                        leadingIcon = { Icon(Icons.Default.Folder, contentDescription = null) },
+                        onClick = {
+                            createMenuExpanded = false
+                            importFolderLauncher.launch(null)
                         }
                     )
                 }

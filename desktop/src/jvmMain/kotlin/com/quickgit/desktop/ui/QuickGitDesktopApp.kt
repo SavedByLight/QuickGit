@@ -1406,18 +1406,67 @@ fun FilesEditorTab(repoPath: String, repoManager: DesktopRepoManager, onMessage:
 
     fun copyUpload(src: java.io.File, dest: java.io.File, overwrite: Boolean) {
         scope.launch {
-            withContext(Dispatchers.IO) {
-                if (dest.exists() && !overwrite) return@withContext
-                dest.parentFile?.mkdirs()
-                src.copyTo(dest, overwrite = true)
+            try {
+                val summary = withContext(Dispatchers.IO) {
+                    if (src.isDirectory) {
+                        mergeCopyDirectory(src, dest, overwriteExistingFiles = overwrite)
+                    } else {
+                        if (dest.exists() && !overwrite) return@withContext null
+                        if (dest.isDirectory) throw IllegalStateException("A folder named '${dest.name}' already exists")
+                        dest.parentFile?.mkdirs()
+                        src.copyTo(dest, overwrite = true)
+                        if (overwrite) "Replaced ${dest.name}" else "Uploaded ${dest.name}"
+                    }
+                } ?: return@launch
+                onMessage(summary)
+                listDir(currentDir)
+                if (src.isFile) {
+                    val rel = dest.relativeTo(root).path.replace('\\', '/')
+                    if (isProbablyTextFile(dest.name)) openFile(rel)
+                }
+            } catch (e: Exception) {
+                onMessage("Upload failed: ${e.message}")
             }
-            onMessage(
-                if (overwrite && dest.exists()) "Replaced ${dest.name}"
-                else "Uploaded ${dest.name}"
-            )
-            listDir(currentDir)
-            val rel = dest.relativeTo(root).path.replace('\\', '/')
-            if (isProbablyTextFile(dest.name)) openFile(rel)
+        }
+    }
+
+    /** Merge [src] directory into [dest]; create dest if missing. Overwrite files when requested. */
+    fun mergeCopyDirectory(src: java.io.File, dest: java.io.File, overwriteExistingFiles: Boolean): String {
+        if (dest.isFile) throw IllegalStateException("A file named '${dest.name}' already exists")
+        dest.mkdirs()
+        var copied = 0
+        var overwritten = 0
+        var dirs = 0
+        fun walk(from: java.io.File, to: java.io.File) {
+            from.listFiles()?.forEach { child ->
+                if (child.name == ".git") return@forEach
+                val out = java.io.File(to, child.name)
+                if (child.isDirectory) {
+                    if (out.isFile) throw IllegalStateException("Cannot merge folder over file: ${child.name}")
+                    if (!out.exists()) {
+                        out.mkdirs()
+                        dirs++
+                    }
+                    walk(child, out)
+                } else if (child.isFile) {
+                    if (out.isDirectory) throw IllegalStateException("Cannot overwrite folder with file: ${child.name}")
+                    val existed = out.isFile
+                    if (existed && !overwriteExistingFiles) return@forEach
+                    out.parentFile?.mkdirs()
+                    child.copyTo(out, overwrite = true)
+                    if (existed) overwritten++ else copied++
+                }
+            }
+        }
+        walk(src, dest)
+        val parts = mutableListOf<String>()
+        if (copied > 0) parts += "$copied added"
+        if (overwritten > 0) parts += "$overwritten overwritten"
+        if (dirs > 0) parts += "$dirs folders"
+        return if (parts.isEmpty()) {
+            "Merged folder ${dest.name} (no file changes)"
+        } else {
+            "Imported folder ${dest.name}: ${parts.joinToString(", ")}"
         }
     }
 
@@ -1425,8 +1474,8 @@ fun FilesEditorTab(repoPath: String, repoManager: DesktopRepoManager, onMessage:
         scope.launch {
             val chosen = withContext(Dispatchers.IO) {
                 javax.swing.JFileChooser().apply {
-                    dialogTitle = "Upload file into repository"
-                    fileSelectionMode = javax.swing.JFileChooser.FILES_ONLY
+                    dialogTitle = "Upload file or folder into repository"
+                    fileSelectionMode = javax.swing.JFileChooser.FILES_AND_DIRECTORIES
                     isMultiSelectionEnabled = false
                 }.let { chooser ->
                     val result = chooser.showOpenDialog(null)
@@ -1437,10 +1486,18 @@ fun FilesEditorTab(repoPath: String, repoManager: DesktopRepoManager, onMessage:
             val destDir = if (currentDir.isBlank()) root else java.io.File(root, currentDir)
             val dest = java.io.File(destDir, chosen.name)
             if (dest.exists()) {
+                if (chosen.isDirectory && dest.isFile) {
+                    onMessage("A file named '${dest.name}' already exists")
+                    return@launch
+                }
+                if (chosen.isFile && dest.isDirectory) {
+                    onMessage("A folder named '${dest.name}' already exists")
+                    return@launch
+                }
                 pendingUpload = chosen
                 overwriteTarget = dest
             } else {
-                copyUpload(chosen, dest, overwrite = false)
+                copyUpload(chosen, dest, overwrite = true)
             }
         }
     }
@@ -1591,7 +1648,7 @@ fun FilesEditorTab(repoPath: String, repoManager: DesktopRepoManager, onMessage:
             if (selectedFile == null) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text(
-                        "Open a folder, or select a file to view / edit.\nUse Upload to add a local file into this folder.",
+                        "Open a folder, or select a file to view / edit.\nUse Upload to add a local file or folder (folders merge and overwrite matching files).",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         style = MaterialTheme.typography.bodyMedium
                     )
@@ -1693,15 +1750,27 @@ fun FilesEditorTab(repoPath: String, repoManager: DesktopRepoManager, onMessage:
     // Overwrite confirmation
     overwriteTarget?.let { dest ->
         val src = pendingUpload
+        val isFolder = src?.isDirectory == true
         AlertDialog(
             onDismissRequest = {
                 overwriteTarget = null
                 pendingUpload = null
             },
-            title = { Text("Replace existing file?") },
+            title = {
+                Text(if (isFolder) "Merge folder?" else "Replace existing file?")
+            },
             text = {
                 Text(
-                    "\"${dest.name}\" already exists in this folder.\n\nReplace it with the selected file?"
+                    if (isFolder) {
+                        ""${dest.name}" already exists in this folder.
+
+" +
+                            "Merge the selected folder into it? Existing files with the same name will be overwritten."
+                    } else {
+                        ""${dest.name}" already exists in this folder.
+
+Replace it with the selected file?"
+                    }
                 )
             },
             confirmButton = {
@@ -1711,7 +1780,7 @@ fun FilesEditorTab(repoPath: String, repoManager: DesktopRepoManager, onMessage:
                         overwriteTarget = null
                         pendingUpload = null
                     }
-                ) { Text("Replace") }
+                ) { Text(if (isFolder) "Merge & overwrite" else "Replace") }
             },
             dismissButton = {
                 TextButton(

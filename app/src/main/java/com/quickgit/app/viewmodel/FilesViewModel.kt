@@ -148,6 +148,35 @@ class FilesViewModel(private val repoManager: RepoManager) : ViewModel() {
         processNextImport()
     }
 
+    /**
+     * Import a folder picked via SAF tree URI into the current directory.
+     * Existing same-named folder is merged; existing files are overwritten.
+     */
+    fun importFolder(treeUri: Uri) {
+        val dir = _state.value.currentDir
+        viewModelScope.launch {
+            try {
+                val result = withContext(Dispatchers.IO) {
+                    repoManager.importDirectory(repoPath, dir, treeUri, overwriteExistingFiles = true)
+                }
+                val parts = mutableListOf<String>()
+                if (result.filesCopied > 0) parts += "${result.filesCopied} added"
+                if (result.filesOverwritten > 0) parts += "${result.filesOverwritten} overwritten"
+                if (result.dirsCreated > 0) parts += "${result.dirsCreated} folders"
+                val summary = if (parts.isEmpty()) {
+                    "Merged folder ${result.folderRelativePath.substringAfterLast('/')} (no file changes)"
+                } else {
+                    "Imported folder ${result.folderRelativePath.substringAfterLast('/')}: ${parts.joinToString(", ")}"
+                }
+                openDir(dir)
+                _state.value = _state.value.copy(statusMessage = summary)
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(error = e.message ?: "Could not import folder")
+            }
+        }
+    }
+
+
     /** User chose to overwrite the file named in the current `importConflict`. */
     fun confirmOverwrite() {
         val conflict = _state.value.importConflict ?: return

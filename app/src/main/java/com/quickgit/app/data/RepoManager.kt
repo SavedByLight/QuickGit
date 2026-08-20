@@ -2567,6 +2567,91 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         return relative
     }
 
+    data class ImportFolderResult(
+        val folderRelativePath: String,
+        val filesCopied: Int,
+        val filesOverwritten: Int,
+        val dirsCreated: Int
+    )
+
+    /**
+     * Copies a folder tree from a SAF tree [uri] into [relativeDir] under the repo.
+     * If a same-named folder already exists, contents are **merged**: new files are added and
+     * existing files are overwritten. Refuses to replace a file with a folder of the same name.
+     */
+    fun importDirectory(
+        repoPath: String,
+        relativeDir: String,
+        treeUri: android.net.Uri,
+        overwriteExistingFiles: Boolean = true
+    ): ImportFolderResult {
+        val tree = androidx.documentfile.provider.DocumentFile.fromTreeUri(context, treeUri)
+            ?: throw IllegalStateException("Could not open selected folder")
+        if (!tree.isDirectory) throw IllegalArgumentException("Not a folder")
+        val folderName = (tree.name ?: "folder").trim().ifBlank { "folder" }
+        if (folderName.contains("..") || folderName.contains('/') || folderName.contains('\\')) {
+            throw IllegalArgumentException("Invalid folder name")
+        }
+        val cleanedDir = relativeDir.trim().trimStart('/').replace("\\", "/")
+        val destRel = if (cleanedDir.isBlank()) folderName else "$cleanedDir/$folderName"
+        if (destRel.contains("..")) throw IllegalArgumentException("Invalid path")
+
+        val root = File(repoPath).canonicalFile
+        val destRoot = File(repoPath, destRel).canonicalFile
+        if (!destRoot.path.startsWith(root.path + File.separator) && destRoot.path != root.path) {
+            throw IllegalArgumentException("Path escapes repository")
+        }
+        if (destRoot.isFile) {
+            throw IllegalArgumentException("A file named '$folderName' already exists")
+        }
+        destRoot.mkdirs()
+
+        var copied = 0
+        var overwritten = 0
+        var dirs = 0
+
+        fun walk(doc: androidx.documentfile.provider.DocumentFile, relUnderFolder: String) {
+            val children = doc.listFiles() ?: return
+            for (child in children) {
+                val name = child.name ?: continue
+                if (name == "." || name == ".." || name.contains("..")) continue
+                val childRel = if (relUnderFolder.isBlank()) name else "$relUnderFolder/$name"
+                val out = File(destRoot, childRel)
+                val outCanon = out.canonicalFile
+                if (!outCanon.path.startsWith(root.path + File.separator) && outCanon.path != root.path) {
+                    throw IllegalArgumentException("Path escapes repository")
+                }
+                if (child.isDirectory) {
+                    if (out.isFile) {
+                        throw IllegalArgumentException("Cannot merge folder over file: $childRel")
+                    }
+                    if (!out.exists()) {
+                        out.mkdirs()
+                        dirs++
+                    }
+                    walk(child, childRel)
+                } else if (child.isFile) {
+                    if (out.isDirectory) {
+                        throw IllegalArgumentException("Cannot overwrite folder with file: $childRel")
+                    }
+                    val existed = out.isFile
+                    if (existed && !overwriteExistingFiles) continue
+                    out.parentFile?.mkdirs()
+                    val input = context.contentResolver.openInputStream(child.uri)
+                        ?: throw IllegalStateException("Could not read '$name'")
+                    input.use { inStream ->
+                        out.outputStream().use { outStream -> inStream.copyTo(outStream) }
+                    }
+                    if (existed) overwritten++ else copied++
+                }
+            }
+        }
+        walk(tree, "")
+        AppLog.i(TAG, "importDirectory: $destRel copied=$copied overwritten=$overwritten dirs=$dirs")
+        return ImportFolderResult(destRel, copied, overwritten, dirs)
+    }
+
+
     // ---------------- Transport / auth helpers ----------------
 
 
