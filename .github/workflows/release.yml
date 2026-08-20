@@ -31,7 +31,8 @@ jobs:
         id: version
         run: |
           VERSION_CODE="${{ github.run_number }}"
-          VERSION_NAME="1.0.${{ github.run_number }}"
+          # 2.0.x series: each release bumps the patch to the workflow run number
+          VERSION_NAME="2.0.${{ github.run_number }}"
           TAG="v${VERSION_NAME}"
           echo "code=$VERSION_CODE" >> "$GITHUB_OUTPUT"
           echo "name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
@@ -101,7 +102,7 @@ jobs:
           # Desktop packageVersion (Compose Desktop rejects 0.x for some targets)
           sed -i "s/packageVersion = \"[^\"]*\"/packageVersion = \"${{ needs.version.outputs.name }}\"/" desktop/build.gradle.kts
           # Embed version for in-app auto-update checks
-          sed -i "s/?: \"1\.0\.0\"/?: \"${{ needs.version.outputs.name }}\"/" \
+          sed -i "s/?: \"2\.0\.0\"/?: \"${{ needs.version.outputs.name }}\"/" \
             desktop/src/jvmMain/kotlin/com/quickgit/desktop/data/DesktopAppUpdateManager.kt || true
 
       - name: Decode keystore
