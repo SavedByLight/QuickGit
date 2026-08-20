@@ -131,7 +131,7 @@ class SettingsViewModel(
                         updateAvailable = true,
                         updateLatestName = result.latest.versionName,
                         updateNotes = result.release.body,
-                        updateReleasesUrl = appUpdateManager.releasesPageUrl(result.release),
+                        updateReleasesUrl = appUpdateManager.downloadOrReleasesUrl(result),
                         statusMessage = "Update available: ${result.latest.versionName}",
                         isError = false
                     )

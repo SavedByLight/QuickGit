@@ -1,5 +1,7 @@
 package com.quickgit.app.ui.screens
 
+import android.content.Intent
+import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
@@ -22,7 +24,6 @@ import androidx.compose.ui.unit.dp
 import com.quickgit.app.data.AppUpdateConfig
 import com.quickgit.app.data.DesktopLayoutMode
 import com.quickgit.app.ui.adaptive.AdaptiveContent
-import com.quickgit.app.ui.components.ReleasesWebView
 import com.quickgit.app.ui.theme.GitGreen
 import com.quickgit.app.viewmodel.SettingsViewModel
 
@@ -34,9 +35,7 @@ fun SettingsScreen(
     onBack: () -> Unit
 ) {
     val state by vm.state.collectAsState()
-
-    var showReleasesWeb by remember { mutableStateOf(false) }
-    var releasesWebUrl by remember { mutableStateOf<String?>(null) }
+    val context = LocalContext.current
 
     val folderPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocumentTree()
@@ -630,7 +629,7 @@ HorizontalDivider()
             Text(
                 "Current version ${state.appVersionName} (${state.appVersionCode}). " +
                     "Checks GitHub Releases on ${AppUpdateConfig.OWNER}/${AppUpdateConfig.REPO} " +
-                    "for a newer release. Opens the GitHub Releases page — no in-app install.",
+                    "for a newer release. Opens your default browser to download — no in-app install.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -667,10 +666,16 @@ HorizontalDivider()
                 }
                 if (state.updateAvailable) {
                     Button(onClick = {
-                        releasesWebUrl = vm.openReleasesPageUrl()
-                        showReleasesWeb = true
+                        val url = vm.openReleasesPageUrl()
+                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
+                        try {
+                            context.startActivity(intent)
+                        } catch (_: Exception) { }
+                        vm.dismissUpdatePrompt()
                     }) {
-                        Text("Open Releases")
+                        Text("Download update")
                     }
                 }
             }
@@ -685,18 +690,6 @@ HorizontalDivider()
             }
         }
         } // AdaptiveContent
-
-        if (showReleasesWeb) {
-            val url = releasesWebUrl ?: vm.openReleasesPageUrl()
-            ReleasesWebView(
-                url = url,
-                onClose = {
-                    showReleasesWeb = false
-                    releasesWebUrl = null
-                    vm.dismissUpdatePrompt()
-                }
-            )
-        }
 
     }
 }

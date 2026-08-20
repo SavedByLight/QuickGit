@@ -1,21 +1,14 @@
 package com.quickgit.app.ui.components
 
-import android.annotation.SuppressLint
-import android.webkit.WebSettings
-import android.webkit.WebView
-import android.webkit.WebViewClient
-import androidx.activity.compose.BackHandler
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
 import com.quickgit.app.QuickGitApp
 import com.quickgit.app.data.UpdateCheckResult
 import kotlinx.coroutines.Dispatchers
@@ -23,7 +16,7 @@ import kotlinx.coroutines.withContext
 
 /**
  * On launch, checks GitHub Releases for a newer version and shows a dialog.
- * "Open Releases" loads the page in an in-app WebView (no APK install).
+ * "Download update" opens the APK (or Releases page) in the user's default browser.
  */
 @Composable
 fun AutoUpdateHost(content: @Composable () -> Unit) {
@@ -34,7 +27,6 @@ fun AutoUpdateHost(content: @Composable () -> Unit) {
     var available by remember { mutableStateOf<UpdateCheckResult.Available?>(null) }
     var showSnoozeChoices by remember { mutableStateOf(false) }
     var dismissed by remember { mutableStateOf(false) }
-    var webUrl by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(Unit) {
         if (dismissed) return@LaunchedEffect
@@ -49,7 +41,7 @@ fun AutoUpdateHost(content: @Composable () -> Unit) {
         content()
 
         val info = available
-        if (info != null && !dismissed && webUrl == null) {
+        if (info != null && !dismissed) {
             if (showSnoozeChoices) {
                 SnoozeChoicesDialog(
                     onChoose = { choice ->
@@ -73,15 +65,25 @@ fun AutoUpdateHost(content: @Composable () -> Unit) {
                         Text(
                             "QuickGit ${info.latest.versionName} is available " +
                                 "(you have ${info.current.versionName}).\n\n" +
-                                "Open the Releases page to view the changelog and download builds."
+                                "Open your browser to view the changelog and download the APK."
                         )
                     },
                     confirmButton = {
                         Button(
                             onClick = {
-                                webUrl = updateManager.releasesPageUrl(info.release)
+                                val url = updateManager.downloadOrReleasesUrl(info)
+                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                }
+                                try {
+                                    context.startActivity(intent)
+                                } catch (_: Exception) {
+                                    // No browser available — still dismiss prompt
+                                }
+                                dismissed = true
+                                available = null
                             }
-                        ) { Text("Open Releases") }
+                        ) { Text("Download update") }
                     },
                     dismissButton = {
                         TextButton(onClick = { showSnoozeChoices = true }) {
@@ -90,62 +92,6 @@ fun AutoUpdateHost(content: @Composable () -> Unit) {
                     }
                 )
             }
-        }
-
-        webUrl?.let { url ->
-            ReleasesWebView(
-                url = url,
-                onClose = {
-                    webUrl = null
-                    dismissed = true
-                    available = null
-                }
-            )
-        }
-    }
-}
-
-@SuppressLint("SetJavaScriptEnabled")
-@Composable
-fun ReleasesWebView(
-    url: String,
-    onClose: () -> Unit
-) {
-    BackHandler(onBack = onClose)
-    Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-        Column(Modifier.fillMaxSize()) {
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 4.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    "GitHub Releases",
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.weight(1f).padding(start = 12.dp)
-                )
-                IconButton(onClick = onClose) {
-                    Icon(Icons.Default.Close, contentDescription = "Close")
-                }
-            }
-            HorizontalDivider()
-            AndroidView(
-                factory = { ctx ->
-                    WebView(ctx).apply {
-                        settings.javaScriptEnabled = true
-                        settings.domStorageEnabled = true
-                        settings.cacheMode = WebSettings.LOAD_DEFAULT
-                        settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
-                        webViewClient = WebViewClient()
-                        loadUrl(url)
-                    }
-                },
-                modifier = Modifier.fillMaxSize(),
-                update = { view ->
-                    if (view.url != url) view.loadUrl(url)
-                }
-            )
         }
     }
 }

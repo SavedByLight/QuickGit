@@ -8,8 +8,9 @@ import com.quickgit.app.data.models.Release
 import com.quickgit.app.data.models.ReleaseAsset
 
 /**
- * Checks GitHub Releases for a newer QuickGit version and exposes the Releases
- * URL for an in-app WebView. Does **not** download or install APKs.
+ * Checks GitHub Releases for a newer QuickGit version and exposes a download
+ * or Releases URL for the system browser. Does **not** download or install APKs
+ * inside the app.
  */
 object AppUpdateConfig {
     const val OWNER = "SavedByLight"
@@ -93,7 +94,7 @@ class AppUpdateManager(
             .apply()
     }
 
-    /** URL to show in the in-app WebView (specific release when known). */
+    /** URL for the GitHub Releases page (specific release when known). */
     fun releasesPageUrl(release: Release? = null): String {
         val tag = release?.tagName?.takeIf { it.isNotBlank() }
         return if (tag != null) {
@@ -101,6 +102,15 @@ class AppUpdateManager(
         } else {
             AppUpdateConfig.releasesUrl()
         }
+    }
+
+    /**
+     * Prefer the direct APK browser download URL when available so the default
+     * browser can download the update; otherwise fall back to the release page.
+     */
+    fun downloadOrReleasesUrl(available: UpdateCheckResult.Available): String {
+        val apkUrl = available.apkAsset?.browserDownloadUrl?.takeIf { it.isNotBlank() }
+        return apkUrl ?: releasesPageUrl(available.release)
     }
 
     fun currentVersion(): AppVersionInfo {
