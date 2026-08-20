@@ -152,6 +152,57 @@ class DesktopRepoManager(
         }
     }
 
+    private fun forgetExtraRepoPath(path: String) {
+        val resolved = runCatching { File(path).canonicalFile }.getOrElse { File(path).absoluteFile }
+        val current = prefs.getProperty("extra_repo_paths")?.split("|")?.filter { it.isNotBlank() }?.toMutableList()
+            ?: return
+        val filtered = current.filter { p ->
+            val f = runCatching { File(p).canonicalFile }.getOrElse { File(p).absoluteFile }
+            f.absolutePath != resolved.absolutePath
+        }
+        if (filtered.size != current.size) {
+            if (filtered.isEmpty()) prefs.remove("extra_repo_paths")
+            else prefs.setProperty("extra_repo_paths", filtered.joinToString("|"))
+            savePrefs()
+        }
+    }
+
+    /** True if [dir] is outside the configured repos root (imported / extra path). */
+    fun isExternalRepo(dir: File): Boolean {
+        val resolved = runCatching { dir.canonicalFile }.getOrElse { dir.absoluteFile }
+        val root = runCatching { getReposRoot().canonicalFile }.getOrElse { getReposRoot().absoluteFile }
+        return resolved.absolutePath != root.absolutePath &&
+            !resolved.absolutePath.startsWith(root.absolutePath + File.separator)
+    }
+
+    /**
+     * Removes a repo from the list. Clones under [getReposRoot] are deleted from disk.
+     * Extra / imported paths are only untracked (files left on disk).
+     */
+    fun removeFromList(dir: File): Result<Unit> {
+        return try {
+            val resolved = runCatching { dir.canonicalFile }.getOrElse { dir.absoluteFile }
+            if (!resolved.exists()) {
+                forgetExtraRepoPath(resolved.absolutePath)
+                return Result.success(Unit)
+            }
+            if (isExternalRepo(resolved)) {
+                forgetExtraRepoPath(resolved.absolutePath)
+                Result.success(Unit)
+            } else {
+                if (!resolved.deleteRecursively()) {
+                    Result.failure(IllegalStateException("Could not delete ${resolved.name}"))
+                } else {
+                    forgetExtraRepoPath(resolved.absolutePath)
+                    Result.success(Unit)
+                }
+            }
+        } catch (e: Exception) {
+            System.err.println("$TAG: removeFromList failed: ${e.message}")
+            Result.failure(e)
+        }
+    }
+
     /**
      * Create a new local-only git repository under [getReposRoot].
      * Initial branch defaults to `main`. Nothing is pushed until a remote is added.
@@ -159,44 +210,31 @@ class DesktopRepoManager(
      */
     fun initLocalRepo(folderName: String, initialBranch: String = "main"): Result<File> {
         val name = folderName.trim()
-        if (name.isBlank()) return Result.failure(IllegalArgumentException("Repository name is required"))
-        if (name.contains('/') || name.contains('\\') || name == "." || name == "..") {
-            return Result.failure(IllegalArgumentException("Invalid repository name"))
+        if (name.isBlank()) return Result.failure(IllegalArgumentException("Folder name required"))
+        if (name.contains('/') || name.contains('\\') || name.contains("..")) {
+            return Result.failure(IllegalArgumentException("Invalid folder name"))
         }
         val branch = initialBranch.trim().ifBlank { "main" }
-        val root = getReposRoot()
-        if (!root.exists() && !root.mkdirs()) {
-            return Result.failure(IllegalStateException("Cannot create repos root: ${root.absolutePath}"))
-        }
-        if (!root.canWrite()) {
-            return Result.failure(IllegalStateException("Repos root is not writable: ${root.absolutePath}"))
-        }
-        val destination = File(root, name)
+        val destination = File(getReposRoot(), name)
         if (destination.exists() && (destination.listFiles()?.isNotEmpty() == true || File(destination, ".git").exists())) {
-            return Result.failure(IllegalStateException("'$name' already exists under ${root.absolutePath}"))
+            return Result.failure(IllegalStateException("'$name' already exists under ${getReposRoot().absolutePath}"))
         }
         return try {
             destination.mkdirs()
-            val init = Git.init().setDirectory(destination).setBare(false)
-            try {
-                // JGit 6+: preferred API for initial branch name
-                val m = init.javaClass.methods.firstOrNull { it.name == "setInitialBranch" && it.parameterCount == 1 }
-                m?.invoke(init, branch)
-            } catch (_: Exception) { /* older JGit */ }
-            init.call().use { git ->
+            Git.init().setDirectory(destination).call().use { git ->
+                // Point HEAD at unborn branch (no commits yet)
                 val refUpdate = git.repository.updateRef(org.eclipse.jgit.lib.Constants.HEAD)
                 refUpdate.link("refs/heads/$branch")
+                // Sensible desktop defaults
                 val cfg = git.repository.config
                 cfg.setBoolean("core", null, "filemode", true)
                 cfg.setString("init", null, "defaultBranch", branch)
                 cfg.save()
             }
-            AppLog.i(TAG, "initLocalRepo OK → ${destination.absolutePath}")
             Result.success(destination)
         } catch (e: Exception) {
-            AppLog.e(TAG, "initLocalRepo failed: $name", e)
-            try { destination.deleteRecursively() } catch (_: Exception) { }
-            Result.failure(IllegalStateException(e.message ?: "Failed to create local repository", e))
+            destination.deleteRecursively()
+            Result.failure(e)
         }
     }
 

@@ -226,6 +226,7 @@ fun RepoListScreen(
     var loading by remember { mutableStateOf(true) }
     var showCreate by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
+    var repoToDelete by remember { mutableStateOf<DesktopRepoManager.LocalRepo?>(null) }
     val scope = rememberCoroutineScope()
 
     fun reload() {
@@ -290,11 +291,14 @@ fun RepoListScreen(
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(repos, key = { it.path }) { repo ->
                     Card(
-                        Modifier.fillMaxWidth().clickable { onSelect(repo.path) },
+                        Modifier.fillMaxWidth(),
                         elevation = CardDefaults.cardElevation(2.dp)
                     ) {
                         Row(
-                            Modifier.padding(16.dp).fillMaxWidth(),
+                            Modifier
+                                .clickable { onSelect(repo.path) }
+                                .padding(start = 16.dp, top = 12.dp, bottom = 12.dp, end = 4.dp)
+                                .fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Icon(Icons.Default.Folder, null, tint = MaterialTheme.colorScheme.primary)
@@ -325,12 +329,87 @@ fun RepoListScreen(
                                         .size(10.dp)
                                         .background(Color(0xFFFF9800), shape = MaterialTheme.shapes.small)
                                 )
+                                Spacer(Modifier.width(4.dp))
+                            }
+                            IconButton(
+                                onClick = { repoToDelete = repo },
+                                enabled = !busy
+                            ) {
+                                Icon(
+                                    Icons.Default.Delete,
+                                    contentDescription = "Delete repository",
+                                    tint = MaterialTheme.colorScheme.error
+                                )
                             }
                         }
                     }
                 }
             }
         }
+    }
+
+    repoToDelete?.let { repo ->
+        val external = remember(repo.path) {
+            repoManager.isExternalRepo(java.io.File(repo.path))
+        }
+        AlertDialog(
+            onDismissRequest = { if (!busy) repoToDelete = null },
+            title = { Text(if (external) "Remove from list?" else "Delete local repository?") },
+            text = {
+                Column {
+                    Text(
+                        if (external) {
+                            "This removes '${repo.name}' from QuickGit's list only. Files on disk are not deleted."
+                        } else {
+                            "This permanently deletes '${repo.name}' from disk under the repos root. This cannot be undone."
+                        }
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        repo.path,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        scope.launch {
+                            busy = true
+                            val result = withContext(Dispatchers.IO) {
+                                repoManager.removeFromList(java.io.File(repo.path))
+                            }
+                            busy = false
+                            repoToDelete = null
+                            result.fold(
+                                onSuccess = {
+                                    onMessage(
+                                        if (external) "Removed '${repo.name}' from the list (files left on disk)"
+                                        else "Deleted '${repo.name}'"
+                                    )
+                                    reload()
+                                },
+                                onFailure = {
+                                    onMessage("Could not remove '${repo.name}': ${it.message}")
+                                }
+                            )
+                        }
+                    },
+                    enabled = !busy,
+                    colors = ButtonDefaults.textButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error
+                    )
+                ) {
+                    Text(if (external) "Remove" else "Delete")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { repoToDelete = null }, enabled = !busy) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
 
     if (showCreate) {
@@ -408,48 +487,28 @@ fun RepoListScreen(
                         scope.launch {
                             busy = true
                             try {
-                                val initialBranch = branch.trim().ifBlank { "main" }
                                 if (onGitHub) {
                                     val token = withContext(Dispatchers.IO) {
                                         credentialStore.getGithubToken()
                                             ?: credentialStore.getHttpsToken("github.com")
                                     }
                                     if (token.isNullOrBlank()) {
-                                        onMessage("Add a GitHub personal access token in Credentials first (repo scope required to create repositories).")
+                                        onMessage("Add a GitHub token in Credentials first")
                                         return@launch
                                     }
-                                    // Always use a fresh client with the current token
-                                    val api = GitHubApi(token)
                                     val created = withContext(Dispatchers.IO) {
-                                        api.createRepo(
-                                            name = n,
-                                            description = description.trim().ifBlank { null },
-                                            isPrivate = isPrivate,
-                                            defaultBranch = initialBranch,
-                                            autoInit = true
+                                        githubApi.createRepo(
+                                            n,
+                                            description.trim().ifBlank { null },
+                                            isPrivate
                                         )
                                     }
                                     created.fold(
                                         onSuccess = { remote ->
-                                            val cloneUrl = remote.cloneUrl.ifBlank {
-                                                "https://github.com/${remote.fullName}.git"
-                                            }
-                                            suspend fun attachLocal(dir: java.io.File) {
-                                                withContext(Dispatchers.IO) {
-                                                    try {
-                                                        org.eclipse.jgit.api.Git.open(dir).use { git ->
-                                                            val existing = git.repository.config.getString("remote", "origin", "url")
-                                                            if (existing.isNullOrBlank()) {
-                                                                git.remoteAdd()
-                                                                    .setName("origin")
-                                                                    .setUri(org.eclipse.jgit.transport.URIish(cloneUrl))
-                                                                    .call()
-                                                            }
-                                                        }
-                                                    } catch (_: Exception) { }
-                                                }
-                                            }
                                             if (alsoClone) {
+                                                val cloneUrl = remote.cloneUrl.ifBlank {
+                                                    "https://github.com/${remote.fullName}.git"
+                                                }
                                                 val cloneResult = withContext(Dispatchers.IO) {
                                                     repoManager.cloneRepo(cloneUrl, n) { }
                                                 }
@@ -459,37 +518,35 @@ fun RepoListScreen(
                                                         onMessage("Created GitHub repo ${remote.fullName} and cloned")
                                                         onSelect(dir.absolutePath)
                                                     },
-                                                    onFailure = { cloneErr ->
-                                                        // Empty / restricted clones: fall back to local init + origin
-                                                        val local = withContext(Dispatchers.IO) {
-                                                            repoManager.initLocalRepo(n, initialBranch)
-                                                        }
-                                                        local.fold(
-                                                            onSuccess = { dir ->
-                                                                attachLocal(dir)
-                                                                showCreate = false
-                                                                onMessage(
-                                                                    "Created ${remote.fullName} on GitHub. Clone failed (${cloneErr.message}); opened empty local folder with origin set."
-                                                                )
-                                                                onSelect(dir.absolutePath)
-                                                            },
-                                                            onFailure = { initErr ->
-                                                                onMessage(
-                                                                    "GitHub repo created (${remote.fullName}) but local setup failed. Clone: ${cloneErr.message}. Init: ${initErr.message}"
-                                                                )
-                                                                showCreate = false
-                                                                reload()
-                                                            }
+                                                    onFailure = {
+                                                        onMessage(
+                                                            "GitHub repo created (${remote.fullName}) but clone failed: ${it.message}"
                                                         )
+                                                        showCreate = false
+                                                        reload()
                                                     }
                                                 )
                                             } else {
+                                                // Local empty repo pointing at the new remote is still useful
                                                 val local = withContext(Dispatchers.IO) {
-                                                    repoManager.initLocalRepo(n, initialBranch)
+                                                    repoManager.initLocalRepo(n, branch.trim().ifBlank { "main" })
                                                 }
                                                 local.fold(
                                                     onSuccess = { dir ->
-                                                        attachLocal(dir)
+                                                        // Set origin if possible
+                                                        withContext(Dispatchers.IO) {
+                                                            try {
+                                                                val url = remote.cloneUrl.ifBlank {
+                                                                    "https://github.com/${remote.fullName}.git"
+                                                                }
+                                                                org.eclipse.jgit.api.Git.open(dir).use { git ->
+                                                                    git.remoteAdd()
+                                                                        .setName("origin")
+                                                                        .setUri(org.eclipse.jgit.transport.URIish(url))
+                                                                        .call()
+                                                                }
+                                                            } catch (_: Exception) { }
+                                                        }
                                                         showCreate = false
                                                         onMessage("Created ${remote.fullName} on GitHub + local folder")
                                                         onSelect(dir.absolutePath)
@@ -504,23 +561,13 @@ fun RepoListScreen(
                                                 )
                                             }
                                         },
-                                        onFailure = { err ->
-                                            val hint = when {
-                                                err.message?.contains("Bad credentials", true) == true ||
-                                                    err.message?.contains("Requires authentication", true) == true ->
-                                                    " Check that your token is valid and has the repo scope."
-                                                err.message?.contains("name already exists", true) == true ->
-                                                    " Choose a different name."
-                                                err.message?.contains("API rate limit", true) == true ->
-                                                    " GitHub rate limit hit — try again later."
-                                                else -> ""
-                                            }
-                                            onMessage("GitHub create failed: ${err.message}$hint")
+                                        onFailure = {
+                                            onMessage("GitHub create failed: ${it.message}")
                                         }
                                     )
                                 } else {
                                     val local = withContext(Dispatchers.IO) {
-                                        repoManager.initLocalRepo(n, initialBranch)
+                                        repoManager.initLocalRepo(n, branch.trim().ifBlank { "main" })
                                     }
                                     local.fold(
                                         onSuccess = { dir ->
