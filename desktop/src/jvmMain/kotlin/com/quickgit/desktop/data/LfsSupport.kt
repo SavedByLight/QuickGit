@@ -452,10 +452,8 @@ object LfsSupport {
     private fun applyAuth(conn: HttpURLConnection, username: String?, token: String?) {
         if (token.isNullOrBlank()) return
         val user = username?.ifBlank { null } ?: "git"
-        val basic = android.util.Base64.encodeToString(
-            "$user:$token".toByteArray(StandardCharsets.UTF_8),
-            android.util.Base64.NO_WRAP
-        )
+        val basic = java.util.Base64.getEncoder()
+            .encodeToString("$user:$token".toByteArray(StandardCharsets.UTF_8))
         conn.setRequestProperty("Authorization", "Basic $basic")
     }
 
