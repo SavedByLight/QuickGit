@@ -21,6 +21,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material3.*
@@ -48,8 +49,9 @@ fun RepoListScreen(
     onOpenProfile: () -> Unit = {},
     onSearchPeople: () -> Unit = {},
     onSettings: () -> Unit,
+    onCredentials: () -> Unit = onSettings,
     onLogs: () -> Unit,
-    onNeedsAuth: () -> Unit = onSettings,
+    onNeedsAuth: () -> Unit = onCredentials,
     // Tablet / Chromebook / desktop-window layout: the left NavigationRail already
     // exposes Profile, Search people, and Settings (matching the Linux/Mac desktop
     // app's RepoListScreen, which has no such menu of its own), so this screen's
@@ -154,9 +156,12 @@ fun RepoListScreen(
                     IconButton(onClick = onLogs) {
                         Icon(Icons.Default.Terminal, contentDescription = "Logs")
                     }
-                    // Settings icon — hidden on tablet/Chromebook layout since the
-                    // NavigationRail already provides it.
+                    // Creds / Settings — hidden on tablet/Chromebook layout since the
+                    // NavigationRail already provides them (matching desktop).
                     if (!isDesktopLayout) {
+                        IconButton(onClick = onCredentials) {
+                            Icon(Icons.Default.Key, contentDescription = "Credentials")
+                        }
                         IconButton(onClick = onSettings) {
                             Icon(Icons.Default.Settings, contentDescription = "Settings")
                         }

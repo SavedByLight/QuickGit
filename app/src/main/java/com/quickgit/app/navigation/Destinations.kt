@@ -9,6 +9,7 @@ object Dest {
     const val DIFF = "diff/{repoPath}/{filePath}/{mode}" // mode = working|staged|commit:<id>
     const val MERGE = "merge/{repoPath}"
     const val SETTINGS = "settings"
+    const val CREDENTIALS = "credentials"
     const val FILES = "files/{repoPath}"
     const val EDITOR = "editor/{repoPath}/{filePath}"
     const val LOGS = "logs"

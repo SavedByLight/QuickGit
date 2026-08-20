@@ -11,6 +11,7 @@ import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.TravelExplore
 import androidx.compose.material3.Icon
@@ -48,7 +49,7 @@ import androidx.compose.runtime.collectAsState
  * - ALWAYS — always show the left rail
  * - NEVER — phone-style navigation only
  *
- * Toggle under Settings → Layout.
+ * Toggle under Settings → Layout. Credentials live under Creds (tablet rail).
  */
 @Composable
 fun QuickGitNavGraph() {
@@ -87,6 +88,7 @@ fun QuickGitNavGraph() {
                 onOpenProfile = { navController.navigate(Dest.profile()) },
                 onSearchPeople = { navController.navigate(Dest.USER_SEARCH) },
                 onSettings = { navController.navigate(Dest.SETTINGS) { launchSingleTop = true } },
+                onCredentials = { navController.navigate(Dest.CREDENTIALS) { launchSingleTop = true } },
                 onLogs = { navController.navigate(Dest.LOGS) },
                 isDesktopLayout = useRail
             )
@@ -102,7 +104,7 @@ fun QuickGitNavGraph() {
                 vm = vm,
                 onBack = { navController.popBackStack() },
                 onUserClick = { login -> navController.navigate(Dest.profile(login)) },
-                onNeedsAuth = { navController.navigate(Dest.SETTINGS) { launchSingleTop = true } }
+                onNeedsAuth = { navController.navigate(Dest.CREDENTIALS) { launchSingleTop = true } }
             )
         }
 
@@ -117,7 +119,7 @@ fun QuickGitNavGraph() {
                 onOpenRepo = { repo ->
                     navController.navigate(Dest.remoteBrowse(repo.ownerLogin, repo.name, repo.defaultBranch))
                 },
-                onNeedsAuth = { navController.navigate(Dest.SETTINGS) { launchSingleTop = true } }
+                onNeedsAuth = { navController.navigate(Dest.CREDENTIALS) { launchSingleTop = true } }
             )
         }
 
@@ -136,7 +138,7 @@ fun QuickGitNavGraph() {
                 onOpenRepo = { repo ->
                     navController.navigate(Dest.remoteBrowse(repo.ownerLogin, repo.name, repo.defaultBranch))
                 },
-                onNeedsAuth = { navController.navigate(Dest.SETTINGS) { launchSingleTop = true } }
+                onNeedsAuth = { navController.navigate(Dest.CREDENTIALS) { launchSingleTop = true } }
             )
         }
 
@@ -166,7 +168,7 @@ fun QuickGitNavGraph() {
                 vm = vm,
                 onBack = { navController.popBackStack() },
                 onOpenFile = { filePath -> navController.navigate(Dest.remoteFile(owner, repo, ref, filePath)) },
-                onNeedsAuth = { navController.navigate(Dest.SETTINGS) { launchSingleTop = true } }
+                onNeedsAuth = { navController.navigate(Dest.CREDENTIALS) { launchSingleTop = true } }
             )
         }
 
@@ -195,7 +197,7 @@ fun QuickGitNavGraph() {
                 path = path,
                 vm = vm,
                 onBack = { navController.popBackStack() },
-                onNeedsAuth = { navController.navigate(Dest.SETTINGS) { launchSingleTop = true } }
+                onNeedsAuth = { navController.navigate(Dest.CREDENTIALS) { launchSingleTop = true } }
             )
         }
 
@@ -223,13 +225,18 @@ fun QuickGitNavGraph() {
                 onCloned = {
                     navController.popBackStack(Dest.REPO_LIST, inclusive = false)
                 },
-                onNeedsAuth = { navController.navigate(Dest.SETTINGS) { launchSingleTop = true } }
+                onNeedsAuth = { navController.navigate(Dest.CREDENTIALS) { launchSingleTop = true } }
             )
         }
 
         composable(Dest.SETTINGS) {
             val vm: SettingsViewModel = viewModel(factory = factory)
             SettingsScreen(vm = vm, onBack = { navController.popBackStack() })
+        }
+
+        composable(Dest.CREDENTIALS) {
+            val vm: SettingsViewModel = viewModel(factory = factory)
+            CredentialsScreen(vm = vm, onBack = { navController.popBackStack() })
         }
 
         composable(
@@ -416,7 +423,7 @@ fun QuickGitNavGraph() {
             IssuesScreen(
                 vm = vm,
                 onBack = { navController.popBackStack() },
-                onNeedsAuth = { navController.navigate(Dest.SETTINGS) { launchSingleTop = true } }
+                onNeedsAuth = { navController.navigate(Dest.CREDENTIALS) { launchSingleTop = true } }
             )
         }
 
@@ -430,7 +437,7 @@ fun QuickGitNavGraph() {
             WorkflowsScreen(
                 vm = vm,
                 onBack = { navController.popBackStack() },
-                onNeedsAuth = { navController.navigate(Dest.SETTINGS) { launchSingleTop = true } }
+                onNeedsAuth = { navController.navigate(Dest.CREDENTIALS) { launchSingleTop = true } }
             )
         }
 
@@ -444,7 +451,7 @@ fun QuickGitNavGraph() {
             ReleasesScreen(
                 vm = vm,
                 onBack = { navController.popBackStack() },
-                onNeedsAuth = { navController.navigate(Dest.SETTINGS) { launchSingleTop = true } }
+                onNeedsAuth = { navController.navigate(Dest.CREDENTIALS) { launchSingleTop = true } }
             )
         }
 
@@ -458,7 +465,7 @@ fun QuickGitNavGraph() {
             PullRequestsScreen(
                 vm = vm,
                 onBack = { navController.popBackStack() },
-                onNeedsAuth = { navController.navigate(Dest.SETTINGS) { launchSingleTop = true } }
+                onNeedsAuth = { navController.navigate(Dest.CREDENTIALS) { launchSingleTop = true } }
             )
         }
 
@@ -523,6 +530,13 @@ fun QuickGitNavGraph() {
                     selected = isSelected(Dest.LOGS)
                 ) {
                     navController.navigate(Dest.LOGS) { launchSingleTop = true }
+                }
+                RailItem(
+                    icon = Icons.Default.Key,
+                    label = "Creds",
+                    selected = isSelected(Dest.CREDENTIALS)
+                ) {
+                    navController.navigate(Dest.CREDENTIALS) { launchSingleTop = true }
                 }
                 RailItem(
                     icon = Icons.Default.Settings,
