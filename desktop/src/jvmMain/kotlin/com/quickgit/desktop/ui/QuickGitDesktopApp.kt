@@ -2969,19 +2969,41 @@ fun BrowseAccountScreen(
     var orgs by remember { mutableStateOf<List<String>>(emptyList()) }
     var selectedOrg by remember { mutableStateOf<String?>(null) } // null = personal
     var loading by remember { mutableStateOf(false) }
+    var loadingMore by remember { mutableStateOf(false) }
+    var repoPage by remember { mutableStateOf(1) }
+    var hasMoreRepos by remember { mutableStateOf(false) }
     var query by remember { mutableStateOf("") }
     var cloning by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
+    val pageSize = 100
 
-    fun loadRepos(org: String?) {
+    fun loadRepos(org: String?, reset: Boolean = true) {
         scope.launch {
-            loading = true
-            val result = withContext(Dispatchers.IO) {
-                if (org == null) githubApi.listUserRepos(affiliation = "owner,collaborator,organization_member", perPage = 100)
-                else githubApi.listOrgRepos(org, perPage = 100)
+            if (reset) {
+                loading = true
+                repoPage = 1
+            } else {
+                loadingMore = true
             }
-            result.fold(onSuccess = { repos = it }, onFailure = { onMessage("Failed to list repos: ${it.message}") })
+            val page = if (reset) 1 else repoPage + 1
+            val result = withContext(Dispatchers.IO) {
+                if (org == null) githubApi.listUserRepos(
+                    affiliation = "owner,collaborator,organization_member",
+                    perPage = pageSize,
+                    page = page
+                )
+                else githubApi.listOrgRepos(org, perPage = pageSize, page = page)
+            }
+            result.fold(
+                onSuccess = { batch ->
+                    repos = if (reset) batch else repos + batch
+                    repoPage = page
+                    hasMoreRepos = batch.size >= pageSize
+                },
+                onFailure = { onMessage("Failed to list repos: ${it.message}") }
+            )
             loading = false
+            loadingMore = false
         }
     }
 
@@ -3051,6 +3073,20 @@ fun BrowseAccountScreen(
                             ) {
                                 if (cloning == repo.fullName) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)
                                 else Text("Clone")
+                            }
+                        }
+                    }
+                }
+                if (hasMoreRepos && query.isBlank()) {
+                    item {
+                        Box(Modifier.fillMaxWidth().padding(vertical = 12.dp), contentAlignment = Alignment.Center) {
+                            if (loadingMore) {
+                                CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
+                            } else {
+                                OutlinedButton(
+                                    onClick = { loadRepos(selectedOrg, reset = false) },
+                                    enabled = !loadingMore
+                                ) { Text("Load more") }
                             }
                         }
                     }
@@ -3286,10 +3322,38 @@ fun ProfileScreen(
     var user by remember { mutableStateOf<GitHubApi.GitHubUser?>(null) }
     var repos by remember { mutableStateOf<List<GitHubRemoteRepo>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
+    var loadingMore by remember { mutableStateOf(false) }
+    var repoPage by remember { mutableStateOf(1) }
+    var hasMoreRepos by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var browseRepo by remember { mutableStateOf<GitHubRemoteRepo?>(null) }
     val scope = rememberCoroutineScope()
+    val pageSize = 100
+
+    fun loadProfileRepos(reset: Boolean = true) {
+        scope.launch {
+            if (reset) loading = true else loadingMore = true
+            val page = if (reset) 1 else repoPage + 1
+            val r = withContext(Dispatchers.IO) {
+                githubApi.listUserRepos(
+                    affiliation = "owner,collaborator,organization_member",
+                    perPage = pageSize,
+                    page = page
+                )
+            }
+            r.fold(
+                onSuccess = { batch ->
+                    repos = if (reset) batch else repos + batch
+                    repoPage = page
+                    hasMoreRepos = batch.size >= pageSize
+                },
+                onFailure = { onMessage("Repos: ${it.message}") }
+            )
+            loading = false
+            loadingMore = false
+        }
+    }
 
     LaunchedEffect(Unit) {
         loading = true
@@ -3302,9 +3366,16 @@ fun ProfileScreen(
         val u = withContext(Dispatchers.IO) { githubApi.getAuthenticatedUser() }
         u.fold(onSuccess = { user = it }, onFailure = { error = it.message })
         val r = withContext(Dispatchers.IO) {
-            githubApi.listUserRepos(affiliation = "owner,collaborator,organization_member", perPage = 100)
+            githubApi.listUserRepos(affiliation = "owner,collaborator,organization_member", perPage = pageSize, page = 1)
         }
-        r.fold(onSuccess = { repos = it }, onFailure = { onMessage("Repos: ${it.message}") })
+        r.fold(
+            onSuccess = { batch ->
+                repos = batch
+                repoPage = 1
+                hasMoreRepos = batch.size >= pageSize
+            },
+            onFailure = { onMessage("Repos: ${it.message}") }
+        )
         loading = false
     }
 
@@ -3332,12 +3403,7 @@ fun ProfileScreen(
                 onSuccess = {
                     onMessage("Forked to ${it.fullName}")
                     // refresh list
-                    scope.launch {
-                        val r = withContext(Dispatchers.IO) {
-                            githubApi.listUserRepos(perPage = 100)
-                        }
-                        r.onSuccess { repos = it }
-                    }
+                    loadProfileRepos(reset = true)
                 },
                 onFailure = { onMessage("Fork failed: ${it.message}") }
             )
@@ -3383,6 +3449,20 @@ fun ProfileScreen(
                                 onBrowse = { browseRepo = repo }
                             )
                         }
+                        if (hasMoreRepos) {
+                            item {
+                                Box(Modifier.fillMaxWidth().padding(vertical = 12.dp), contentAlignment = Alignment.Center) {
+                                    if (loadingMore) {
+                                        CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
+                                    } else {
+                                        OutlinedButton(
+                                            onClick = { loadProfileRepos(reset = false) },
+                                            enabled = !loadingMore
+                                        ) { Text("Load more") }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -3416,11 +3496,45 @@ fun UserSearchScreen(
     var profile by remember { mutableStateOf<GitHubApi.GitHubUser?>(null) }
     var repos by remember { mutableStateOf<List<GitHubRemoteRepo>>(emptyList()) }
     var profileLoading by remember { mutableStateOf(false) }
+    var loadingMoreRepos by remember { mutableStateOf(false) }
+    var repoPage by remember { mutableStateOf(1) }
+    var hasMoreRepos by remember { mutableStateOf(false) }
     var profileError by remember { mutableStateOf<String?>(null) }
     var reposError by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
     var browseRepo by remember { mutableStateOf<GitHubRemoteRepo?>(null) }
     val scope = rememberCoroutineScope()
+    val pageSize = 100
+
+    fun loadUserRepos(login: String, reset: Boolean = true) {
+        scope.launch {
+            if (reset) {
+                // keep profileLoading for full open; only for load-more use loadingMoreRepos
+            } else {
+                loadingMoreRepos = true
+            }
+            val page = if (reset) 1 else repoPage + 1
+            val r = withContext(Dispatchers.IO) {
+                githubApi.listPublicRepos(login, perPage = pageSize, page = page)
+            }
+            r.fold(
+                onSuccess = { batch ->
+                    repos = if (reset) batch else repos + batch
+                    repoPage = page
+                    hasMoreRepos = batch.size >= pageSize
+                    if (batch.isEmpty() && reset) reposError = null
+                },
+                onFailure = {
+                    if (reset) {
+                        repos = emptyList()
+                        reposError = it.message ?: "Failed to load repositories"
+                    }
+                    onMessage("Repos: ${it.message}")
+                }
+            )
+            loadingMoreRepos = false
+        }
+    }
 
     fun openUser(login: String) {
         val clean = login.trim().trimStart('@')
@@ -3430,6 +3544,8 @@ fun UserSearchScreen(
         repos = emptyList()
         profileError = null
         reposError = null
+        repoPage = 1
+        hasMoreRepos = false
         scope.launch {
             profileLoading = true
             // 1) Profile
@@ -3443,12 +3559,14 @@ fun UserSearchScreen(
             )
             // 2) Repos (always attempt, even if profile failed)
             val r = withContext(Dispatchers.IO) {
-                githubApi.listPublicRepos(clean, perPage = 100)
+                githubApi.listPublicRepos(clean, perPage = pageSize, page = 1)
             }
             r.fold(
-                onSuccess = {
-                    repos = it
-                    if (it.isEmpty()) reposError = null
+                onSuccess = { batch ->
+                    repos = batch
+                    repoPage = 1
+                    hasMoreRepos = batch.size >= pageSize
+                    if (batch.isEmpty()) reposError = null
                 },
                 onFailure = {
                     repos = emptyList()
@@ -3635,7 +3753,7 @@ fun UserSearchScreen(
                     }
                 }
 
-                Text("Public repositories", style = MaterialTheme.typography.titleMedium)
+                Text("Public repositories (${repos.size})", style = MaterialTheme.typography.titleMedium)
                 Spacer(Modifier.height(8.dp))
                 reposError?.let {
                     Text(it, color = MaterialTheme.colorScheme.error)
@@ -3662,6 +3780,20 @@ fun UserSearchScreen(
                                 onFork = { doFork(repo) },
                                 onBrowse = { browseRepo = repo }
                             )
+                        }
+                        if (hasMoreRepos) {
+                            item {
+                                Box(Modifier.fillMaxWidth().padding(vertical = 12.dp), contentAlignment = Alignment.Center) {
+                                    if (loadingMoreRepos) {
+                                        CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
+                                    } else {
+                                        OutlinedButton(
+                                            onClick = { loadUserRepos(selectedLogin!!, reset = false) },
+                                            enabled = !loadingMoreRepos
+                                        ) { Text("Load more") }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
