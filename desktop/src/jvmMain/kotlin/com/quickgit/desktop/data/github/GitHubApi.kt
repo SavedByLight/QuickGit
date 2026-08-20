@@ -10,6 +10,7 @@ import com.quickgit.desktop.data.models.PullRequest
 import com.quickgit.desktop.data.models.Release
 import com.quickgit.desktop.data.models.ReleaseAsset
 import com.quickgit.desktop.data.models.Workflow
+import com.quickgit.desktop.data.models.WorkflowInput
 import com.quickgit.desktop.data.models.WorkflowAnnotation
 import com.quickgit.desktop.data.models.WorkflowJob
 import com.quickgit.desktop.data.models.WorkflowRun
