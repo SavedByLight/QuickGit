@@ -4045,7 +4045,8 @@ private fun RemoteRepoCard(
     busy: Boolean,
     onClone: () -> Unit,
     onFork: () -> Unit,
-    onBrowse: () -> Unit
+    onBrowse: () -> Unit,
+    showFork: Boolean = true
 ) {
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -4074,7 +4075,9 @@ private fun RemoteRepoCard(
             )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = onClone, enabled = !busy) { Text("Clone") }
-                OutlinedButton(onClick = onFork, enabled = !busy) { Text("Fork") }
+                if (showFork) {
+                    OutlinedButton(onClick = onFork, enabled = !busy) { Text("Fork") }
+                }
                 TextButton(onClick = onBrowse, enabled = !busy) { Text("Code") }
             }
         }
@@ -4255,6 +4258,34 @@ fun RemoteCodeReaderDialog(
     )
 }
 
+private enum class ProfileProviderTab { GITHUB, GITLAB }
+
+private data class ProfileHeader(
+    val login: String,
+    val name: String?,
+    val bio: String? = null,
+    val publicRepos: Int = 0,
+    val followers: Int = 0,
+    val following: Int = 0,
+    val webUrl: String = ""
+)
+
+private fun GitLabProject.toProfileRemoteRepo(): GitHubRemoteRepo = GitHubRemoteRepo(
+    id = id,
+    name = name,
+    fullName = pathWithNamespace,
+    description = description,
+    htmlUrl = webUrl,
+    cloneUrl = httpUrlToRepo,
+    sshUrl = sshUrlToRepo,
+    isPrivate = isPrivate,
+    isFork = isFork,
+    ownerLogin = pathWithNamespace.substringBeforeLast('/', pathWithNamespace),
+    defaultBranch = defaultBranch,
+    updatedAt = updatedAt,
+    language = null
+)
+
 @Composable
 fun ProfileScreen(
     credentialStore: DesktopCredentialStore,
@@ -4263,7 +4294,27 @@ fun ProfileScreen(
     onCloned: (String) -> Unit,
     onMessage: (String) -> Unit
 ) {
-    var user by remember { mutableStateOf<GitHubApi.GitHubUser?>(null) }
+    val githubToken = credentialStore.getGithubToken() ?: credentialStore.getHttpsToken("github.com")
+    val githubConnected = !githubToken.isNullOrBlank()
+    val gitlabHost = remember {
+        credentialStore.getPreferredGitlabHost()
+            ?: "gitlab.com".takeIf { !credentialStore.getHttpsToken("gitlab.com").isNullOrBlank() }
+            ?: "gitlab.com"
+    }
+    val gitlabToken = credentialStore.getHttpsToken(gitlabHost)
+        ?: credentialStore.getGitlabToken()
+    val gitlabConnected = !gitlabToken.isNullOrBlank()
+
+    var selectedTab by remember {
+        mutableStateOf(
+            when {
+                githubConnected -> ProfileProviderTab.GITHUB
+                gitlabConnected -> ProfileProviderTab.GITLAB
+                else -> ProfileProviderTab.GITHUB
+            }
+        )
+    }
+    var header by remember { mutableStateOf<ProfileHeader?>(null) }
     var repos by remember { mutableStateOf<List<GitHubRemoteRepo>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
     var loadingMore by remember { mutableStateOf(false) }
@@ -4275,10 +4326,40 @@ fun ProfileScreen(
     val scope = rememberCoroutineScope()
     val pageSize = 100
 
-    fun loadProfileRepos(reset: Boolean = true) {
+    fun loadGitHub(reset: Boolean = true) {
+        if (!githubConnected) {
+            error = "No GitHub token — add one in Credentials"
+            loading = false
+            return
+        }
         scope.launch {
-            if (reset) loading = true else loadingMore = true
+            if (reset) {
+                loading = true
+                error = null
+                header = null
+                repos = emptyList()
+                repoPage = 1
+            } else {
+                loadingMore = true
+            }
             val page = if (reset) 1 else repoPage + 1
+            if (reset) {
+                val u = withContext(Dispatchers.IO) { githubApi.getAuthenticatedUser() }
+                u.fold(
+                    onSuccess = {
+                        header = ProfileHeader(
+                            login = it.login,
+                            name = it.name,
+                            bio = it.bio,
+                            publicRepos = it.publicRepos,
+                            followers = it.followers,
+                            following = it.following,
+                            webUrl = it.htmlUrl
+                        )
+                    },
+                    onFailure = { error = it.message }
+                )
+            }
             val r = withContext(Dispatchers.IO) {
                 githubApi.listUserRepos(
                     affiliation = "owner,collaborator,organization_member",
@@ -4292,41 +4373,85 @@ fun ProfileScreen(
                     repoPage = page
                     hasMoreRepos = batch.size >= pageSize
                 },
-                onFailure = { onMessage("Repos: ${it.message}") }
+                onFailure = { onMessage("GitHub repos: ${it.message}") }
             )
             loading = false
             loadingMore = false
         }
     }
 
-    LaunchedEffect(Unit) {
-        loading = true
-        val token = credentialStore.getGithubToken() ?: credentialStore.getHttpsToken("github.com")
-        if (token.isNullOrBlank()) {
-            error = "No GitHub token — add one in Credentials"
+    fun loadGitLab(reset: Boolean = true) {
+        if (!gitlabConnected) {
+            error = "No GitLab token — add host + PAT in Credentials"
             loading = false
-            return@LaunchedEffect
+            return
         }
-        val u = withContext(Dispatchers.IO) { githubApi.getAuthenticatedUser() }
-        u.fold(onSuccess = { user = it }, onFailure = { error = it.message })
-        val r = withContext(Dispatchers.IO) {
-            githubApi.listUserRepos(affiliation = "owner,collaborator,organization_member", perPage = pageSize, page = 1)
-        }
-        r.fold(
-            onSuccess = { batch ->
-                repos = batch
+        val token = gitlabToken ?: return
+        scope.launch {
+            if (reset) {
+                loading = true
+                error = null
+                header = null
+                repos = emptyList()
                 repoPage = 1
-                hasMoreRepos = batch.size >= pageSize
-            },
-            onFailure = { onMessage("Repos: ${it.message}") }
-        )
-        loading = false
+            } else {
+                loadingMore = true
+            }
+            val page = if (reset) 1 else repoPage + 1
+            val api = GitLabApi(gitlabHost, token)
+            if (reset) {
+                val u = withContext(Dispatchers.IO) { api.getAuthenticatedUser() }
+                u.fold(
+                    onSuccess = {
+                        header = ProfileHeader(
+                            login = it.username,
+                            name = it.name,
+                            bio = null,
+                            publicRepos = 0,
+                            webUrl = it.webUrl
+                        )
+                    },
+                    onFailure = { error = it.message }
+                )
+            }
+            val r = withContext(Dispatchers.IO) {
+                api.listProjects(membership = true, perPage = pageSize, page = page)
+            }
+            r.fold(
+                onSuccess = { batch ->
+                    val mapped = batch.map { it.toProfileRemoteRepo() }
+                    repos = if (reset) mapped else repos + mapped
+                    repoPage = page
+                    hasMoreRepos = batch.size >= pageSize
+                    if (reset && header != null) {
+                        header = header!!.copy(publicRepos = repos.size)
+                    }
+                },
+                onFailure = { onMessage("GitLab projects: ${it.message}") }
+            )
+            loading = false
+            loadingMore = false
+        }
     }
+
+    fun reload(reset: Boolean = true) {
+        when (selectedTab) {
+            ProfileProviderTab.GITHUB -> loadGitHub(reset)
+            ProfileProviderTab.GITLAB -> loadGitLab(reset)
+        }
+    }
+
+    LaunchedEffect(selectedTab) { reload(reset = true) }
 
     fun doClone(repo: GitHubRemoteRepo) {
         scope.launch {
             busy = true
-            val url = repo.cloneUrl.ifBlank { "https://github.com/${repo.fullName}.git" }
+            val url = repo.cloneUrl.ifBlank {
+                when (selectedTab) {
+                    ProfileProviderTab.GITHUB -> "https://github.com/${repo.fullName}.git"
+                    ProfileProviderTab.GITLAB -> "https://$gitlabHost/${repo.fullName}.git"
+                }
+            }
             val result = withContext(Dispatchers.IO) { repoManager.cloneRepo(url, repo.name) { } }
             busy = false
             result.fold(
@@ -4337,6 +4462,10 @@ fun ProfileScreen(
     }
 
     fun doFork(repo: GitHubRemoteRepo) {
+        if (selectedTab != ProfileProviderTab.GITHUB) {
+            onMessage("Fork is only available for GitHub")
+            return
+        }
         scope.launch {
             busy = true
             val result = withContext(Dispatchers.IO) {
@@ -4346,8 +4475,7 @@ fun ProfileScreen(
             result.fold(
                 onSuccess = {
                     onMessage("Forked to ${it.fullName}")
-                    // refresh list
-                    loadProfileRepos(reset = true)
+                    loadGitHub(reset = true)
                 },
                 onFailure = { onMessage("Fork failed: ${it.message}") }
             )
@@ -4355,30 +4483,92 @@ fun ProfileScreen(
     }
 
     Column(Modifier.fillMaxSize().padding(16.dp)) {
-        Text("GitHub profile", style = MaterialTheme.typography.titleLarge)
+        Text(
+            when (selectedTab) {
+                ProfileProviderTab.GITHUB -> "GitHub profile"
+                ProfileProviderTab.GITLAB -> "GitLab profile"
+            },
+            style = MaterialTheme.typography.titleLarge
+        )
         Spacer(Modifier.height(8.dp))
+
+        // Provider switcher when both (or either) are configured
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            FilterChip(
+                selected = selectedTab == ProfileProviderTab.GITHUB,
+                onClick = { selectedTab = ProfileProviderTab.GITHUB },
+                enabled = githubConnected,
+                label = { Text("GitHub") }
+            )
+            FilterChip(
+                selected = selectedTab == ProfileProviderTab.GITLAB,
+                onClick = { selectedTab = ProfileProviderTab.GITLAB },
+                enabled = gitlabConnected,
+                label = { Text("GitLab") }
+            )
+            if (selectedTab == ProfileProviderTab.GITLAB && gitlabConnected) {
+                Text(
+                    gitlabHost,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+
         when {
-            loading -> {
+            !githubConnected && !gitlabConnected -> {
+                Text(
+                    "Add a GitHub or GitLab token in Credentials to view your profile and repositories.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            loading && header == null -> {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator()
                 }
             }
-            error != null -> Text(error!!, color = MaterialTheme.colorScheme.error)
-            user != null -> {
-                val u = user!!
+            error != null && header == null -> {
+                Text(error!!, color = MaterialTheme.colorScheme.error)
+            }
+            header != null -> {
+                val u = header!!
                 Text(u.name ?: u.login, style = MaterialTheme.typography.headlineSmall)
                 Text("@${u.login}", color = MaterialTheme.colorScheme.primary)
                 u.bio?.let { Text(it) }
                 Text(
-                    "Repos: ${u.publicRepos} public · Followers: ${u.followers} · Following: ${u.following}",
+                    when (selectedTab) {
+                        ProfileProviderTab.GITHUB ->
+                            "Repos: ${u.publicRepos} public · Followers: ${u.followers} · Following: ${u.following}"
+                        ProfileProviderTab.GITLAB ->
+                            "Projects loaded: ${repos.size}" + if (u.webUrl.isNotBlank()) " · ${u.webUrl}" else ""
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Spacer(Modifier.height(12.dp))
-                Text("Your repositories (${repos.size})", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    when (selectedTab) {
+                        ProfileProviderTab.GITHUB -> "Your repositories (${repos.size})"
+                        ProfileProviderTab.GITLAB -> "Your projects (${repos.size})"
+                    },
+                    style = MaterialTheme.typography.titleMedium
+                )
                 Spacer(Modifier.height(8.dp))
-                if (repos.isEmpty()) {
-                    Text("No repositories found", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (loading && repos.isEmpty()) {
+                    Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 2.dp)
+                    }
+                } else if (repos.isEmpty()) {
+                    Text(
+                        if (selectedTab == ProfileProviderTab.GITLAB) "No projects found"
+                        else "No repositories found",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 } else {
                     LazyColumn(
                         Modifier.fillMaxWidth().weight(1f),
@@ -4388,19 +4578,29 @@ fun ProfileScreen(
                             RemoteRepoCard(
                                 repo = repo,
                                 busy = busy,
+                                showFork = selectedTab == ProfileProviderTab.GITHUB,
                                 onClone = { doClone(repo) },
                                 onFork = { doFork(repo) },
-                                onBrowse = { browseRepo = repo }
+                                onBrowse = {
+                                    if (selectedTab == ProfileProviderTab.GITHUB) {
+                                        browseRepo = repo
+                                    } else {
+                                        onMessage("Open ${repo.htmlUrl} in a browser to view GitLab code")
+                                    }
+                                }
                             )
                         }
                         if (hasMoreRepos) {
                             item {
-                                Box(Modifier.fillMaxWidth().padding(vertical = 12.dp), contentAlignment = Alignment.Center) {
+                                Box(
+                                    Modifier.fillMaxWidth().padding(vertical = 12.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
                                     if (loadingMore) {
                                         CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
                                     } else {
                                         OutlinedButton(
-                                            onClick = { loadProfileRepos(reset = false) },
+                                            onClick = { reload(reset = false) },
                                             enabled = !loadingMore
                                         ) { Text("Load more") }
                                     }
