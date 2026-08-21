@@ -51,19 +51,32 @@ class GerritApi(
     }
 
     /**
-     * List projects the user can see.
-     * @param query optional Gerrit project query (e.g. "state:ACTIVE")
+     * List projects the user can see via List Projects REST endpoint.
+     *
+     * Gerrit does **not** accept `q=` on `/projects/` (returns 400: "-q" is not a valid option).
+     * Use `state=` for ACTIVE/READ_ONLY/HIDDEN and `m=` for substring match.
+     *
+     * @param query optional filter. Supports `state:ACTIVE` (etc.) and free-text substring.
+     *              Examples: null/"state:ACTIVE", "state:ACTIVE foo", "android"
      */
     fun listProjects(query: String? = "state:ACTIVE", limit: Int = 100): Result<List<GerritProject>> =
         runCatching {
-            val q = buildString {
+            val raw = query?.trim().orEmpty()
+            val stateRegex = Regex("""(?i)\bstate:(ACTIVE|READ_ONLY|HIDDEN)\b""")
+            val stateMatch = stateRegex.find(raw)
+            val state = stateMatch?.groupValues?.get(1)?.uppercase()
+                ?: if (raw.isBlank()) "ACTIVE" else null
+            val substring = raw.replace(stateRegex, "").trim().takeIf { it.isNotBlank() }
+
+            val path = buildString {
                 append("/a/projects/?d&n=$limit")
-                if (!query.isNullOrBlank()) {
-                    append("&q=").append(URLEncoder.encode(query, "UTF-8"))
+                if (state != null) append("&state=").append(state)
+                if (substring != null) {
+                    append("&m=").append(URLEncoder.encode(substring, "UTF-8"))
                 }
             }
-            val body = request("GET", q)
-            // Response is a JSON object: { "project/name": { "id", "state", ... }, ... }
+            val body = request("GET", path)
+            // List Projects returns a JSON object: { "project/name": { "id", "state", ... }, ... }
             val obj = parseJsonObject(body)
             val keys = obj.keys().asSequence().toList().sorted()
             keys.map { name ->
