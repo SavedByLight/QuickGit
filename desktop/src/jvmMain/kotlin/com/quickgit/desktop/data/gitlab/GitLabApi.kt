@@ -21,16 +21,20 @@ import java.nio.charset.StandardCharsets
  * Uses PRIVATE-TOKEN header. Dependency-free (HttpURLConnection + org.json).
  */
 class GitLabApi(
-    private val host: String,
-    private val token: String?,
+    host: String,
+    token: String?,
     private val useHttps: Boolean = true
 ) {
     private val TAG = "GitLabApi"
+    private val host: String =
+        host.trim().removePrefix("https://").removePrefix("http://").trimEnd('/')
+    /** Tokens pasted from browsers often include CR/LF; those are illegal in HTTP headers. */
+    private val token: String? =
+        token?.trim()?.replace(Regex("[\r\n]"), "")?.takeIf { it.isNotBlank() }
     private val baseUrl: String
         get() {
             val scheme = if (useHttps) "https" else "http"
-            val h = host.trim().removePrefix("https://").removePrefix("http://").trimEnd('/')
-            return "$scheme://$h/api/v4"
+            return "$scheme://${this.host}/api/v4"
         }
 
     data class OwnerProject(val owner: String, val project: String)
@@ -72,7 +76,10 @@ class GitLabApi(
         perPage: Int = 50,
         page: Int = 1
     ): Result<List<GitLabProject>> = runCatching {
-        val path = "/projects?membership=$membership&order_by=updated_at&sort=desc&per_page=$perPage&page=$page&simple=true"
+        // Cap at GitLab's documented max page size (100).
+        val size = perPage.coerceIn(1, 100)
+        val path =
+            "/projects?membership=$membership&order_by=updated_at&sort=desc&per_page=$size&page=$page&simple=true"
         val arr = request("GET", path) as JSONArray
         (0 until arr.length()).map { i -> arr.getJSONObject(i).toProject() }
     }
