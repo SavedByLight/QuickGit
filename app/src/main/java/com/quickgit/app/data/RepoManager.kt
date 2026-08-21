@@ -797,7 +797,7 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
 
                         // After setNoCheckout(true), materialize the working tree.
                         // Do NOT treat "HEAD resolves to null" as empty by itself — large
-                        // GitLab dumps sometimes leave HEAD unborn while origin/* refs and
+                        // GitLab dumps sometimes leave HEAD unborn while origin/ remote refs and
                         // pack objects exist; skipping checkout then yields pull failures
                         // ("did not advertise Ref for branch main") and checkout conflicts.
                         materializeWorkingTreeAfterClone(git, destination, onProgress)
@@ -1941,7 +1941,7 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
      * After [Git.cloneRepository] with setNoCheckout(true), write index + worktree.
      *
      * Prefer HEAD when it points at a real commit. Otherwise use origin/HEAD or any
-     * origin/* tracking ref so we never skip checkout when pack objects already exist
+     * origin/ remote-tracking ref so we never skip checkout when pack objects already exist
      * (common failure mode on large GitLab repos that left HEAD unborn).
      */
     private fun materializeWorkingTreeAfterClone(
@@ -2070,7 +2070,7 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                     return
                 }
 
-                // No origin/HEAD. Prefer an existing origin/* tip over inventing unborn main.
+                // No origin/HEAD. Prefer an existing origin/ remote tip over inventing unborn main.
                 val headId = try { repo.resolve(org.eclipse.jgit.lib.Constants.HEAD) } catch (_: Exception) { null }
                 if (headId == null) {
                     val anyRemote = try {
