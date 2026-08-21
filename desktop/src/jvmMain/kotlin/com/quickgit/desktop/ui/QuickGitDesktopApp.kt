@@ -4965,7 +4965,6 @@ fun SettingsScreen(
     onMessage: (String) -> Unit
 ) {
     var reposRoot by remember { mutableStateOf(repoManager.getReposRoot().absolutePath) }
-    var gpgSign by remember { mutableStateOf(repoManager.isGpgSigningEnabled()) }
     var checkingUpdate by remember { mutableStateOf(false) }
     var updateStatus by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
@@ -4974,13 +4973,6 @@ fun SettingsScreen(
         Text("Repositories root", style = MaterialTheme.typography.titleMedium)
         OutlinedTextField(value = reposRoot, onValueChange = { reposRoot = it }, label = { Text("Path") }, modifier = Modifier.fillMaxWidth())
         Button(onClick = { repoManager.setReposRoot(reposRoot); onMessage("Root updated") }) { Text("Save root") }
-
-        HorizontalDivider()
-        Text("Signing", style = MaterialTheme.typography.titleMedium)
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Checkbox(checked = gpgSign, onCheckedChange = { gpgSign = it; repoManager.setGpgSigningEnabled(it) })
-            Text("Sign commits with GPG")
-        }
 
         HorizontalDivider()
         Text("Updates", style = MaterialTheme.typography.titleMedium)
@@ -5040,6 +5032,9 @@ fun CredentialsScreen(
     }
     var sshKey by remember { mutableStateOf(credentialStore.getSshPrivateKey() ?: "") }
     var sshPass by remember { mutableStateOf(credentialStore.getSshPassphrase() ?: "") }
+    var gpgSign by remember { mutableStateOf(repoManager.isGpgSigningEnabled()) }
+    var gpgKey by remember { mutableStateOf(credentialStore.getGpgSecretKey() ?: "") }
+    var gpgPass by remember { mutableStateOf(credentialStore.getGpgPassphrase() ?: "") }
 
     Column(Modifier.fillMaxSize().padding(24.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Text("Commit identity", style = MaterialTheme.typography.titleMedium)
@@ -5066,6 +5061,45 @@ fun CredentialsScreen(
             repoManager.setCommitAuthor(authorName, authorEmail)
             onMessage("Author saved")
         }) { Text("Save author") }
+
+        HorizontalDivider()
+        Text("Signing", style = MaterialTheme.typography.titleMedium)
+        Text(
+            "GPG commit signing uses the secret key and passphrase stored here. " +
+                "The author email should match a UID on the key.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Checkbox(
+                checked = gpgSign,
+                onCheckedChange = {
+                    gpgSign = it
+                    repoManager.setGpgSigningEnabled(it)
+                }
+            )
+            Text("Sign commits with GPG")
+        }
+        OutlinedTextField(
+            value = gpgKey,
+            onValueChange = { gpgKey = it },
+            label = { Text("GPG secret key (ASCII-armored)") },
+            modifier = Modifier.fillMaxWidth().height(140.dp),
+            maxLines = 8
+        )
+        OutlinedTextField(
+            value = gpgPass,
+            onValueChange = { gpgPass = it },
+            label = { Text("GPG passphrase") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true
+        )
+        Button(onClick = {
+            credentialStore.setGpgSecretKey(gpgKey.ifBlank { null })
+            credentialStore.setGpgPassphrase(gpgPass.ifBlank { null })
+            repoManager.setGpgSigningEnabled(gpgSign)
+            onMessage("GPG signing settings saved")
+        }) { Text("Save GPG signing") }
 
         HorizontalDivider()
         Text("GitHub account", style = MaterialTheme.typography.titleMedium)
@@ -5195,6 +5229,7 @@ fun CredentialsScreen(
             credentialStore.clearAll()
             githubToken = ""; githubUsername = ""; httpsToken = ""; httpsUsername = ""
             gitlabToken = ""; gitlabUsername = ""; sshKey = ""; sshPass = ""
+            gpgKey = ""; gpgPass = ""; gpgSign = false
             onMessage("All credentials cleared")
         }) { Text("Clear all credentials") }
     }
