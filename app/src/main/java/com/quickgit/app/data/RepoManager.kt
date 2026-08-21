@@ -156,12 +156,10 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     /**
      * JGit's LockFile.commit() does one atomic rename (config.lock -> config, etc.) and, on
      * Unix/Android (FS_POSIX.retryFailedLockFileCommit() == false), does NOT retry on failure —
-     * unlike Windows, which retries up to 9x to dodge transient AV/indexer locks. This is usually
-     * transient OEM storage-stack flakiness, retryable at the clone-attempt level. But on some
-     * devices (MIUI in particular) the underlying public/shared-storage path is FUSE-emulated and
-     * doesn't support atomic rename reliably at all, so the same commit fails on every attempt —
-     * see [cloneRepo], which now clones into app-private storage first and moves the finished
-     * repo into place, avoiding lock-file commits on that kind of path entirely.
+     * unlike Windows, which retries up to 9x to dodge transient AV/indexer locks. On public
+     * storage (Documents/...) this can be flaky under MediaProvider/FUSE; [cloneIntoStaging]
+     * retries and [clearStaleGitLockFiles] clears leftover *.lock files between attempts.
+     * Clones go directly to the final Documents path (no private-staging + copy).
      */
     private fun isLockFileCommitRace(e: Throwable): Boolean {
         var t: Throwable? = e
@@ -645,7 +643,7 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         onProgress: (String) -> Unit = {}
     ): GitOpResult = cloneRepo(url, File(reposRoot, folderName), depth, onProgress)
 
-    /** Clones into an explicit [destination], e.g. one the user picked via the system file manager. */
+    /** Clones into an explicit [destination], e.g. Documents/QuickGit/<name> or a user-picked folder. */
     fun cloneRepo(
         url: String,
         destination: File,
@@ -659,124 +657,34 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         val alreadyExisted = destination.exists()
         val cloneUrl = normalizeCloneUrl(url)
 
-        // Clone into app-private storage first, then move the finished repo into place as a
-        // single step. Public/shared storage (Documents/... etc.) goes through Android's
-        // FUSE-based scoped-storage emulation on many OEM stacks (MIUI in particular): plain
-        // writes succeed, but the atomic write-lock-file-then-rename pattern JGit uses for
-        // every commit of config/refs/HEAD is not reliably atomic there — clones can fail
-        // deterministically (not just flakily) with "Cannot commit write to .../.git/config".
-        // App-private storage (context.filesDir) is a real filesystem with normal POSIX
-        // semantics, so all of JGit's lock-file commits happen safely there; only a plain
-        // file copy (no atomic renames) touches the public path, at the very end.
-        val staging = newStagingDir(label)
-        AppLog.i(TAG, "clone: $cloneUrl -> staging ${staging.absolutePath} (final: ${destination.absolutePath})")
+        // Clone directly into the final location (Documents/QuickGit by default). No
+        // app-private staging + multi-GB copy afterward — that doubled disk use and time
+        // on large dumps. Lock-file races on scoped storage are handled by retries in
+        // cloneIntoStaging / clearStaleGitLockFiles.
+        destination.parentFile?.mkdirs()
+        if (!destination.exists() && !destination.mkdirs()) {
+            return GitOpResult.Error("Could not create folder: ${destination.absolutePath}")
+        }
+        AppLog.i(TAG, "clone: $cloneUrl -> ${destination.absolutePath}")
 
-        val result = cloneIntoStaging(cloneUrl, staging, depth, onProgress)
+        val result = cloneIntoStaging(cloneUrl, destination, depth, onProgress)
         if (result !is GitOpResult.Success) {
-            staging.deleteRecursively()
+            if (!alreadyExisted) {
+                try { destination.deleteRecursively() } catch (_: Exception) {}
+            }
             return result
         }
 
-        onProgress("Moving repository into place…")
-        return try {
-            moveDirectory(staging, destination)
-            rememberExternalRepoPath(destination)
-            AppLog.i(TAG, "clone: moved staged clone into place: ${destination.absolutePath}")
-            markLocalReposChanged()
-            GitOpResult.Success
-        } catch (e: Exception) {
-            AppLog.e(TAG, "clone: failed to move staged clone into place: ${destination.absolutePath}", e)
-            staging.deleteRecursively()
-            if (!alreadyExisted) destination.deleteRecursively()
-            GitOpResult.Error("Clone succeeded but couldn't move it into place: ${e.message}", e)
-        }
-    }
-
-    /** Creates a fresh, empty app-private directory to clone into before the final move. */
-    private fun newStagingDir(label: String): File {
-        val root = File(context.filesDir, "clone_staging").apply { mkdirs() }
-        val safeLabel = label.ifBlank { "repo" }.replace(Regex("[^A-Za-z0-9._-]"), "_")
-        var dir = File(root, "$safeLabel-${System.currentTimeMillis()}")
-        var suffix = 0
-        while (dir.exists()) {
-            suffix++
-            dir = File(root, "$safeLabel-${System.currentTimeMillis()}-$suffix")
-        }
-        dir.mkdirs()
-        return dir
+        rememberExternalRepoPath(destination)
+        markLocalReposChanged()
+        AppLog.i(TAG, "clone: ready at ${destination.absolutePath}")
+        return GitOpResult.Success
     }
 
     /**
-     * Moves [src] into [dst]. Tries a plain rename first (fast path, works if both happen to be
-     * on the same volume); falls back to a recursive copy + delete for the common case of moving
-     * from app-private storage to public/shared storage, which are different volumes. The copy
-     * step is plain file writes (no lock-file atomic renames), so it's safe on flaky
-     * scoped-storage stacks even though a live JGit clone there is not — but file creation itself
-     * can still spuriously fail there (some devices' scoped-storage FUSE/MediaProvider layer has
-     * known bugs indexing dot-prefixed hidden files/folders like `.git`, throwing EEXIST for a
-     * path that doesn't actually exist yet), so each file copy is retried a few times.
-     */
-    private fun moveDirectory(src: File, dst: File) {
-        dst.parentFile?.mkdirs()
-        if (src.renameTo(dst)) return
-        dst.mkdirs()
-        src.walkTopDown().forEach { file ->
-            val relative = file.relativeTo(src).path
-            val target = if (relative.isEmpty()) dst else File(dst, relative)
-            if (file.isDirectory) {
-                target.mkdirs()
-            } else {
-                copyFileWithRetry(file, target)
-            }
-        }
-        src.deleteRecursively()
-    }
-
-    /**
-     * Copies [src] to [dst], retrying on failure. Public/shared storage on some devices spuriously
-     * throws EEXIST (or similar) creating a file that doesn't actually exist yet — a known
-     * scoped-storage FUSE/MediaProvider quirk, worse for dot-prefixed paths like `.git/...`.
-     *
-     * We deliberately force-overwrite: try a normal delete first, but if the file still exists
-     * (or delete is denied) we open it for write and stream the content over the top. That way
-     * an existing destination file never aborts the staged-clone → Documents move.
-     */
-    private fun copyFileWithRetry(src: File, dst: File, maxAttempts: Int = 5) {
-        var lastError: Exception? = null
-        for (attempt in 1..maxAttempts) {
-            try {
-                dst.parentFile?.mkdirs()
-                // Prefer a clean slate, but do not fail if delete is refused.
-                if (dst.exists()) {
-                    if (!dst.delete()) {
-                        AppLog.w(TAG, "copyFileWithRetry: couldn't clear existing $dst before copy (attempt $attempt/$maxAttempts) — will force-overwrite")
-                    }
-                }
-                // Stream overwrite: works even when delete failed or the path is partially
-                // visible to MediaProvider. Truncates/replaces any residual content.
-                src.inputStream().use { input ->
-                    dst.outputStream().use { output ->
-                        input.copyTo(output)
-                    }
-                }
-                return
-            } catch (e: Exception) {
-                lastError = e
-                AppLog.w(TAG, "copyFileWithRetry: attempt $attempt/$maxAttempts failed for $dst: ${e.message}")
-                if (attempt < maxAttempts) {
-                    try { Thread.sleep(150L * attempt) } catch (_: InterruptedException) {}
-                }
-            }
-        }
-        throw lastError ?: java.io.IOException("Failed to copy $src to $dst")
-    }
-
-    /**
-     * Does the actual JGit clone + checkout + LFS fetch into [destination], which the caller
-     * guarantees is a fresh, empty, app-private directory (see [cloneRepo]). Retry logic here
-     * handles genuinely transient issues (Inflater races under memory pressure, occasional
-     * lock-file commit races); it no longer needs to work around structurally non-atomic public
-     * storage, since that's now handled by staging + a single move in [cloneRepo].
+     * Does the actual JGit clone + checkout + LFS fetch into [destination] (the final
+     * Documents path, or any user-picked folder). Retry logic handles Inflater SoftRef
+     * races under memory pressure and occasional lock-file commit races on scoped storage.
      */
     private fun cloneIntoStaging(
         cloneUrl: String,
