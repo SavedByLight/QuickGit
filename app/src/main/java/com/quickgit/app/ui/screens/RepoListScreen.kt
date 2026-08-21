@@ -153,12 +153,12 @@ fun RepoListScreen(
                             }
                         }
                     }
-                    IconButton(onClick = onLogs) {
-                        Icon(Icons.Default.Terminal, contentDescription = "Logs")
-                    }
-                    // Creds / Settings — hidden on tablet/Chromebook layout since the
-                    // NavigationRail already provides them (matching desktop).
+                    // Logs / Creds / Settings — hidden on tablet/Chromebook layout since
+                    // the NavigationRail already provides them (matching desktop).
                     if (!isDesktopLayout) {
+                        IconButton(onClick = onLogs) {
+                            Icon(Icons.Default.Terminal, contentDescription = "Logs")
+                        }
                         IconButton(onClick = onCredentials) {
                             Icon(Icons.Default.Key, contentDescription = "Credentials")
                         }
