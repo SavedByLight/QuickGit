@@ -2418,69 +2418,91 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     fun createBranch(path: String, name: String, checkout: Boolean): GitOpResult = withRepoLock(path) {
         openGit(path).use { git ->
             git.branchCreate().setName(name).call()
-            if (checkout) git.checkout().setName(name).setForced(true).call()
         }
-        GitOpResult.Success
+        if (!checkout) return@withRepoLock GitOpResult.Success
+        // Reuse checkoutBranch so large trees get TreeWalk fallback on Inflater races.
+        checkoutBranch(path, name)
     }
 
     fun checkoutBranch(path: String, name: String): GitOpResult = withRepoLock(path) {
         installJGitMemoryLimits()
+        val dest = File(path)
+        // Resolve target branch and update refs first (cheap). Worktree materialize is
+        // separate so Inflater SoftRef races on 80k-file trees can use TreeWalk fallback.
+        val shortName: String
         openGit(path).use { git ->
             val repo = git.repository
-            // `name` is a bare local branch name (e.g. "feature-x") for an existing local
-            // branch, or a remote-tracking name like "origin/feature-x" — as shown for
-            // remote entries in the branch list — for one that hasn't been checked out
-            // locally yet. Check exact ref paths so remote-only names create a tracking
-            // branch instead of detaching HEAD.
             val remoteRef = repo.findRef("refs/remotes/$name")
-            val shortName = if (remoteRef != null) name.substringAfter('/') else name
+            shortName = if (remoteRef != null) name.substringAfter('/') else name
             val localRef = repo.findRef("refs/heads/$shortName")
 
-            // Force: mobile UX expects switch branch to overwrite local edits (same as
-            // discard). Without setForced, partial TreeWalk checkouts leave "modified"
-            // files that block every branch switch with CheckoutConflictException.
-            fun doCheckout(force: Boolean) {
-                when {
-                    localRef != null -> {
-                        git.checkout().setName(shortName).setForced(force).call()
-                    }
-                    remoteRef != null -> {
-                        git.checkout()
-                            .setCreateBranch(true)
-                            .setName(shortName)
-                            .setUpstreamMode(CreateBranchCommand.SetupUpstreamMode.TRACK)
-                            .setStartPoint(remoteRef.name)
-                            .setForced(force)
-                            .call()
-                    }
-                    else -> throw IllegalArgumentException("Branch not found: $name")
+            when {
+                localRef != null -> {
+                    // Point HEAD at existing local branch (no worktree yet).
+                    val up = repo.updateRef(org.eclipse.jgit.lib.Constants.HEAD)
+                    up.link("refs/heads/$shortName")
                 }
-            }
-
-            try {
-                doCheckout(force = true)
-                GitOpResult.Success
-            } catch (e: Exception) {
-                if (e is IllegalArgumentException) {
-                    return@withRepoLock GitOpResult.Error(e.message ?: "Branch not found")
-                }
-                // Inflater SoftRef race on large trees — release cache and retry once.
-                if (isInflaterRace(e) || e.message?.contains("Short read", true) == true) {
-                    AppLog.w(TAG, "checkoutBranch Inflater race, retrying: ${e.message}")
-                    releaseJGitSoftRefs()
+                remoteRef != null -> {
+                    // Create local branch from remote tip + tracking config.
+                    val tip = remoteRef.objectId
+                        ?: return@withRepoLock GitOpResult.Error("Remote branch has no tip: $name")
+                    val create = repo.updateRef("refs/heads/$shortName")
+                    create.setNewObjectId(tip)
+                    create.setRefLogMessage("branch: Created from ${remoteRef.name}", false)
+                    val rc = create.update()
+                    if (rc != org.eclipse.jgit.lib.RefUpdate.Result.NEW &&
+                        rc != org.eclipse.jgit.lib.RefUpdate.Result.FAST_FORWARD &&
+                        rc != org.eclipse.jgit.lib.RefUpdate.Result.FORCED
+                    ) {
+                        return@withRepoLock GitOpResult.Error("Could not create branch $shortName ($rc)")
+                    }
                     try {
-                        doCheckout(force = true)
-                        return@withRepoLock GitOpResult.Success
-                    } catch (e2: Exception) {
-                        AppLog.e(TAG, "checkoutBranch retry failed", e2)
-                        return@withRepoLock GitOpResult.Error(
-                            e2.message ?: "Checkout failed", e2
+                        val cfg = repo.config
+                        cfg.setString("branch", shortName, "remote", "origin")
+                        cfg.setString(
+                            "branch", shortName, "merge",
+                            "refs/heads/${name.substringAfter('/')}"
                         )
+                        cfg.save()
+                    } catch (e: Exception) {
+                        AppLog.w(TAG, "checkoutBranch: tracking config: ${e.message}")
                     }
+                    val up = repo.updateRef(org.eclipse.jgit.lib.Constants.HEAD)
+                    up.link("refs/heads/$shortName")
                 }
-                AppLog.e(TAG, "checkoutBranch failed: $name", e)
-                GitOpResult.Error(e.message ?: "Checkout failed", e)
+                else -> return@withRepoLock GitOpResult.Error("Branch not found: $name")
             }
+        }
+
+        // Fast path: forced CheckoutCommand (fine for small/medium repos).
+        try {
+            openGit(path).use { git ->
+                git.checkout().setName(shortName).setForced(true).call()
+            }
+            AppLog.i(TAG, "checkoutBranch: CheckoutCommand OK → $shortName")
+            return@withRepoLock GitOpResult.Success
+        } catch (e: Exception) {
+            if (!isInflaterRace(e) &&
+                e.message?.contains("Short read", true) != true &&
+                e.message?.contains("Checkout conflict", true) != true
+            ) {
+                AppLog.e(TAG, "checkoutBranch failed: $name", e)
+                return@withRepoLock GitOpResult.Error(e.message ?: "Checkout failed", e)
+            }
+            AppLog.w(TAG, "checkoutBranch: CheckoutCommand failed (${e.message}) — TreeWalk fallback")
+        }
+
+        // Large-tree / SoftRef path: rewrite worktree file-by-file at HEAD (now shortName).
+        return@withRepoLock try {
+            releaseJGitSoftRefs()
+            checkoutWorkingTreeFileByFile(dest, "HEAD") { msg ->
+                AppLog.i(TAG, "checkoutBranch: $msg")
+            }
+            AppLog.i(TAG, "checkoutBranch: TreeWalk OK → $shortName")
+            GitOpResult.Success
+        } catch (e: Exception) {
+            AppLog.e(TAG, "checkoutBranch TreeWalk failed: $name", e)
+            GitOpResult.Error(e.message ?: "Checkout failed", e)
         }
     }
 
