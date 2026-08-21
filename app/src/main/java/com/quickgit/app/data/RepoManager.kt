@@ -1106,6 +1106,26 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
 
     fun getStatus(path: String): RepoStatus {
         ensureMobileRepoConfig(path)
+        return try {
+            readStatusOrThrow(path)
+        } catch (e: Exception) {
+            if (isCorruptIndexError(e)) {
+                AppLog.w(TAG, "getStatus: corrupt index, rebuilding from HEAD: ${e.message}")
+                try {
+                    rebuildIndexFromHead(path)
+                    readStatusOrThrow(path)
+                } catch (e2: Exception) {
+                    AppLog.e(TAG, "getStatus: still failing after index rebuild", e2)
+                    RepoStatus(emptyList(), emptyList(), emptyList(), emptyList())
+                }
+            } else {
+                AppLog.e(TAG, "getStatus failed: ${e.message}", e)
+                RepoStatus(emptyList(), emptyList(), emptyList(), emptyList())
+            }
+        }
+    }
+
+    private fun readStatusOrThrow(path: String): RepoStatus {
         openGit(path).use { git ->
             val s = git.status().call()
             val staged = mutableListOf<FileChange>()
@@ -1121,6 +1141,42 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
             val conflicting = s.conflicting.map { FileChange(it, ChangeType.CONFLICTING, false) }
 
             return RepoStatus(staged, unstaged, untracked, conflicting)
+        }
+    }
+
+    private fun isCorruptIndexError(e: Throwable): Boolean {
+        var t: Throwable? = e
+        while (t != null) {
+            val msg = t.message.orEmpty()
+            if (msg.contains("Short read of block", ignoreCase = true)) return true
+            if (msg.contains("DIRC", ignoreCase = true) && msg.contains("invalid", ignoreCase = true)) return true
+            if (t is java.io.EOFException) return true
+            t = t.cause
+        }
+        return false
+    }
+
+    /**
+     * Deletes a truncated/corrupt `.git/index` and rebuilds it from HEAD (MIXED reset:
+     * index only, worktree untouched). Safe after TreeWalk checkouts that wrote a bad index.
+     */
+    private fun rebuildIndexFromHead(path: String) {
+        openGit(path).use { git ->
+            val gitDir = git.repository.directory
+            File(gitDir, "index").delete()
+            File(gitDir, "index.lock").delete()
+            clearStaleGitLockFiles(File(path))
+            installJGitMemoryLimits()
+            try {
+                git.reset()
+                    .setMode(org.eclipse.jgit.api.ResetCommand.ResetType.MIXED)
+                    .setRef("HEAD")
+                    .call()
+                AppLog.i(TAG, "rebuildIndexFromHead: MIXED reset OK for $path")
+            } catch (e: Exception) {
+                AppLog.w(TAG, "rebuildIndexFromHead: MIXED reset failed: ${e.message}")
+                // Leave with no index rather than a corrupt one; status will treat as empty.
+            }
         }
     }
 
@@ -2063,8 +2119,6 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         var byteCount = 0L
         var skipped = 0
         val batchSize = 100
-        // Rebuild index after all files so we never hold DirCache lock across GC pauses.
-        val indexEntries = ArrayList<org.eclipse.jgit.dircache.DirCacheEntry>(plan.size)
 
         fun writeOne(repo: Repository, item: PlannedFile): Boolean {
             val outFile = File(destination, item.relPath)
@@ -2117,19 +2171,7 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                 val repo = git.repository
                 for (i in offset until end) {
                     val item = plan[i]
-                    val ok = writeOne(repo, item)
-                    val entry = org.eclipse.jgit.dircache.DirCacheEntry(item.relPath)
-                    entry.setObjectId(item.objectId)
-                    entry.fileMode = item.mode
-                    val outFile = File(destination, item.relPath)
-                    if (ok && outFile.exists()) {
-                        val len = outFile.length()
-                        if (len <= Int.MAX_VALUE) {
-                            try { entry.setLength(len.toInt()) } catch (_: Exception) {}
-                        }
-                        try { entry.lastModified = outFile.lastModified() } catch (_: Exception) {}
-                    }
-                    indexEntries.add(entry)
+                    writeOne(repo, item)
                     fileCount++
                     if (fileCount % batchSize == 0) {
                         releaseJGitSoftRefsLight()
@@ -2144,22 +2186,22 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
             offset = end
         }
 
-        // Write the index in one shot with a clean repo open.
+        // Build a proper index from HEAD via MIXED reset (worktree already written).
+        // Manual DirCacheEntry assembly was producing truncated indexes → "Short read of block"
+        // on the next status() call.
         installJGitMemoryLimits()
         openGit(destination.absolutePath).use { git ->
-            val repo = git.repository
-            val dc = repo.lockDirCache()
+            val gitDir = git.repository.directory
+            File(gitDir, "index").delete()
+            File(gitDir, "index.lock").delete()
             try {
-                val builder = dc.builder()
-                // DirCache requires sorted entries.
-                indexEntries.sortWith(compareBy { it.pathString })
-                for (e in indexEntries) builder.add(e)
-                builder.finish()
-                if (!dc.commit()) {
-                    AppLog.w(TAG, "DirCache.commit() returned false after TreeWalk checkout")
-                }
-            } finally {
-                dc.unlock()
+                git.reset()
+                    .setMode(org.eclipse.jgit.api.ResetCommand.ResetType.MIXED)
+                    .setRef(startRef)
+                    .call()
+                AppLog.i(TAG, "TreeWalk checkout: index rebuilt via MIXED reset at $startRef")
+            } catch (e: Exception) {
+                AppLog.w(TAG, "TreeWalk checkout: MIXED reset failed: ${e.message}")
             }
         }
 
