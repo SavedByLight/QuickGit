@@ -114,17 +114,27 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     }
 
     /**
-     * Force GC + finalization so SoftReferenced WindowCache Inflater instances are released.
-     * Also reinstalls a fresh WindowCacheConfig so the next pack open cannot reuse a closed
-     * Inflater left in a static SoftReference table (the usual Android 11+ failure mode).
+     * Light SoftRef release for the tight per-file checkout loop. Does **not** reinstall
+     * WindowCache — calling [installJGitMemoryLimits] while an ObjectReader is still open
+     * is a common source of post-clone "Short read of block" on Android.
+     */
+    private fun releaseJGitSoftRefsLight() {
+        try {
+            System.gc()
+            try { Thread.sleep(30) } catch (_: InterruptedException) {}
+        } catch (_: Exception) {
+        }
+    }
+
+    /**
+     * Full SoftRef release between major phases (clone attempts, materialize fallback entry).
+     * Reinstalls WindowCache only after GC has had a chance to clear dead SoftRefs.
      */
     private fun releaseJGitSoftRefs() {
         try {
             System.gc()
             System.runFinalization()
             System.gc()
-            // Brief yield so the concurrent-mark GC can actually reclaim SoftRefs before
-            // the next pack open. Without this, materialize retries often fail in <1s.
             try { Thread.sleep(150) } catch (_: InterruptedException) {}
             installJGitMemoryLimits()
         } catch (_: Exception) {
@@ -597,12 +607,32 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     }
 
     private fun infoFor(dir: File): RepoInfo {
-        ensureMobileRepoConfig(dir.absolutePath)
+        // Avoid ensureMobileRepoConfig here — it opens the repo and can hit pack SoftRef
+        // races right after a multi-GB clone. Config is already applied during clone.
         Git.open(dir).use { git ->
             val repo = git.repository
-            val branch = repo.branch ?: "(detached)"
-            val remote = repo.config.getString("remote", "origin", "url")
-            val dirty = !git.status().call().isClean
+            val branch = try {
+                repo.branch ?: "(detached)"
+            } catch (_: Exception) {
+                "(unknown)"
+            }
+            val remote = try {
+                repo.config.getString("remote", "origin", "url")
+            } catch (_: Exception) {
+                null
+            }
+            // Never run full `git status` on large trees — it re-inflates the whole pack and
+            // is the usual source of "Short read of block" / multi-minute freezes on dumps.
+            val dirty = try {
+                val entries = repo.readDirCache().entryCount
+                if (entries > 5_000) {
+                    sampleMissingFromIndex(repo, repo.workTree ?: dir, maxSamples = 12) > 0
+                } else {
+                    !git.status().call().isClean
+                }
+            } catch (_: Exception) {
+                false
+            }
             return RepoInfo(dir.name, dir.absolutePath, branch, remote, dirty)
         }
     }
@@ -962,6 +992,11 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
             openGit(path).use { git ->
                 val repo = git.repository
                 val root = repo.workTree ?: File(path)
+                val indexEntries = try {
+                    repo.readDirCache().entryCount
+                } catch (_: Exception) {
+                    0
+                }
                 // Sample up to 24 index paths — O(1) disk checks instead of a full tree walk.
                 val sampleMissing = sampleMissingFromIndex(repo, root, maxSamples = 24)
                 if (sampleMissing == 0) {
@@ -970,8 +1005,15 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                 }
                 AppLog.w(
                     TAG,
-                    "post-clone probe: $sampleMissing sampled path(s) missing — repair hard-reset"
+                    "post-clone probe: $sampleMissing sampled path(s) missing of ~$indexEntries index entries"
                 )
+                // Never hard-reset large trees post-clone — that re-enters the Inflater SoftRef
+                // path we just spent minutes escaping. Missing samples are expected when a few
+                // large blobs were skipped during TreeWalk fallback.
+                if (indexEntries > 5_000) {
+                    AppLog.i(TAG, "post-clone: skipped repair hard-reset/status ($indexEntries index entries)")
+                    return
+                }
                 try {
                     git.reset()
                         .setMode(org.eclipse.jgit.api.ResetCommand.ResetType.HARD)
@@ -979,16 +1021,6 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                         .call()
                 } catch (repairEx: Exception) {
                     AppLog.w(TAG, "post-clone repair hard-reset failed: ${repairEx.message}")
-                }
-                // Optional diagnostic status — skip on enormous trees to avoid multi-minute stalls.
-                val indexEntries = try {
-                    repo.readDirCache().entryCount
-                } catch (_: Exception) {
-                    0
-                }
-                if (indexEntries > 50_000) {
-                    AppLog.i(TAG, "post-clone: skipped full status ($indexEntries index entries)")
-                    return
                 }
                 val s = git.status().call()
                 if (s.isClean) {
@@ -2097,109 +2129,155 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     ) {
         installJGitMemoryLimits()
         releaseJGitSoftRefs()
+
+        // Collect the full tree plan first (paths + object ids) so we can close the
+        // initial walk, then open a fresh Repository for the long write phase, and
+        // reopen again if Inflater races accumulate.
+        data class PlannedFile(
+            val relPath: String,
+            val objectId: ObjectId,
+            val mode: org.eclipse.jgit.lib.FileMode
+        )
+        val plan = ArrayList<PlannedFile>(16_384)
         openGit(destination.absolutePath).use { git ->
             val repo = git.repository
             applyMobileRepoConfig(git)
             val tip = repo.resolve(startRef)
                 ?: throw IllegalStateException("Cannot resolve $startRef for checkout")
             val commit = RevWalk(repo).use { it.parseCommit(tip) }
-            val treeId = commit.tree
-
-            // Rebuild the index from the tree while writing files.
-            val dc = repo.lockDirCache()
-            try {
-                val builder = dc.builder()
-                var fileCount = 0
-                var byteCount = 0L
-                val batchSize = 75 // SoftRef release cadence
-
-                TreeWalk(repo).use { tw ->
-                    tw.addTree(treeId)
-                    tw.isRecursive = true
-                    while (tw.next()) {
-                        if (tw.isSubtree) continue
-                        val mode = tw.getFileMode(0)
-                        // Skip gitlinks (submodules) — no blob to materialize.
-                        if (mode == org.eclipse.jgit.lib.FileMode.GITLINK) continue
-
-                        val relPath = tw.pathString
-                        val objectId = tw.getObjectId(0)
-                        val outFile = File(destination, relPath)
-                        outFile.parentFile?.mkdirs()
-
-                        // Per-file inflate with local retry so one SoftRef eviction
-                        // does not abort the entire multi-GB tree.
-                        var written = false
-                        var lastFileErr: Exception? = null
-                        for (fileTry in 1..4) {
-                            try {
-                                if (fileTry > 1) {
-                                    releaseJGitSoftRefs()
-                                    try { Thread.sleep(80L * fileTry) } catch (_: InterruptedException) {}
-                                }
-                                val loader = repo.open(objectId)
-                                FileOutputStream(outFile).use { fos ->
-                                    loader.copyTo(fos)
-                                }
-                                if (mode == org.eclipse.jgit.lib.FileMode.EXECUTABLE_FILE) {
-                                    outFile.setExecutable(true, false)
-                                }
-                                // Symlinks: JGit stores the target as blob content; on Android
-                                // we write a plain file with the target text (symlinks=false).
-                                written = true
-                                byteCount += outFile.length()
-                                break
-                            } catch (e: Exception) {
-                                lastFileErr = e
-                                if (!isInflaterRace(e) || fileTry == 4) {
-                                    AppLog.w(TAG, "checkout file failed $relPath: ${e.message}")
-                                    break
-                                }
-                            }
-                        }
-                        if (!written) {
-                            // Skip unreadable blob rather than failing the whole clone;
-                            // index entry still records the correct ObjectId.
-                            AppLog.w(TAG, "skipping file after Inflater retries: $relPath (${lastFileErr?.message})")
-                        }
-
-                        val entry = org.eclipse.jgit.dircache.DirCacheEntry(relPath)
-                        entry.setObjectId(objectId)
-                        entry.fileMode = mode
-                        if (outFile.exists()) {
-                            entry.setLength(outFile.length().toInt().coerceAtLeast(0))
-                            entry.lastModified = outFile.lastModified()
-                        }
-                        builder.add(entry)
-
-                        fileCount++
-                        if (fileCount % batchSize == 0) {
-                            releaseJGitSoftRefs()
-                            onProgress(
-                                "Checking out files… $fileCount (${byteCount / (1024 * 1024)} MB)"
-                            )
-                        }
-                    }
+            TreeWalk(repo).use { tw ->
+                tw.addTree(commit.tree)
+                tw.isRecursive = true
+                while (tw.next()) {
+                    if (tw.isSubtree) continue
+                    val mode = tw.getFileMode(0)
+                    if (mode == org.eclipse.jgit.lib.FileMode.GITLINK) continue
+                    plan.add(PlannedFile(tw.pathString, tw.getObjectId(0), mode))
                 }
-                builder.finish()
-                if (!dc.commit()) {
-                    AppLog.w(TAG, "DirCache.commit() returned false after TreeWalk checkout")
-                }
-                AppLog.i(TAG, "TreeWalk checkout wrote $fileCount files (${byteCount / (1024 * 1024)} MB)")
-            } finally {
-                dc.unlock()
             }
-
-            // Ensure HEAD matches the tip we checked out.
+            // Point HEAD at the branch tip before the long write.
             try {
                 if (startRef != "HEAD" && !startRef.startsWith("refs/")) {
                     val headUp = repo.updateRef(org.eclipse.jgit.lib.Constants.HEAD)
                     headUp.link("refs/heads/$startRef")
                 }
             } catch (e: Exception) {
-                AppLog.w(TAG, "HEAD link after TreeWalk checkout: ${e.message}")
+                AppLog.w(TAG, "HEAD link before TreeWalk checkout: ${e.message}")
             }
         }
+
+        onProgress("Checking out ${plan.size} files…")
+        var fileCount = 0
+        var byteCount = 0L
+        var skipped = 0
+        val batchSize = 100
+        // Rebuild index after all files so we never hold DirCache lock across GC pauses.
+        val indexEntries = ArrayList<org.eclipse.jgit.dircache.DirCacheEntry>(plan.size)
+
+        fun writeOne(repo: Repository, item: PlannedFile): Boolean {
+            val outFile = File(destination, item.relPath)
+            outFile.parentFile?.mkdirs()
+            var lastErr: Exception? = null
+            for (fileTry in 1..5) {
+                try {
+                    if (fileTry > 1) {
+                        releaseJGitSoftRefsLight()
+                        try { Thread.sleep(50L * fileTry) } catch (_: InterruptedException) {}
+                    }
+                    val loader = repo.open(item.objectId)
+                    // Prefer openStream for large blobs — copyTo can pin SoftRefs longer.
+                    loader.openStream().use { input ->
+                        FileOutputStream(outFile).use { fos ->
+                            val buf = ByteArray(64 * 1024)
+                            while (true) {
+                                val n = input.read(buf)
+                                if (n < 0) break
+                                fos.write(buf, 0, n)
+                            }
+                        }
+                    }
+                    if (item.mode == org.eclipse.jgit.lib.FileMode.EXECUTABLE_FILE) {
+                        outFile.setExecutable(true, false)
+                    }
+                    byteCount += outFile.length()
+                    return true
+                } catch (e: Exception) {
+                    lastErr = e
+                    if (!isInflaterRace(e) && e.message?.contains("Short read", true) != true) {
+                        AppLog.w(TAG, "checkout file failed ${item.relPath}: ${e.message}")
+                        return false
+                    }
+                }
+            }
+            AppLog.w(TAG, "skipping file after Inflater retries: ${item.relPath} (${lastErr?.message})")
+            skipped++
+            return false
+        }
+
+        // Process in chunks with a fresh Git open per chunk so SoftRef poison cannot
+        // accumulate across the whole multi-GB tree.
+        val chunkSize = 500
+        var offset = 0
+        while (offset < plan.size) {
+            val end = (offset + chunkSize).coerceAtMost(plan.size)
+            installJGitMemoryLimits()
+            openGit(destination.absolutePath).use { git ->
+                val repo = git.repository
+                for (i in offset until end) {
+                    val item = plan[i]
+                    val ok = writeOne(repo, item)
+                    val entry = org.eclipse.jgit.dircache.DirCacheEntry(item.relPath)
+                    entry.setObjectId(item.objectId)
+                    entry.fileMode = item.mode
+                    val outFile = File(destination, item.relPath)
+                    if (ok && outFile.exists()) {
+                        val len = outFile.length()
+                        if (len <= Int.MAX_VALUE) {
+                            try { entry.setLength(len.toInt()) } catch (_: Exception) {}
+                        }
+                        try { entry.lastModified = outFile.lastModified() } catch (_: Exception) {}
+                    }
+                    indexEntries.add(entry)
+                    fileCount++
+                    if (fileCount % batchSize == 0) {
+                        releaseJGitSoftRefsLight()
+                        onProgress(
+                            "Checking out files… $fileCount/${plan.size} (${byteCount / (1024 * 1024)} MB)"
+                        )
+                    }
+                }
+            }
+            // Full SoftRef + WindowCache reset between chunks (repo is closed).
+            releaseJGitSoftRefs()
+            offset = end
+        }
+
+        // Write the index in one shot with a clean repo open.
+        installJGitMemoryLimits()
+        openGit(destination.absolutePath).use { git ->
+            val repo = git.repository
+            val dc = repo.lockDirCache()
+            try {
+                val builder = dc.builder()
+                // DirCache requires sorted entries.
+                indexEntries.sortWith(compareBy { it.pathString })
+                for (e in indexEntries) builder.add(e)
+                builder.finish()
+                if (!dc.commit()) {
+                    AppLog.w(TAG, "DirCache.commit() returned false after TreeWalk checkout")
+                }
+            } finally {
+                dc.unlock()
+            }
+        }
+
+        AppLog.i(
+            TAG,
+            "TreeWalk checkout wrote $fileCount files (${byteCount / (1024 * 1024)} MB), skipped=$skipped"
+        )
+        // Let SoftRefs settle before post-clone probes / listLocalRepos.
+        releaseJGitSoftRefs()
+        try { Thread.sleep(300) } catch (_: InterruptedException) {}
     }
 
     /**
