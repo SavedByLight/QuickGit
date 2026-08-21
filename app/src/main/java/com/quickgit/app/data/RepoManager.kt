@@ -1275,6 +1275,7 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                     )
                 }
 
+                installJGitMemoryLimits()
                 openGit(path).use { git ->
                     val repository = git.repository
                     val headTreeId = repository.resolve("HEAD^{tree}")
@@ -1284,11 +1285,36 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                         val headTree = walk.parseTree(headTreeId)
                         files.forEach { filePath ->
                             val outFile = File(path, filePath)
-                            TreeWalk.forPath(repository, filePath, headTree)?.use { tw ->
-                                val loader = repository.open(tw.getObjectId(0))
-                                outFile.parentFile?.mkdirs()
-                                FileOutputStream(outFile).use { out -> loader.copyTo(out) }
-                            } ?: outFile.delete() // didn't exist at HEAD (newly added) — discard removes it
+                            var written = false
+                            for (tryN in 1..4) {
+                                try {
+                                    if (tryN > 1) releaseJGitSoftRefsLight()
+                                    TreeWalk.forPath(repository, filePath, headTree)?.use { tw ->
+                                        val loader = repository.open(tw.getObjectId(0))
+                                        outFile.parentFile?.mkdirs()
+                                        loader.openStream().use { input ->
+                                            FileOutputStream(outFile).use { out ->
+                                                val buf = ByteArray(64 * 1024)
+                                                while (true) {
+                                                    val n = input.read(buf)
+                                                    if (n < 0) break
+                                                    out.write(buf, 0, n)
+                                                }
+                                            }
+                                        }
+                                    } ?: outFile.delete() // not in HEAD — remove local file
+                                    written = true
+                                    break
+                                } catch (e: Exception) {
+                                    if (!isInflaterRace(e) && e.message?.contains("Short read", true) != true) {
+                                        throw e
+                                    }
+                                    if (tryN == 4) throw e
+                                }
+                            }
+                            if (!written) {
+                                AppLog.w(TAG, "discard: could not restore $filePath")
+                            }
                         }
                     }
 
@@ -1307,13 +1333,62 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         }
     }
 
-    /** Discards every unstaged/untracked change in the working tree — the bulk version of discardChanges(). */
-    fun discardAll(path: String): GitOpResult {
-        val status = openGit(path).use { it.status().call() }
-        val paths = (status.modified + status.missing + status.untracked + status.conflicting).distinct()
-        AppLog.i(TAG, "discardAll: ${paths.size} path(s)")
-        if (paths.isEmpty()) return GitOpResult.Success
-        return discardChanges(path, paths)
+    /**
+     * Discards every local change so the worktree matches HEAD.
+     *
+     * For large trees (kernels, firmware dumps) path-by-path discard is too slow and
+     * CheckoutCommand hits Inflater SoftRef races / CheckoutConflictException. Prefer a
+     * HARD reset with retries; on persistent Inflater failure fall back to TreeWalk
+     * materialize (same path as post-clone checkout).
+     */
+    fun discardAll(path: String): GitOpResult = withRepoLock(path) {
+        AppLog.i(TAG, "discardAll: HARD reset $path")
+        installJGitMemoryLimits()
+        var lastErr: Exception? = null
+        for (attempt in 1..4) {
+            try {
+                if (attempt > 1) releaseJGitSoftRefs()
+                openGit(path).use { git ->
+                    // Drop untracked first so HARD reset is not blocked by junk files.
+                    try {
+                        git.clean()
+                            .setCleanDirectories(true)
+                            .setForce(true)
+                            .call()
+                    } catch (e: Exception) {
+                        AppLog.w(TAG, "discardAll: clean skipped: ${e.message}")
+                    }
+                    git.reset()
+                        .setMode(org.eclipse.jgit.api.ResetCommand.ResetType.HARD)
+                        .setRef("HEAD")
+                        .call()
+                }
+                AppLog.i(TAG, "discardAll: HARD reset OK (attempt $attempt)")
+                return@withRepoLock GitOpResult.Success
+            } catch (e: Exception) {
+                lastErr = e
+                AppLog.w(TAG, "discardAll attempt $attempt failed: ${e.message}")
+                if (!isInflaterRace(e) && e.message?.contains("Short read", true) != true) {
+                    break
+                }
+                releaseJGitSoftRefs()
+                try { Thread.sleep(100L * attempt) } catch (_: InterruptedException) {}
+            }
+        }
+        // Last resort: rewrite worktree file-by-file from HEAD (handles SoftRef poison).
+        return@withRepoLock try {
+            AppLog.w(TAG, "discardAll: falling back to TreeWalk materialize")
+            checkoutWorkingTreeFileByFile(File(path), "HEAD") { msg ->
+                AppLog.i(TAG, "discardAll: $msg")
+            }
+            GitOpResult.Success
+        } catch (e: Exception) {
+            AppLog.e(TAG, "discardAll failed", e)
+            GitOpResult.Error(
+                lastErr?.message ?: e.message ?: "Failed to discard all changes",
+                e
+            )
+        }
     }
 
     fun unstageAll(path: String): GitOpResult = withRepoLock(path) {
@@ -2343,41 +2418,68 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     fun createBranch(path: String, name: String, checkout: Boolean): GitOpResult = withRepoLock(path) {
         openGit(path).use { git ->
             git.branchCreate().setName(name).call()
-            if (checkout) git.checkout().setName(name).call()
+            if (checkout) git.checkout().setName(name).setForced(true).call()
         }
         GitOpResult.Success
     }
 
     fun checkoutBranch(path: String, name: String): GitOpResult = withRepoLock(path) {
+        installJGitMemoryLimits()
         openGit(path).use { git ->
             val repo = git.repository
             // `name` is a bare local branch name (e.g. "feature-x") for an existing local
             // branch, or a remote-tracking name like "origin/feature-x" — as shown for
             // remote entries in the branch list — for one that hasn't been checked out
-            // locally yet. `findRef(name)` alone can't tell these apart: its search path
-            // also matches under refs/remotes/, so it treated a remote-only branch as
-            // already "local" and ran a plain checkout of the remote-tracking ref, which
-            // JGit does as a detached HEAD rather than creating a tracking branch. Check
-            // the exact ref paths instead.
+            // locally yet. Check exact ref paths so remote-only names create a tracking
+            // branch instead of detaching HEAD.
             val remoteRef = repo.findRef("refs/remotes/$name")
             val shortName = if (remoteRef != null) name.substringAfter('/') else name
             val localRef = repo.findRef("refs/heads/$shortName")
 
-            when {
-                localRef != null -> {
-                    git.checkout().setName(shortName).call()
-                    GitOpResult.Success
+            // Force: mobile UX expects switch branch to overwrite local edits (same as
+            // discard). Without setForced, partial TreeWalk checkouts leave "modified"
+            // files that block every branch switch with CheckoutConflictException.
+            fun doCheckout(force: Boolean) {
+                when {
+                    localRef != null -> {
+                        git.checkout().setName(shortName).setForced(force).call()
+                    }
+                    remoteRef != null -> {
+                        git.checkout()
+                            .setCreateBranch(true)
+                            .setName(shortName)
+                            .setUpstreamMode(CreateBranchCommand.SetupUpstreamMode.TRACK)
+                            .setStartPoint(remoteRef.name)
+                            .setForced(force)
+                            .call()
+                    }
+                    else -> throw IllegalArgumentException("Branch not found: $name")
                 }
-                remoteRef != null -> {
-                    git.checkout()
-                        .setCreateBranch(true)
-                        .setName(shortName)
-                        .setUpstreamMode(CreateBranchCommand.SetupUpstreamMode.TRACK)
-                        .setStartPoint(remoteRef.name)
-                        .call()
-                    GitOpResult.Success
+            }
+
+            try {
+                doCheckout(force = true)
+                GitOpResult.Success
+            } catch (e: Exception) {
+                if (e is IllegalArgumentException) {
+                    return@withRepoLock GitOpResult.Error(e.message ?: "Branch not found")
                 }
-                else -> GitOpResult.Error("Branch not found: $name")
+                // Inflater SoftRef race on large trees — release cache and retry once.
+                if (isInflaterRace(e) || e.message?.contains("Short read", true) == true) {
+                    AppLog.w(TAG, "checkoutBranch Inflater race, retrying: ${e.message}")
+                    releaseJGitSoftRefs()
+                    try {
+                        doCheckout(force = true)
+                        return@withRepoLock GitOpResult.Success
+                    } catch (e2: Exception) {
+                        AppLog.e(TAG, "checkoutBranch retry failed", e2)
+                        return@withRepoLock GitOpResult.Error(
+                            e2.message ?: "Checkout failed", e2
+                        )
+                    }
+                }
+                AppLog.e(TAG, "checkoutBranch failed: $name", e)
+                GitOpResult.Error(e.message ?: "Checkout failed", e)
             }
         }
     }
