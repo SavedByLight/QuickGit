@@ -1338,8 +1338,8 @@ fun FilesEditorTab(repoPath: String, repoManager: DesktopRepoManager, onMessage:
     var original by remember { mutableStateOf("") }
     var loading by remember { mutableStateOf(false) }
     var listing by remember { mutableStateOf(true) }
-    var overwriteTarget by remember { mutableStateOf<java.io.File?>(null) }
-    var pendingUpload by remember { mutableStateOf<java.io.File?>(null) }
+    /** Conflict pairs (source → dest) waiting for overwrite confirmation. */
+    var pendingUploadConflicts by remember { mutableStateOf<List<Pair<java.io.File, java.io.File>>>(emptyList()) }
     var entryToRename by remember { mutableStateOf<FsEntry?>(null) }
     var renameName by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
@@ -1472,32 +1472,50 @@ fun FilesEditorTab(repoPath: String, repoManager: DesktopRepoManager, onMessage:
 
     fun pickAndUpload() {
         scope.launch {
-            val chosen = withContext(Dispatchers.IO) {
+            val chosenList = withContext(Dispatchers.IO) {
                 javax.swing.JFileChooser().apply {
-                    dialogTitle = "Upload file or folder into repository"
+                    dialogTitle = "Upload files or folders into repository"
                     fileSelectionMode = javax.swing.JFileChooser.FILES_AND_DIRECTORIES
-                    isMultiSelectionEnabled = false
+                    isMultiSelectionEnabled = true
                 }.let { chooser ->
                     val result = chooser.showOpenDialog(null)
-                    if (result == javax.swing.JFileChooser.APPROVE_OPTION) chooser.selectedFile else null
+                    if (result == javax.swing.JFileChooser.APPROVE_OPTION) {
+                        chooser.selectedFiles?.toList()?.filterNotNull().orEmpty()
+                            .ifEmpty { listOfNotNull(chooser.selectedFile) }
+                    } else {
+                        emptyList()
+                    }
                 }
-            } ?: return@launch
+            }
+            if (chosenList.isEmpty()) return@launch
 
             val destDir = if (currentDir.isBlank()) root else java.io.File(root, currentDir)
-            val dest = java.io.File(destDir, chosen.name)
-            if (dest.exists()) {
-                if (chosen.isDirectory && dest.isFile) {
-                    onMessage("A file named '${dest.name}' already exists")
-                    return@launch
+            val ready = mutableListOf<Pair<java.io.File, java.io.File>>()
+            val conflicts = mutableListOf<Pair<java.io.File, java.io.File>>()
+            for (chosen in chosenList) {
+                val dest = java.io.File(destDir, chosen.name)
+                if (dest.exists()) {
+                    if (chosen.isDirectory && dest.isFile) {
+                        onMessage("Skipped '${chosen.name}': a file with that name already exists")
+                        continue
+                    }
+                    if (chosen.isFile && dest.isDirectory) {
+                        onMessage("Skipped '${chosen.name}': a folder with that name already exists")
+                        continue
+                    }
+                    conflicts += chosen to dest
+                } else {
+                    ready += chosen to dest
                 }
-                if (chosen.isFile && dest.isDirectory) {
-                    onMessage("A folder named '${dest.name}' already exists")
-                    return@launch
-                }
-                pendingUpload = chosen
-                overwriteTarget = dest
-            } else {
-                copyUpload(chosen, dest, overwrite = true)
+            }
+            // Upload non-conflicting items immediately
+            for ((src, dest) in ready) {
+                copyUpload(src, dest, overwrite = true)
+            }
+            if (conflicts.isNotEmpty()) {
+                pendingUploadConflicts = conflicts
+            } else if (ready.size > 1) {
+                onMessage("Uploaded ${ready.size} items")
             }
         }
     }
@@ -1648,7 +1666,7 @@ fun FilesEditorTab(repoPath: String, repoManager: DesktopRepoManager, onMessage:
             if (selectedFile == null) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text(
-                        "Open a folder, or select a file to view / edit.\nUse Upload to add a local file or folder (folders merge and overwrite matching files).",
+                        "Open a folder, or select a file to view / edit.\nUse Upload to add local files or folders (multi-select supported; folders merge and overwrite matching files).",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         style = MaterialTheme.typography.bodyMedium
                     )
@@ -1747,44 +1765,57 @@ fun FilesEditorTab(repoPath: String, repoManager: DesktopRepoManager, onMessage:
         }
     }
 
-    // Overwrite confirmation
-    overwriteTarget?.let { dest ->
-        val src = pendingUpload
-        val isFolder = src?.isDirectory == true
+    // Overwrite confirmation (supports multi-select conflicts)
+    if (pendingUploadConflicts.isNotEmpty()) {
+        val conflicts = pendingUploadConflicts
+        val folderCount = conflicts.count { it.first.isDirectory }
+        val fileCount = conflicts.size - folderCount
+        val title = when {
+            conflicts.size == 1 && folderCount == 1 -> "Merge folder?"
+            conflicts.size == 1 -> "Replace existing file?"
+            else -> "Replace ${conflicts.size} existing items?"
+        }
+        val body = buildString {
+            if (conflicts.size == 1) {
+                val (src, dest) = conflicts.first()
+                if (src.isDirectory) {
+                    append("\"${dest.name}\" already exists in this folder.\n\n")
+                    append("Merge the selected folder into it? Existing files with the same name will be overwritten.")
+                } else {
+                    append("\"${dest.name}\" already exists in this folder.\n\nReplace it with the selected file?")
+                }
+            } else {
+                append("These items already exist in this folder:\n\n")
+                conflicts.take(12).forEach { (src, dest) ->
+                    append("• ${dest.name}")
+                    if (src.isDirectory) append(" (folder)")
+                    append("\n")
+                }
+                if (conflicts.size > 12) append("… and ${conflicts.size - 12} more\n")
+                append("\nReplace/merge all? Matching files inside folders will be overwritten.")
+            }
+        }
+        val confirmLabel = when {
+            conflicts.size == 1 && folderCount == 1 -> "Merge & overwrite"
+            conflicts.size == 1 -> "Replace"
+            else -> "Replace all"
+        }
         AlertDialog(
-            onDismissRequest = {
-                overwriteTarget = null
-                pendingUpload = null
-            },
-            title = {
-                Text(if (isFolder) "Merge folder?" else "Replace existing file?")
-            },
-            text = {
-                Text(
-                    if (isFolder) {
-                        "\"${dest.name}\" already exists in this folder.\n\n" +
-                            "Merge the selected folder into it? Existing files with the same name will be overwritten."
-                    } else {
-                        "\"${dest.name}\" already exists in this folder.\n\nReplace it with the selected file?"
-                    }
-                )
-            },
+            onDismissRequest = { pendingUploadConflicts = emptyList() },
+            title = { Text(title) },
+            text = { Text(body) },
             confirmButton = {
                 TextButton(
                     onClick = {
-                        if (src != null) copyUpload(src, dest, overwrite = true)
-                        overwriteTarget = null
-                        pendingUpload = null
+                        for ((src, dest) in conflicts) {
+                            copyUpload(src, dest, overwrite = true)
+                        }
+                        pendingUploadConflicts = emptyList()
                     }
-                ) { Text(if (isFolder) "Merge & overwrite" else "Replace") }
+                ) { Text(confirmLabel) }
             },
             dismissButton = {
-                TextButton(
-                    onClick = {
-                        overwriteTarget = null
-                        pendingUpload = null
-                    }
-                ) { Text("Cancel") }
+                TextButton(onClick = { pendingUploadConflicts = emptyList() }) { Text("Cancel") }
             }
         )
     }
