@@ -795,32 +795,12 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                         // are not compared using desktop filemode/symlink rules.
                         applyMobileRepoConfig(git)
 
-                        // Empty remote (no commits yet): HEAD is unborn / unresolvable.
-                        // JGit has already configured the remote; skip checkout + hard-reset
-                        // so we don't hit "Invalid ref name: HEAD".
-                        val headId = try {
-                            git.repository.resolve(org.eclipse.jgit.lib.Constants.HEAD)
-                        } catch (_: Exception) {
-                            null
-                        }
-                        if (headId == null) {
-                            onProgress("Empty repository — ready for first commit")
-                            AppLog.i(TAG, "clone of empty repo: ${destination.absolutePath}")
-                        } else {
-                            // After setNoCheckout(true), materialize the working tree with a
-                            // single hard reset — same idea as `git clone --no-checkout &&
-                            // git reset --hard`. A plain CheckoutCommand can leave the index
-                            // populated while files are missing on Android storage, so the UI
-                            // shows every path as "deleted". One HARD reset writes index +
-                            // worktree in one pass (faster than checkout+reset, and correct).
-                            onProgress("Checking out files (large trees can take a while)…")
-                            git.reset()
-                                .setMode(org.eclipse.jgit.api.ResetCommand.ResetType.HARD)
-                                .setRef("HEAD")
-                                .setProgressMonitor(TextProgress(onProgress))
-                                .call()
-                            onProgress("Working tree ready")
-                        }
+                        // After setNoCheckout(true), materialize the working tree.
+                        // Do NOT treat "HEAD resolves to null" as empty by itself — large
+                        // GitLab dumps sometimes leave HEAD unborn while origin/* refs and
+                        // pack objects exist; skipping checkout then yields pull failures
+                        // ("did not advertise Ref for branch main") and checkout conflicts.
+                        materializeWorkingTreeAfterClone(git, destination, onProgress)
                     } finally {
                         git.close()
                     }
@@ -1675,7 +1655,14 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         }
     }
 
-    fun pull(path: String, onProgress: (String) -> Unit = {}): GitOpResult {
+    fun pull(path: String, onProgress: (String) -> Unit = {}): GitOpResult =
+        pullInternal(path, onProgress, allowBranchRecovery = true)
+
+    private fun pullInternal(
+        path: String,
+        onProgress: (String) -> Unit,
+        allowBranchRecovery: Boolean
+    ): GitOpResult {
         AppLog.i(TAG, "pull: $path")
         return try {
             openGit(path).use { git ->
@@ -1725,10 +1712,89 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
             if (isAuthFailure(e)) {
                 val url = openGit(path).use { it.repository.config.getString("remote", "origin", "url") } ?: ""
                 GitOpResult.AuthRequired(url)
+            } else if (allowBranchRecovery) {
+                recoverPullMissingRemoteBranch(path, e, onProgress)
+                    ?: GitOpResult.Error(e.message ?: "Pull failed", e)
             } else GitOpResult.Error(e.message ?: "Pull failed", e)
         } catch (e: Exception) {
             AppLog.e(TAG, "pull failed", e)
-            GitOpResult.Error(e.message ?: "Pull failed", e)
+            if (allowBranchRecovery) {
+                recoverPullMissingRemoteBranch(path, e, onProgress)
+                    ?: GitOpResult.Error(e.message ?: "Pull failed", e)
+            } else GitOpResult.Error(e.message ?: "Pull failed", e)
+        }
+    }
+
+    /**
+     * When pull fails because the current local branch is not advertised on the remote
+     * (typical after a bad empty-clone that left unborn `main`), fetch and switch to the
+     * remote default branch, then retry pull once.
+     */
+    private fun recoverPullMissingRemoteBranch(
+        path: String,
+        cause: Exception,
+        onProgress: (String) -> Unit
+    ): GitOpResult? {
+        val msg = cause.message.orEmpty()
+        if (!msg.contains("did not advertise Ref", ignoreCase = true) &&
+            !msg.contains("Not a valid ref", ignoreCase = true)
+        ) {
+            return null
+        }
+        return try {
+            AppLog.w(TAG, "pull: recovering from missing remote branch — fetch + checkout default")
+            onProgress("Remote branch missing — fetching and switching to remote default…")
+            openGit(path).use { git ->
+                val remoteUrl = git.repository.config.getString("remote", "origin", "url") ?: ""
+                val fetchCmd = git.fetch().setRemote("origin")
+                applyTransportConfig(fetchCmd, remoteUrl)
+                fetchCmd.setProgressMonitor(TextProgress(onProgress)).call()
+
+                val repo = git.repository
+                val originHead = repo.findRef("refs/remotes/origin/HEAD")
+                val defaultName = when {
+                    originHead != null && originHead.isSymbolic ->
+                        originHead.target.name.removePrefix("refs/remotes/origin/")
+                    else -> null
+                }?.takeIf { it.isNotBlank() && it != "HEAD" }
+                    ?: listOf("main", "master").firstOrNull { repo.findRef("refs/remotes/origin/$it") != null }
+                    ?: repo.refDatabase.getRefsByPrefix("refs/remotes/origin/")
+                        .firstOrNull { !it.name.endsWith("/HEAD") }
+                        ?.name?.removePrefix("refs/remotes/origin/")
+
+                if (defaultName.isNullOrBlank()) {
+                    return GitOpResult.Error(
+                        "Pull failed: current branch is not on the remote, and no default remote branch was found. ${cause.message}",
+                        cause
+                    )
+                }
+
+                val local = repo.findRef("refs/heads/$defaultName")
+                val remoteRef = "refs/remotes/origin/$defaultName"
+                if (local == null) {
+                    git.checkout()
+                        .setCreateBranch(true)
+                        .setName(defaultName)
+                        .setUpstreamMode(CreateBranchCommand.SetupUpstreamMode.TRACK)
+                        .setStartPoint(remoteRef)
+                        .call()
+                } else {
+                    git.checkout().setName(defaultName).call()
+                    git.reset()
+                        .setMode(org.eclipse.jgit.api.ResetCommand.ResetType.HARD)
+                        .setRef(remoteRef)
+                        .call()
+                }
+                AppLog.i(TAG, "pull recover: checked out remote default '$defaultName'")
+            }
+            // Retry pull once on the corrected branch (no nested recovery).
+            pullInternal(path, onProgress, allowBranchRecovery = false)
+        } catch (e: Exception) {
+            AppLog.e(TAG, "pull recover failed", e)
+            GitOpResult.Error(
+                "Pull failed (${cause.message}). Recovery also failed: ${e.message}",
+                e
+            )
         }
     }
 
@@ -1872,6 +1938,88 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     }
 
     /**
+     * After [Git.cloneRepository] with setNoCheckout(true), write index + worktree.
+     *
+     * Prefer HEAD when it points at a real commit. Otherwise use origin/HEAD or any
+     * origin/* tracking ref so we never skip checkout when pack objects already exist
+     * (common failure mode on large GitLab repos that left HEAD unborn).
+     */
+    private fun materializeWorkingTreeAfterClone(
+        git: Git,
+        destination: File,
+        onProgress: (String) -> Unit
+    ) {
+        val repo = git.repository
+        val headId = try {
+            repo.resolve(org.eclipse.jgit.lib.Constants.HEAD)
+        } catch (_: Exception) {
+            null
+        }
+
+        fun remoteTrackingTips(): List<org.eclipse.jgit.lib.Ref> =
+            try {
+                repo.refDatabase.getRefsByPrefix("refs/remotes/origin/")
+                    .filter { !it.name.endsWith("/HEAD") }
+                    .sortedBy { it.name }
+            } catch (_: Exception) {
+                emptyList()
+            }
+
+        val resetRef: String? = when {
+            headId != null -> "HEAD"
+            else -> {
+                val originHead = repo.findRef("refs/remotes/origin/HEAD")
+                val fromSym = when {
+                    originHead != null && originHead.isSymbolic -> originHead.target.name
+                    originHead != null -> originHead.name
+                    else -> null
+                }
+                fromSym?.takeIf { repo.resolve(it) != null }
+                    ?: remoteTrackingTips().firstOrNull()?.name
+            }
+        }
+
+        if (resetRef == null) {
+            onProgress("Empty repository — ready for first commit")
+            AppLog.i(TAG, "clone of empty repo: ${destination.absolutePath}")
+            return
+        }
+
+        if (resetRef != "HEAD") {
+            val short = resetRef.removePrefix("refs/remotes/origin/")
+            val local = repo.findRef("refs/heads/$short")
+            if (local == null && short.isNotBlank()) {
+                try {
+                    git.checkout()
+                        .setCreateBranch(true)
+                        .setName(short)
+                        .setUpstreamMode(CreateBranchCommand.SetupUpstreamMode.TRACK)
+                        .setStartPoint(resetRef)
+                        .call()
+                    AppLog.i(TAG, "clone: created local branch '$short' from $resetRef")
+                } catch (e: Exception) {
+                    AppLog.w(TAG, "clone: could not create branch '$short': ${e.message}")
+                }
+            }
+        }
+
+        onProgress("Checking out files (large trees can take a while)…")
+        val hardRef = if (resetRef == "HEAD") {
+            "HEAD"
+        } else {
+            val short = resetRef.removePrefix("refs/remotes/origin/")
+            if (repo.findRef("refs/heads/$short") != null) short else resetRef
+        }
+        git.reset()
+            .setMode(org.eclipse.jgit.api.ResetCommand.ResetType.HARD)
+            .setRef(hardRef)
+            .setProgressMonitor(TextProgress(onProgress))
+            .call()
+        onProgress("Working tree ready")
+        AppLog.i(TAG, "clone: materialized working tree at $hardRef")
+    }
+
+    /**
      * After a clone, make sure the local HEAD is the remote's real default branch.
      *
      * JGit (and some remotes) still fall back to `master` when advertising is incomplete
@@ -1922,15 +2070,35 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                     return
                 }
 
-                // No origin/HEAD. Empty clone often leaves "ref: refs/heads/master" with no
-                // master ref — prefer modern default `main`.
+                // No origin/HEAD. Prefer an existing origin/* tip over inventing unborn main.
                 val headId = try { repo.resolve(org.eclipse.jgit.lib.Constants.HEAD) } catch (_: Exception) { null }
                 if (headId == null) {
-                    val headRef = repo.exactRef(org.eclipse.jgit.lib.Constants.HEAD)
-                    val target = headRef?.target?.name ?: ""
-                    if (target.endsWith("/master") || target.isBlank()) {
-                        setUnbornHead(repo, "main")
-                        AppLog.i(TAG, "clone: empty repo with no origin/HEAD — unborn HEAD set to 'main'")
+                    val anyRemote = try {
+                        repo.refDatabase.getRefsByPrefix("refs/remotes/origin/")
+                            .firstOrNull { !it.name.endsWith("/HEAD") }
+                    } catch (_: Exception) {
+                        null
+                    }
+                    if (anyRemote != null) {
+                        val short = anyRemote.name.removePrefix("refs/remotes/origin/")
+                        if (repo.findRef("refs/heads/$short") == null) {
+                            git.checkout()
+                                .setCreateBranch(true)
+                                .setName(short)
+                                .setUpstreamMode(CreateBranchCommand.SetupUpstreamMode.TRACK)
+                                .setStartPoint(anyRemote.name)
+                                .call()
+                        } else {
+                            git.checkout().setName(short).call()
+                        }
+                        AppLog.i(TAG, "clone: no origin/HEAD — checked out '$short'")
+                    } else {
+                        val headRef = repo.exactRef(org.eclipse.jgit.lib.Constants.HEAD)
+                        val target = headRef?.target?.name ?: ""
+                        if (target.endsWith("/master") || target.isBlank()) {
+                            setUnbornHead(repo, "main")
+                            AppLog.i(TAG, "clone: empty repo with no origin/HEAD — unborn HEAD set to 'main'")
+                        }
                     }
                 }
             }
