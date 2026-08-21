@@ -85,22 +85,41 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     private fun installJGitMemoryLimits() {
         try {
             val cfg = WindowCacheConfig()
-            // Cap total packed-git windows. Higher = fewer mid-read evictions on large packs;
-            // still bounded so a single clone cannot exhaust a mid-range phone heap.
-            cfg.packedGitLimit = 64L * 1024 * 1024
+            // Cap total packed-git windows. Higher = fewer mid-read evictions on large packs
+            // (Samsung / GitLab dumps); still bounded so a single clone cannot exhaust a
+            // mid-range phone heap. 96 MiB is a better trade-off than 64 on API 30+.
+            cfg.packedGitLimit = 96L * 1024 * 1024
             // Smaller windows = finer-grained caching; pairs better with a higher limit.
-            cfg.packedGitWindowSize = 16 * 1024
-            cfg.deltaBaseCacheLimit = 8 * 1024 * 1024
+            cfg.packedGitWindowSize = 8 * 1024
+            cfg.deltaBaseCacheLimit = 10 * 1024 * 1024
             // Prefer loading objects into windows rather than pure streaming where possible.
-            // Streaming + concurrent SoftRef GC is a common "Inflater has been closed" source.
-            cfg.streamFileThreshold = 20 * 1024 * 1024
+            // Streaming + concurrent SoftRef GC is a common "Inflater has been closed" source
+            // on Android. Keep the threshold modest so large blobs still use the window path.
+            cfg.streamFileThreshold = 8 * 1024 * 1024
             // mmap of pack files is unreliable on many Android devices / filesystems.
             // Use the Java setter — the field itself is private in WindowCacheConfig.
             cfg.setPackedGitMMAP(false)
+            // Limit concurrently open pack files; reduces SoftRef churn under GC pressure.
+            try {
+                cfg.javaClass.getMethod("setPackedGitOpenFiles", Int::class.javaPrimitiveType)
+                    .invoke(cfg, 2)
+            } catch (_: Exception) {
+                // Method may be absent on older JGit; ignore.
+            }
             cfg.install()
             AppLog.i(TAG, "JGit WindowCache limits installed for mobile heap")
         } catch (e: Exception) {
             AppLog.w(TAG, "Could not install JGit WindowCache config: ${e.message}")
+        }
+    }
+
+    /** Force GC + finalization so SoftReferenced WindowCache Inflater instances are released. */
+    private fun releaseJGitSoftRefs() {
+        try {
+            System.gc()
+            System.runFinalization()
+            System.gc()
+        } catch (_: Exception) {
         }
     }
 
@@ -730,7 +749,8 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         val label = destination.name
         var lastError: Exception? = null
         // More attempts for large packs / LFS-heavy repos where Android GC closes Inflater mid-read.
-        val maxAttempts = 5
+        // Large GitLab dumps (e.g. android_dump_*) routinely need >5 retries under heap pressure.
+        val maxAttempts = 8
         for (attempt in 1..maxAttempts) {
             // If a previous attempt already fetched objects (valid .git) but failed during
             // checkout, keep the pack and only retry working-tree checkout — do NOT delete
@@ -739,8 +759,8 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
             if (attempt > 1 && !hasPartialGit) {
                 cleanUpFailedCloneDestination(destination, alreadyExisted = true)
                 // Give the GC time to release SoftReferences holding stale WindowCache entries.
-                System.gc()
-                try { Thread.sleep(800L * attempt) } catch (_: InterruptedException) {}
+                releaseJGitSoftRefs()
+                try { Thread.sleep(1000L * attempt) } catch (_: InterruptedException) {}
                 onProgress("Retrying clone (attempt $attempt/$maxAttempts)…")
                 AppLog.w(TAG, "clone retry $attempt/$maxAttempts for $label after: ${lastError?.message}")
             } else if (attempt > 1 && hasPartialGit) {
@@ -750,8 +770,9 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                 if (lastError != null && isLockFileCommitRace(lastError!!)) {
                     clearStaleGitLockFiles(destination)
                 }
-                System.gc()
-                try { Thread.sleep(400L * attempt) } catch (_: InterruptedException) {}
+                // Inflater races leave SoftRefs that must be cleared before re-opening the pack.
+                releaseJGitSoftRefs()
+                try { Thread.sleep(600L * attempt) } catch (_: InterruptedException) {}
                 onProgress("Retrying checkout (attempt $attempt/$maxAttempts)…")
                 AppLog.w(TAG, "checkout retry $attempt/$maxAttempts for $label after: ${lastError?.message}")
             }
@@ -1998,6 +2019,10 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                         .call()
                     AppLog.i(TAG, "clone: created local branch '$short' from $resetRef")
                 } catch (e: Exception) {
+                    // Inflater races during branch create must bubble so the outer clone
+                    // retry loop can reinstall WindowCache and re-open the repo. Other
+                    // failures are non-fatal (we'll still try hard-reset below).
+                    if (isInflaterRace(e)) throw e
                     AppLog.w(TAG, "clone: could not create branch '$short': ${e.message}")
                 }
             }
@@ -2010,11 +2035,33 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
             val short = resetRef.removePrefix("refs/remotes/origin/")
             if (repo.findRef("refs/heads/$short") != null) short else resetRef
         }
-        git.reset()
-            .setMode(org.eclipse.jgit.api.ResetCommand.ResetType.HARD)
-            .setRef(hardRef)
-            .setProgressMonitor(TextProgress(onProgress))
-            .call()
+        // Local retries for HARD reset: large trees on Android frequently hit
+        // "Inflater has been closed" mid-checkout; a short inner loop with GC +
+        // WindowCache reinstall often succeeds without burning an outer clone attempt.
+        val materializeAttempts = 4
+        var lastMatErr: Exception? = null
+        for (mAttempt in 1..materializeAttempts) {
+            try {
+                if (mAttempt > 1) {
+                    installJGitMemoryLimits()
+                    releaseJGitSoftRefs()
+                    try { Thread.sleep(400L * mAttempt) } catch (_: InterruptedException) {}
+                    onProgress("Retrying checkout (local $mAttempt/$materializeAttempts)…")
+                    AppLog.w(TAG, "materialize retry $mAttempt/$materializeAttempts after: ${lastMatErr?.message}")
+                }
+                git.reset()
+                    .setMode(org.eclipse.jgit.api.ResetCommand.ResetType.HARD)
+                    .setRef(hardRef)
+                    .setProgressMonitor(TextProgress(onProgress))
+                    .call()
+                lastMatErr = null
+                break
+            } catch (e: Exception) {
+                lastMatErr = e
+                if (!isInflaterRace(e) || mAttempt == materializeAttempts) throw e
+            }
+        }
+        if (lastMatErr != null) throw lastMatErr
         onProgress("Working tree ready")
         AppLog.i(TAG, "clone: materialized working tree at $hardRef")
     }
