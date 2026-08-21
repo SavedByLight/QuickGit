@@ -40,6 +40,7 @@ import com.quickgit.desktop.data.gitlab.GitLabApi
 import com.quickgit.desktop.data.models.WorkflowInput
 import com.quickgit.desktop.data.models.*
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
@@ -2601,9 +2602,9 @@ fun WorkflowsTab(
     var dispatchBusy by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
-    fun reload() {
+    fun reload(showSpinner: Boolean = true) {
         scope.launch {
-            loading = true
+            if (showSpinner) loading = true
             error = null
             val remote = withContext(Dispatchers.IO) { repoManager.getRemoteUrl(repoPath) }
             val parsed = githubApi.parseOwnerRepo(remote)
@@ -2639,17 +2640,45 @@ fun WorkflowsTab(
 
     LaunchedEffect(repoPath, filter, selectedWorkflowId) { reload() }
 
-    fun loadRunDetail(run: WorkflowRun) {
+    // Keep the runs list live while any run is still queued / in progress.
+    LaunchedEffect(repoPath, filter, selectedWorkflowId, runs) {
+        val active = runs.any { it.status == "queued" || it.status == "in_progress" || it.status == "waiting" || it.status == "requested" || it.status == "pending" }
+        if (!active) return@LaunchedEffect
+        while (true) {
+            delay(3_000)
+            reload(showSpinner = false)
+        }
+    }
+
+    fun loadRunDetail(run: WorkflowRun, showSpinner: Boolean = true) {
         detailRun = run
-        jobs = emptyList()
+        if (showSpinner) jobs = emptyList()
         val or = ownerRepo ?: return
         scope.launch {
-            detailLoading = true
+            if (showSpinner) detailLoading = true
+            val runResult = withContext(Dispatchers.IO) {
+                githubApi.getWorkflowRun(or.owner, or.repo, run.id)
+            }
+            runResult.onSuccess { detailRun = it }
             val r = withContext(Dispatchers.IO) {
                 githubApi.listJobsForRun(or.owner, or.repo, run.id)
             }
-            r.fold(onSuccess = { jobs = it }, onFailure = { jobs = emptyList() })
+            r.fold(onSuccess = { jobs = it }, onFailure = { if (showSpinner) jobs = emptyList() })
             detailLoading = false
+        }
+    }
+
+    // Poll job/step status while viewing an active run so completed steps appear without leaving.
+    LaunchedEffect(detailRun?.id, detailRun?.status) {
+        val run = detailRun ?: return@LaunchedEffect
+        val active = run.status == "queued" || run.status == "in_progress" ||
+            run.status == "waiting" || run.status == "requested" || run.status == "pending"
+        if (!active) return@LaunchedEffect
+        while (detailRun?.id == run.id) {
+            delay(2_000)
+            val current = detailRun ?: break
+            if (current.id != run.id) break
+            loadRunDetail(current, showSpinner = false)
         }
     }
 
