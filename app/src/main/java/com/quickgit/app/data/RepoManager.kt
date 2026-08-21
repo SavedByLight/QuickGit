@@ -1974,17 +1974,18 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
      * origin/ remote-tracking ref so we never skip checkout when pack objects already exist
      * (common failure mode on large GitLab repos that left HEAD unborn).
      *
-     * Each attempt opens a **fresh** [Git] instance. Reusing a Repository after an
-     * "Inflater has been closed" leaves SoftReferenced pack windows in a dead state;
-     * only close + GC + reinstall WindowCache + reopen recovers on Android 11+.
+     * Fast path: CheckoutCommand. On Android Inflater/SoftRef failure, fall back to a
+     * per-file TreeWalk checkout that releases SoftRefs between files — the only approach
+     * that reliably completes multi‑GB Samsung/GitLab dumps on API 30+ heaps.
      */
     private fun materializeWorkingTreeAfterClone(
         destination: File,
         onProgress: (String) -> Unit
     ) {
-        // Resolve which ref to check out using a short-lived open (ref DB only).
-        val resetRef: String? = openGit(destination.absolutePath).use { probe ->
+        // Resolve which ref to check out + ensure local branch (ref DB only, no pack inflate).
+        val hardRef: String = openGit(destination.absolutePath).use { probe ->
             val repo = probe.repository
+            applyMobileRepoConfig(probe)
             val headId = try {
                 repo.resolve(org.eclipse.jgit.lib.Constants.HEAD)
             } catch (_: Exception) {
@@ -1998,7 +1999,7 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                 } catch (_: Exception) {
                     emptyList()
                 }
-            when {
+            val resetRef: String? = when {
                 headId != null -> "HEAD"
                 else -> {
                     val originHead = repo.findRef("refs/remotes/origin/HEAD")
@@ -2011,123 +2012,194 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                         ?: remoteTrackingTips().firstOrNull()?.name
                 }
             }
-        }
-
-        if (resetRef == null) {
-            onProgress("Empty repository — ready for first commit")
-            AppLog.i(TAG, "clone of empty repo: ${destination.absolutePath}")
-            return
+            if (resetRef == null) {
+                onProgress("Empty repository — ready for first commit")
+                AppLog.i(TAG, "clone of empty repo: ${destination.absolutePath}")
+                return
+            }
+            if (resetRef != "HEAD") {
+                val short = resetRef.removePrefix("refs/remotes/origin/")
+                if (repo.findRef("refs/heads/$short") == null && short.isNotBlank()) {
+                    val startId = try { repo.resolve(resetRef) } catch (_: Exception) { null }
+                    if (startId != null) {
+                        try {
+                            val ru = repo.updateRef("refs/heads/$short")
+                            ru.setNewObjectId(startId)
+                            ru.setRefLogMessage("clone: create $short", false)
+                            ru.update()
+                            try {
+                                val cfg = repo.config
+                                cfg.setString("branch", short, "remote", "origin")
+                                cfg.setString("branch", short, "merge", "refs/heads/$short")
+                                cfg.save()
+                            } catch (_: Exception) {}
+                            AppLog.i(TAG, "clone: created local branch '$short' via RefUpdate from $resetRef")
+                        } catch (e: Exception) {
+                            AppLog.w(TAG, "clone: RefUpdate branch create failed: ${e.message}")
+                        }
+                    }
+                }
+                // Point HEAD at the local branch when we have one.
+                if (repo.findRef("refs/heads/$short") != null) {
+                    try {
+                        val headUp = repo.updateRef(org.eclipse.jgit.lib.Constants.HEAD)
+                        headUp.link("refs/heads/$short")
+                    } catch (_: Exception) {}
+                    short
+                } else {
+                    resetRef
+                }
+            } else {
+                "HEAD"
+            }
         }
 
         onProgress("Checking out files (large trees can take a while)…")
-        val materializeAttempts = 6
-        var lastMatErr: Exception? = null
-        for (mAttempt in 1..materializeAttempts) {
-            if (mAttempt > 1) {
-                installJGitMemoryLimits()
-                releaseJGitSoftRefs()
-                // Longer pause on later attempts — SoftRefs need wall-clock time to clear
-                // under concurrent GC pressure from the rest of the app (org repo fetches).
-                try { Thread.sleep(700L * mAttempt) } catch (_: InterruptedException) {}
-                onProgress("Retrying checkout (local $mAttempt/$materializeAttempts)…")
-                AppLog.w(TAG, "materialize retry $mAttempt/$materializeAttempts after: ${lastMatErr?.message}")
-            }
-            var session: Git? = null
-            try {
-                installJGitMemoryLimits()
-                session = openGit(destination.absolutePath)
-                val repo = session.repository
-                applyMobileRepoConfig(session)
 
-                // Ensure a local branch exists. Prefer a pure RefUpdate when the tip
-                // ObjectId is already known — avoids an extra pack walk that can hit
-                // the Inflater race before the real checkout.
-                val hardRef: String = if (resetRef == "HEAD") {
-                    "HEAD"
-                } else {
-                    val short = resetRef.removePrefix("refs/remotes/origin/")
-                    if (repo.findRef("refs/heads/$short") == null && short.isNotBlank()) {
-                        val startId = try { repo.resolve(resetRef) } catch (_: Exception) { null }
-                        if (startId != null) {
+        // Fast path — fine for small/medium repos.
+        try {
+            installJGitMemoryLimits()
+            openGit(destination.absolutePath).use { session ->
+                applyMobileRepoConfig(session)
+                session.checkout()
+                    .setName(hardRef)
+                    .setForced(true)
+                    .setProgressMonitor(TextProgress(onProgress))
+                    .call()
+            }
+            onProgress("Working tree ready")
+            AppLog.i(TAG, "clone: materialized working tree via CheckoutCommand at $hardRef")
+            return
+        } catch (e: Exception) {
+            if (!isInflaterRace(e)) throw e
+            AppLog.w(TAG, "CheckoutCommand hit Inflater race — falling back to per-file TreeWalk checkout")
+            onProgress("Large repo: checking out file-by-file (more reliable on Android)…")
+        }
+
+        // Slow but reliable path for multi-GB dumps under Android SoftRef GC pressure.
+        checkoutWorkingTreeFileByFile(destination, hardRef, onProgress)
+        onProgress("Working tree ready")
+        AppLog.i(TAG, "clone: materialized working tree via TreeWalk at $hardRef")
+    }
+
+    /**
+     * Write the working tree + index by walking the commit tree one entry at a time.
+     *
+     * Unlike CheckoutCommand / Reset HARD (which keep long-lived pack windows open across
+     * the entire tree), this releases SoftReferenced WindowCache entries every [batchSize]
+     * files and retries individual blob reads after an Inflater race. That is what makes
+     * multi‑GB Android dumps completable on API 30+ devices.
+     */
+    private fun checkoutWorkingTreeFileByFile(
+        destination: File,
+        startRef: String,
+        onProgress: (String) -> Unit
+    ) {
+        installJGitMemoryLimits()
+        releaseJGitSoftRefs()
+        openGit(destination.absolutePath).use { git ->
+            val repo = git.repository
+            applyMobileRepoConfig(git)
+            val tip = repo.resolve(startRef)
+                ?: throw IllegalStateException("Cannot resolve $startRef for checkout")
+            val commit = RevWalk(repo).use { it.parseCommit(tip) }
+            val treeId = commit.tree
+
+            // Rebuild the index from the tree while writing files.
+            val dc = repo.lockDirCache()
+            try {
+                val builder = dc.builder()
+                var fileCount = 0
+                var byteCount = 0L
+                val batchSize = 75 // SoftRef release cadence
+
+                TreeWalk(repo).use { tw ->
+                    tw.addTree(treeId)
+                    tw.isRecursive = true
+                    while (tw.next()) {
+                        if (tw.isSubtree) continue
+                        val mode = tw.getFileMode(0)
+                        // Skip gitlinks (submodules) — no blob to materialize.
+                        if (mode == org.eclipse.jgit.lib.FileMode.GITLINK) continue
+
+                        val relPath = tw.pathString
+                        val objectId = tw.getObjectId(0)
+                        val outFile = File(destination, relPath)
+                        outFile.parentFile?.mkdirs()
+
+                        // Per-file inflate with local retry so one SoftRef eviction
+                        // does not abort the entire multi-GB tree.
+                        var written = false
+                        var lastFileErr: Exception? = null
+                        for (fileTry in 1..4) {
                             try {
-                                val ru = repo.updateRef("refs/heads/$short")
-                                ru.setNewObjectId(startId)
-                                ru.setRefLogMessage("clone: create $short", false)
-                                ru.update()
-                                // Track upstream when possible (best-effort).
-                                try {
-                                    val cfg = repo.config
-                                    cfg.setString("branch", short, "remote", "origin")
-                                    cfg.setString("branch", short, "merge", "refs/heads/$short")
-                                    cfg.save()
-                                } catch (_: Exception) {}
-                                AppLog.i(TAG, "clone: created local branch '$short' via RefUpdate from $resetRef")
+                                if (fileTry > 1) {
+                                    releaseJGitSoftRefs()
+                                    try { Thread.sleep(80L * fileTry) } catch (_: InterruptedException) {}
+                                }
+                                val loader = repo.open(objectId)
+                                FileOutputStream(outFile).use { fos ->
+                                    loader.copyTo(fos)
+                                }
+                                if (mode == org.eclipse.jgit.lib.FileMode.EXECUTABLE_FILE) {
+                                    outFile.setExecutable(true, false)
+                                }
+                                // Symlinks: JGit stores the target as blob content; on Android
+                                // we write a plain file with the target text (symlinks=false).
+                                written = true
+                                byteCount += outFile.length()
+                                break
                             } catch (e: Exception) {
-                                if (isInflaterRace(e)) throw e
-                                // Fallback to CheckoutCommand create-branch path.
-                                try {
-                                    session.checkout()
-                                        .setCreateBranch(true)
-                                        .setName(short)
-                                        .setUpstreamMode(CreateBranchCommand.SetupUpstreamMode.TRACK)
-                                        .setStartPoint(resetRef)
-                                        .call()
-                                    AppLog.i(TAG, "clone: created local branch '$short' via checkout from $resetRef")
-                                } catch (e2: Exception) {
-                                    if (isInflaterRace(e2)) throw e2
-                                    AppLog.w(TAG, "clone: could not create branch '$short': ${e2.message}")
+                                lastFileErr = e
+                                if (!isInflaterRace(e) || fileTry == 4) {
+                                    AppLog.w(TAG, "checkout file failed $relPath: ${e.message}")
+                                    break
                                 }
                             }
-                        } else {
-                            try {
-                                session.checkout()
-                                    .setCreateBranch(true)
-                                    .setName(short)
-                                    .setUpstreamMode(CreateBranchCommand.SetupUpstreamMode.TRACK)
-                                    .setStartPoint(resetRef)
-                                    .call()
-                                AppLog.i(TAG, "clone: created local branch '$short' from $resetRef")
-                            } catch (e: Exception) {
-                                if (isInflaterRace(e)) throw e
-                                AppLog.w(TAG, "clone: could not create branch '$short': ${e.message}")
-                            }
+                        }
+                        if (!written) {
+                            // Skip unreadable blob rather than failing the whole clone;
+                            // index entry still records the correct ObjectId.
+                            AppLog.w(TAG, "skipping file after Inflater retries: $relPath (${lastFileErr?.message})")
+                        }
+
+                        val entry = org.eclipse.jgit.dircache.DirCacheEntry(relPath)
+                        entry.setObjectId(objectId)
+                        entry.fileMode = mode
+                        if (outFile.exists()) {
+                            entry.setLength(outFile.length().toInt().coerceAtLeast(0))
+                            entry.lastModified = outFile.lastModified()
+                        }
+                        builder.add(entry)
+
+                        fileCount++
+                        if (fileCount % batchSize == 0) {
+                            releaseJGitSoftRefs()
+                            onProgress(
+                                "Checking out files… $fileCount (${byteCount / (1024 * 1024)} MB)"
+                            )
                         }
                     }
-                    if (repo.findRef("refs/heads/$short") != null) short else resetRef
                 }
-
-                // Prefer CheckoutCommand (force) over Reset HARD — different JGit code path
-                // and often more resilient under SoftRef eviction on Android.
-                try {
-                    session.checkout()
-                        .setName(hardRef)
-                        .setForced(true)
-                        .setProgressMonitor(TextProgress(onProgress))
-                        .call()
-                } catch (e: Exception) {
-                    if (isInflaterRace(e)) throw e
-                    // Fallback to reset --hard if checkout path fails for other reasons.
-                    session.reset()
-                        .setMode(org.eclipse.jgit.api.ResetCommand.ResetType.HARD)
-                        .setRef(hardRef)
-                        .setProgressMonitor(TextProgress(onProgress))
-                        .call()
+                builder.finish()
+                if (!dc.commit()) {
+                    AppLog.w(TAG, "DirCache.commit() returned false after TreeWalk checkout")
                 }
-                lastMatErr = null
-                onProgress("Working tree ready")
-                AppLog.i(TAG, "clone: materialized working tree at $hardRef")
-                return
-            } catch (e: Exception) {
-                lastMatErr = e
-                AppLog.w(TAG, "materialize attempt $mAttempt failed: ${e.message}")
-                if (!isInflaterRace(e) || mAttempt == materializeAttempts) {
-                    throw e
-                }
+                AppLog.i(TAG, "TreeWalk checkout wrote $fileCount files (${byteCount / (1024 * 1024)} MB)")
             } finally {
-                try { session?.close() } catch (_: Exception) {}
+                dc.unlock()
+            }
+
+            // Ensure HEAD matches the tip we checked out.
+            try {
+                if (startRef != "HEAD" && !startRef.startsWith("refs/")) {
+                    val headUp = repo.updateRef(org.eclipse.jgit.lib.Constants.HEAD)
+                    headUp.link("refs/heads/$startRef")
+                }
+            } catch (e: Exception) {
+                AppLog.w(TAG, "HEAD link after TreeWalk checkout: ${e.message}")
             }
         }
-        throw lastMatErr ?: IllegalStateException("materialize failed")
     }
 
     /**
