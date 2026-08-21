@@ -3181,88 +3181,6 @@ fun ReleasesTab(
                     } else {
                         Text("No assets", color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-
-                    // Source code archives (zipball / tarball)
-                    if (!rel.zipballUrl.isNullOrBlank() || !rel.tarballUrl.isNullOrBlank()) {
-                        Spacer(Modifier.height(16.dp))
-                        Text("Source code", fontWeight = FontWeight.SemiBold)
-                        Spacer(Modifier.height(8.dp))
-                        val or = ownerRepo
-                        val safeTag = rel.tagName.replace(Regex("[^A-Za-z0-9._-]+"), "_").ifBlank { "source" }
-                        val baseName = (or?.let { "${it.repo}-$safeTag" } ?: safeTag)
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            if (!rel.zipballUrl.isNullOrBlank()) {
-                                var zipDownloading by remember(rel.id) { mutableStateOf(false) }
-                                OutlinedButton(
-                                    onClick = {
-                                        val url = rel.zipballUrl ?: return@OutlinedButton
-                                        scope.launch {
-                                            zipDownloading = true
-                                            val destDir = java.io.File(
-                                                System.getProperty("user.home"),
-                                                "Downloads/QuickGit"
-                                            )
-                                            destDir.mkdirs()
-                                            val dest = java.io.File(destDir, "$baseName.zip")
-                                            val r = withContext(Dispatchers.IO) {
-                                                githubApi.downloadSourceArchive(url, dest)
-                                            }
-                                            zipDownloading = false
-                                            r.fold(
-                                                { onMessage("Saved to ${it.absolutePath}") },
-                                                { onMessage("Download failed: ${it.message}") }
-                                            )
-                                        }
-                                    },
-                                    enabled = !zipDownloading
-                                ) {
-                                    if (zipDownloading) {
-                                        CircularProgressIndicator(
-                                            Modifier.size(16.dp),
-                                            strokeWidth = 2.dp
-                                        )
-                                    } else {
-                                        Text("zip")
-                                    }
-                                }
-                            }
-                            if (!rel.tarballUrl.isNullOrBlank()) {
-                                var tarDownloading by remember(rel.id) { mutableStateOf(false) }
-                                OutlinedButton(
-                                    onClick = {
-                                        val url = rel.tarballUrl ?: return@OutlinedButton
-                                        scope.launch {
-                                            tarDownloading = true
-                                            val destDir = java.io.File(
-                                                System.getProperty("user.home"),
-                                                "Downloads/QuickGit"
-                                            )
-                                            destDir.mkdirs()
-                                            val dest = java.io.File(destDir, "$baseName.tar.gz")
-                                            val r = withContext(Dispatchers.IO) {
-                                                githubApi.downloadSourceArchive(url, dest)
-                                            }
-                                            tarDownloading = false
-                                            r.fold(
-                                                { onMessage("Saved to ${it.absolutePath}") },
-                                                { onMessage("Download failed: ${it.message}") }
-                                            )
-                                        }
-                                    },
-                                    enabled = !tarDownloading
-                                ) {
-                                    if (tarDownloading) {
-                                        CircularProgressIndicator(
-                                            Modifier.size(16.dp),
-                                            strokeWidth = 2.dp
-                                        )
-                                    } else {
-                                        Text("tar.gz")
-                                    }
-                                }
-                            }
-                        }
-                    }
                 }
             }
         }
@@ -3466,6 +3384,8 @@ fun CloneScreen(
 }
 
 @Composable
+private enum class BrowseDesktopTab { GITHUB, GITLAB, GERRIT }
+
 fun BrowseAccountScreen(
     credentialStore: DesktopCredentialStore,
     githubApi: GitHubApi,
@@ -3473,28 +3393,72 @@ fun BrowseAccountScreen(
     onCloned: (String) -> Unit,
     onMessage: (String) -> Unit
 ) {
-    var repos by remember { mutableStateOf<List<GitHubRemoteRepo>>(emptyList()) }
-    var orgs by remember { mutableStateOf<List<String>>(emptyList()) }
-    var selectedOrg by remember { mutableStateOf<String?>(null) } // null = personal
-    var loading by remember { mutableStateOf(false) }
-    var loadingMore by remember { mutableStateOf(false) }
-    var repoPage by remember { mutableStateOf(1) }
-    var hasMoreRepos by remember { mutableStateOf(false) }
+    val gerritMgr = remember { GerritAccountManager(credentialStore) }
+    val githubToken = credentialStore.getGithubToken() ?: credentialStore.getHttpsToken("github.com")
+    val githubConnected = !githubToken.isNullOrBlank()
+    // Prefer gitlab.com, then any host that has a stored HTTPS token named like gitlab
+    val gitlabHost = remember {
+        when {
+            !credentialStore.getHttpsToken("gitlab.com").isNullOrBlank() -> "gitlab.com"
+            !credentialStore.getGitlabToken().isNullOrBlank() -> "gitlab.com"
+            else -> "gitlab.com"
+        }
+    }
+    val gitlabToken = credentialStore.getHttpsToken(gitlabHost)
+        ?: credentialStore.getGitlabToken()
+    val gitlabConnected = !gitlabToken.isNullOrBlank()
+    val gerritHost = gerritMgr.host.takeIf { it.isNotBlank() } ?: credentialStore.getPreferredGerritHost().orEmpty()
+    val gerritConnected = gerritHost.isNotBlank() && gerritMgr.isConnected(gerritHost)
+
+    var selectedTab by remember {
+        mutableStateOf(
+            when {
+                githubConnected -> BrowseDesktopTab.GITHUB
+                gitlabConnected -> BrowseDesktopTab.GITLAB
+                gerritConnected -> BrowseDesktopTab.GERRIT
+                else -> BrowseDesktopTab.GITHUB
+            }
+        )
+    }
     var query by remember { mutableStateOf("") }
     var cloning by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
-    val pageSize = 100
-    val orgScroll = rememberScrollState()
 
-    fun loadRepos(org: String?, reset: Boolean = true) {
+    // ---- GitHub state ----
+    var ghRepos by remember { mutableStateOf<List<GitHubRemoteRepo>>(emptyList()) }
+    var orgs by remember { mutableStateOf<List<String>>(emptyList()) }
+    var selectedOrg by remember { mutableStateOf<String?>(null) }
+    var ghLoading by remember { mutableStateOf(false) }
+    var ghLoadingMore by remember { mutableStateOf(false) }
+    var ghPage by remember { mutableStateOf(1) }
+    var ghHasMore by remember { mutableStateOf(false) }
+    var ghLoaded by remember { mutableStateOf(false) }
+    val orgScroll = rememberScrollState()
+    val pageSize = 100
+
+    // ---- GitLab state ----
+    var glProjects by remember { mutableStateOf<List<GitLabProject>>(emptyList()) }
+    var glLoading by remember { mutableStateOf(false) }
+    var glLoadingMore by remember { mutableStateOf(false) }
+    var glPage by remember { mutableStateOf(1) }
+    var glHasMore by remember { mutableStateOf(false) }
+    var glLoaded by remember { mutableStateOf(false) }
+
+    // ---- Gerrit state ----
+    var grProjects by remember { mutableStateOf<List<GerritProject>>(emptyList()) }
+    var grLoading by remember { mutableStateOf(false) }
+    var grLoaded by remember { mutableStateOf(false) }
+
+    fun loadGitHubRepos(org: String?, reset: Boolean = true) {
+        if (!githubConnected) return
         scope.launch {
             if (reset) {
-                loading = true
-                repoPage = 1
+                ghLoading = true
+                ghPage = 1
             } else {
-                loadingMore = true
+                ghLoadingMore = true
             }
-            val page = if (reset) 1 else repoPage + 1
+            val page = if (reset) 1 else ghPage + 1
             val result = withContext(Dispatchers.IO) {
                 if (org == null) githubApi.listUserRepos(
                     affiliation = "owner,collaborator,organization_member",
@@ -3505,18 +3469,18 @@ fun BrowseAccountScreen(
             }
             result.fold(
                 onSuccess = { batch ->
-                    repos = if (reset) batch else repos + batch
-                    repoPage = page
-                    hasMoreRepos = batch.size >= pageSize
+                    ghRepos = if (reset) batch else ghRepos + batch
+                    ghPage = page
+                    ghHasMore = batch.size >= pageSize
+                    ghLoaded = true
                 },
-                onFailure = { onMessage("Failed to list repos: ${it.message}") }
+                onFailure = { onMessage("Failed to list GitHub repos: ${it.message}") }
             )
-            loading = false
-            loadingMore = false
+            ghLoading = false
+            ghLoadingMore = false
         }
     }
 
-    /** Fetch every page of /user/orgs so all memberships appear as chips. */
     suspend fun loadAllOrganizations(): List<String> {
         val all = mutableListOf<String>()
         var page = 1
@@ -3528,184 +3492,514 @@ fun BrowseAccountScreen(
             all += batch
             if (batch.size < 100) break
             page++
-            if (page > 20) break // safety
+            if (page > 20) break
         }
         return all.distinct().sortedBy { it.lowercase() }
     }
 
-    LaunchedEffect(Unit) {
-        val token = credentialStore.getGithubToken() ?: credentialStore.getHttpsToken("github.com")
-        if (token.isNullOrBlank()) {
-            onMessage("Add a GitHub token in Credentials first")
-            return@LaunchedEffect
+    fun loadGitLabProjects(reset: Boolean = true) {
+        if (!gitlabConnected) return
+        val token = gitlabToken ?: return
+        scope.launch {
+            if (reset) {
+                glLoading = true
+                glPage = 1
+            } else {
+                glLoadingMore = true
+            }
+            val page = if (reset) 1 else glPage + 1
+            val api = GitLabApi(gitlabHost, token)
+            val result = withContext(Dispatchers.IO) {
+                if (query.isBlank()) api.listProjects(membership = true, perPage = pageSize, page = page)
+                else api.searchProjects(query, perPage = pageSize, page = page)
+            }
+            result.fold(
+                onSuccess = { batch ->
+                    glProjects = if (reset) batch else glProjects + batch
+                    glPage = page
+                    glHasMore = batch.size >= pageSize
+                    glLoaded = true
+                },
+                onFailure = { onMessage("Failed to list GitLab projects: ${it.message}") }
+            )
+            glLoading = false
+            glLoadingMore = false
         }
-        orgs = loadAllOrganizations()
-        loadRepos(null)
     }
 
-    Column(Modifier.fillMaxSize().padding(16.dp)) {
-        Text("Your GitHub repositories", style = MaterialTheme.typography.titleLarge)
-        Spacer(Modifier.height(8.dp))
-        // Org chips — horizontal scroll with explicit arrows (trackpads/mice often miss the row)
-        Row(
-            Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            val canScrollLeft = orgScroll.value > 0
-            val canScrollRight = orgScroll.value < orgScroll.maxValue
-            IconButton(
-                onClick = {
-                    scope.launch {
-                        val target = (orgScroll.value - 240).coerceAtLeast(0)
-                        orgScroll.scrollTo(target)
+    fun loadGerritProjects() {
+        if (!gerritConnected) return
+        scope.launch {
+            grLoading = true
+            val q = if (query.isBlank()) "state:ACTIVE" else "state:ACTIVE $query"
+            val result = withContext(Dispatchers.IO) { gerritMgr.listProjects(gerritHost, q) }
+            result.fold(
+                onSuccess = { list ->
+                    grProjects = if (query.isBlank()) list
+                    else list.filter {
+                        it.name.contains(query, true) ||
+                            (it.description?.contains(query, true) == true)
                     }
+                    grLoaded = true
                 },
-                enabled = canScrollLeft
-            ) {
-                Icon(Icons.Default.ChevronLeft, contentDescription = "Scroll organizations left")
-            }
-            Row(
-                Modifier
-                    .weight(1f)
-                    .horizontalScroll(orgScroll),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                FilterChip(
-                    selected = selectedOrg == null,
-                    onClick = { selectedOrg = null; loadRepos(null) },
-                    label = { Text("Personal") }
-                )
-                orgs.forEach { org ->
-                    FilterChip(
-                        selected = selectedOrg == org,
-                        onClick = { selectedOrg = org; loadRepos(org) },
-                        label = { Text(org) }
-                    )
+                onFailure = { onMessage("Failed to list Gerrit projects: ${it.message}") }
+            )
+            grLoading = false
+        }
+    }
+
+    fun ensureTabLoaded(tab: BrowseDesktopTab) {
+        when (tab) {
+            BrowseDesktopTab.GITHUB -> if (!ghLoaded && githubConnected) {
+                scope.launch {
+                    orgs = loadAllOrganizations()
+                    loadGitHubRepos(null)
                 }
             }
-            IconButton(
-                onClick = {
-                    scope.launch {
-                        val target = (orgScroll.value + 240).coerceAtMost(orgScroll.maxValue)
-                        orgScroll.scrollTo(target)
-                    }
-                },
-                enabled = canScrollRight
-            ) {
-                Icon(Icons.Default.ChevronRight, contentDescription = "Scroll organizations right")
+            BrowseDesktopTab.GITLAB -> if (!glLoaded && gitlabConnected) loadGitLabProjects(true)
+            BrowseDesktopTab.GERRIT -> if (!grLoaded && gerritConnected) loadGerritProjects()
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        if (!githubConnected && !gitlabConnected && !gerritConnected) {
+            onMessage("Add GitHub, GitLab, or Gerrit credentials under Credentials first")
+            return@LaunchedEffect
+        }
+        ensureTabLoaded(selectedTab)
+    }
+
+    val tabs = listOf(
+        BrowseDesktopTab.GITHUB to "GitHub",
+        BrowseDesktopTab.GITLAB to "GitLab",
+        BrowseDesktopTab.GERRIT to "Gerrit"
+    )
+    val selectedIndex = tabs.indexOfFirst { it.first == selectedTab }.coerceAtLeast(0)
+
+    Column(Modifier.fillMaxSize().padding(16.dp)) {
+        Text("Browse repositories", style = MaterialTheme.typography.titleLarge)
+        Spacer(Modifier.height(8.dp))
+        TabRow(selectedTabIndex = selectedIndex) {
+            tabs.forEachIndexed { index, (tab, label) ->
+                val connected = when (tab) {
+                    BrowseDesktopTab.GITHUB -> githubConnected
+                    BrowseDesktopTab.GITLAB -> gitlabConnected
+                    BrowseDesktopTab.GERRIT -> gerritConnected
+                }
+                Tab(
+                    selected = selectedIndex == index,
+                    onClick = {
+                        selectedTab = tab
+                        query = ""
+                        ensureTabLoaded(tab)
+                    },
+                    text = { Text(if (connected) label else "$label · off") },
+                    enabled = connected || tab == selectedTab
+                )
             }
         }
         Spacer(Modifier.height(8.dp))
+
+        // GitHub org chips
+        if (selectedTab == BrowseDesktopTab.GITHUB && githubConnected) {
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                val canScrollLeft = orgScroll.value > 0
+                val canScrollRight = orgScroll.value < orgScroll.maxValue
+                IconButton(
+                    onClick = {
+                        scope.launch {
+                            orgScroll.scrollTo((orgScroll.value - 240).coerceAtLeast(0))
+                        }
+                    },
+                    enabled = canScrollLeft
+                ) {
+                    Icon(Icons.Default.ChevronLeft, contentDescription = "Scroll organizations left")
+                }
+                Row(
+                    Modifier.weight(1f).horizontalScroll(orgScroll),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    FilterChip(
+                        selected = selectedOrg == null,
+                        onClick = { selectedOrg = null; loadGitHubRepos(null) },
+                        label = { Text("Personal") }
+                    )
+                    orgs.forEach { org ->
+                        FilterChip(
+                            selected = selectedOrg == org,
+                            onClick = { selectedOrg = org; loadGitHubRepos(org) },
+                            label = { Text(org) }
+                        )
+                    }
+                }
+                IconButton(
+                    onClick = {
+                        scope.launch {
+                            orgScroll.scrollTo((orgScroll.value + 240).coerceAtMost(orgScroll.maxValue))
+                        }
+                    },
+                    enabled = canScrollRight
+                ) {
+                    Icon(Icons.Default.ChevronRight, contentDescription = "Scroll organizations right")
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+        }
+
         OutlinedTextField(
             value = query,
-            onValueChange = { query = it },
-            label = { Text("Filter repositories") },
+            onValueChange = {
+                query = it
+                when (selectedTab) {
+                    BrowseDesktopTab.GITHUB -> { /* client-side filter */ }
+                    BrowseDesktopTab.GITLAB -> {
+                        glLoaded = false
+                        loadGitLabProjects(true)
+                    }
+                    BrowseDesktopTab.GERRIT -> {
+                        grLoaded = false
+                        loadGerritProjects()
+                    }
+                }
+            },
+            label = {
+                Text(
+                    when (selectedTab) {
+                        BrowseDesktopTab.GITHUB -> "Filter repositories"
+                        BrowseDesktopTab.GITLAB -> "Search GitLab projects"
+                        BrowseDesktopTab.GERRIT -> "Search Gerrit projects"
+                    }
+                )
+            },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true
         )
         Spacer(Modifier.height(8.dp))
-        Text(
-            if (loading) "Loading…" else "${repos.size} repositories" +
-                if (query.isNotBlank()) " (filtered)" else "",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Spacer(Modifier.height(4.dp))
-        if (loading && repos.isEmpty()) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator()
-            }
-        } else {
-            val filtered = repos.filter {
-                query.isBlank() || it.fullName.contains(query, true) || it.name.contains(query, true)
-            }
-            // weight(1f) so the list fills remaining space under the fixed header (filter stays on top)
-            LazyColumn(
-                Modifier.fillMaxWidth().weight(1f),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                items(filtered, key = { it.id }) { repo ->
-                    Card(Modifier.fillMaxWidth()) {
-                        Row(
-                            Modifier.padding(12.dp).fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically
+
+        when (selectedTab) {
+            BrowseDesktopTab.GITHUB -> {
+                if (!githubConnected) {
+                    Text(
+                        "Add a GitHub token in Credentials to browse your repos.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    Text(
+                        if (ghLoading) "Loading…" else "${ghRepos.size} repositories" +
+                            if (query.isNotBlank()) " (filtered)" else "",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    if (ghLoading && ghRepos.isEmpty()) {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator()
+                        }
+                    } else {
+                        val filtered = ghRepos.filter {
+                            query.isBlank() || it.fullName.contains(query, true) || it.name.contains(query, true)
+                        }
+                        LazyColumn(
+                            Modifier.fillMaxWidth().weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            Column(Modifier.weight(1f)) {
-                                Text(repo.fullName, fontWeight = FontWeight.Medium)
-                                repo.description?.let {
-                                    Text(
-                                        it,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                }
-                                Text(
-                                    buildString {
-                                        if (repo.isPrivate) append("private · ")
-                                        append(repo.defaultBranch ?: "main")
-                                        repo.language?.let { append(" · $it") }
-                                    },
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                            Button(
-                                onClick = {
-                                    val cloneUrl = repo.cloneUrl ?: "https://github.com/${repo.fullName}.git"
-                                    scope.launch {
-                                        cloning = repo.fullName
-                                        val result = withContext(Dispatchers.IO) {
-                                            repoManager.cloneRepo(cloneUrl, repo.name)
+                            items(filtered, key = { it.id }) { repo ->
+                                Card(Modifier.fillMaxWidth()) {
+                                    Row(
+                                        Modifier.padding(12.dp).fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column(Modifier.weight(1f)) {
+                                            Text(repo.fullName, fontWeight = FontWeight.Medium)
+                                            repo.description?.let {
+                                                Text(
+                                                    it,
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
+                                            Text(
+                                                buildString {
+                                                    if (repo.isPrivate) append("private · ")
+                                                    append(repo.defaultBranch ?: "main")
+                                                    repo.language?.let { append(" · $it") }
+                                                },
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
                                         }
-                                        cloning = null
-                                        result.fold(
-                                            onSuccess = { onCloned(it.absolutePath) },
-                                            onFailure = { onMessage("Clone failed: ${it.message}") }
-                                        )
+                                        Button(
+                                            onClick = {
+                                                val cloneUrl = repo.cloneUrl
+                                                    ?: "https://github.com/${repo.fullName}.git"
+                                                scope.launch {
+                                                    cloning = repo.fullName
+                                                    val result = withContext(Dispatchers.IO) {
+                                                        repoManager.cloneRepo(cloneUrl, repo.name)
+                                                    }
+                                                    cloning = null
+                                                    result.fold(
+                                                        onSuccess = { onCloned(it.absolutePath) },
+                                                        onFailure = { onMessage("Clone failed: ${it.message}") }
+                                                    )
+                                                }
+                                            },
+                                            enabled = cloning == null
+                                        ) {
+                                            if (cloning == repo.fullName) {
+                                                CircularProgressIndicator(
+                                                    Modifier.size(16.dp),
+                                                    strokeWidth = 2.dp,
+                                                    color = MaterialTheme.colorScheme.onPrimary
+                                                )
+                                            } else {
+                                                Text("Clone")
+                                            }
+                                        }
                                     }
-                                },
-                                enabled = cloning == null
-                            ) {
-                                if (cloning == repo.fullName) {
-                                    CircularProgressIndicator(
-                                        Modifier.size(16.dp),
-                                        strokeWidth = 2.dp,
-                                        color = MaterialTheme.colorScheme.onPrimary
+                                }
+                            }
+                            if (ghHasMore && query.isBlank()) {
+                                item {
+                                    Box(
+                                        Modifier.fillMaxWidth().padding(vertical = 12.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        if (ghLoadingMore) {
+                                            CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
+                                        } else {
+                                            OutlinedButton(
+                                                onClick = { loadGitHubRepos(selectedOrg, reset = false) },
+                                                enabled = !ghLoadingMore
+                                            ) { Text("Load more") }
+                                        }
+                                    }
+                                }
+                            }
+                            if (filtered.isEmpty() && !ghLoading) {
+                                item {
+                                    Text(
+                                        if (query.isNotBlank()) "No repositories match \"$query\""
+                                        else "No repositories found",
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(16.dp)
                                     )
-                                } else {
-                                    Text("Clone")
                                 }
                             }
                         }
                     }
                 }
-                if (hasMoreRepos && query.isBlank()) {
-                    item {
-                        Box(
-                            Modifier.fillMaxWidth().padding(vertical = 12.dp),
-                            contentAlignment = Alignment.Center
+            }
+
+            BrowseDesktopTab.GITLAB -> {
+                if (!gitlabConnected) {
+                    Text(
+                        "Add a GitLab host + personal access token in Credentials to browse projects.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    Text(
+                        if (glLoading) "Loading…" else "${glProjects.size} projects · $gitlabHost",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    if (glLoading && glProjects.isEmpty()) {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator()
+                        }
+                    } else {
+                        LazyColumn(
+                            Modifier.fillMaxWidth().weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            if (loadingMore) {
-                                CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
-                            } else {
-                                OutlinedButton(
-                                    onClick = { loadRepos(selectedOrg, reset = false) },
-                                    enabled = !loadingMore
-                                ) { Text("Load more") }
+                            items(glProjects, key = { it.id }) { project ->
+                                Card(Modifier.fillMaxWidth()) {
+                                    Row(
+                                        Modifier.padding(12.dp).fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column(Modifier.weight(1f)) {
+                                            Text(project.pathWithNamespace, fontWeight = FontWeight.Medium)
+                                            project.description?.let {
+                                                Text(
+                                                    it,
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
+                                            Text(
+                                                buildString {
+                                                    if (project.isPrivate) append("private · ")
+                                                    append(project.defaultBranch)
+                                                    if (project.isFork) append(" · fork")
+                                                },
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                        Button(
+                                            onClick = {
+                                                val cloneUrl = project.httpUrlToRepo
+                                                val folder = project.pathWithNamespace.substringAfterLast('/')
+                                                scope.launch {
+                                                    cloning = "gl:${project.id}"
+                                                    val result = withContext(Dispatchers.IO) {
+                                                        repoManager.cloneRepo(cloneUrl, folder)
+                                                    }
+                                                    cloning = null
+                                                    result.fold(
+                                                        onSuccess = { onCloned(it.absolutePath) },
+                                                        onFailure = { onMessage("Clone failed: ${it.message}") }
+                                                    )
+                                                }
+                                            },
+                                            enabled = cloning == null
+                                        ) {
+                                            if (cloning == "gl:${project.id}") {
+                                                CircularProgressIndicator(
+                                                    Modifier.size(16.dp),
+                                                    strokeWidth = 2.dp,
+                                                    color = MaterialTheme.colorScheme.onPrimary
+                                                )
+                                            } else {
+                                                Text("Clone")
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if (glHasMore) {
+                                item {
+                                    Box(
+                                        Modifier.fillMaxWidth().padding(vertical = 12.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        if (glLoadingMore) {
+                                            CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
+                                        } else {
+                                            OutlinedButton(
+                                                onClick = { loadGitLabProjects(reset = false) },
+                                                enabled = !glLoadingMore
+                                            ) { Text("Load more") }
+                                        }
+                                    }
+                                }
+                            }
+                            if (glProjects.isEmpty() && !glLoading) {
+                                item {
+                                    Text(
+                                        if (query.isNotBlank()) "No projects match \"$query\""
+                                        else "No projects found",
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(16.dp)
+                                    )
+                                }
                             }
                         }
                     }
                 }
-                if (filtered.isEmpty() && !loading) {
-                    item {
-                        Text(
-                            if (query.isNotBlank()) "No repositories match \"$query\""
-                            else "No repositories found",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(16.dp)
-                        )
+            }
+
+            BrowseDesktopTab.GERRIT -> {
+                if (!gerritConnected) {
+                    Text(
+                        "Connect a Gerrit host under Credentials to browse and clone projects.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    Text(
+                        if (grLoading) "Loading…" else "${grProjects.size} projects · $gerritHost",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    if (grLoading && grProjects.isEmpty()) {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator()
+                        }
+                    } else {
+                        LazyColumn(
+                            Modifier.fillMaxWidth().weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            items(grProjects, key = { it.id }) { project ->
+                                Card(Modifier.fillMaxWidth()) {
+                                    Row(
+                                        Modifier.padding(12.dp).fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column(Modifier.weight(1f)) {
+                                            Text(project.name, fontWeight = FontWeight.Medium)
+                                            project.description?.let {
+                                                Text(
+                                                    it,
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
+                                            project.state?.let {
+                                                Text(
+                                                    it,
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            }
+                                        }
+                                        Button(
+                                            onClick = {
+                                                val cloneUrl = gerritMgr.cloneUrl(project.name, gerritHost)
+                                                if (cloneUrl == null) {
+                                                    onMessage("Could not build Gerrit clone URL")
+                                                    return@Button
+                                                }
+                                                val folder = project.name.substringAfterLast('/')
+                                                    .ifBlank { project.name }
+                                                scope.launch {
+                                                    cloning = "gr:${project.id}"
+                                                    val result = withContext(Dispatchers.IO) {
+                                                        repoManager.cloneRepo(cloneUrl, folder)
+                                                    }
+                                                    cloning = null
+                                                    result.fold(
+                                                        onSuccess = { onCloned(it.absolutePath) },
+                                                        onFailure = { onMessage("Clone failed: ${it.message}") }
+                                                    )
+                                                }
+                                            },
+                                            enabled = cloning == null
+                                        ) {
+                                            if (cloning == "gr:${project.id}") {
+                                                CircularProgressIndicator(
+                                                    Modifier.size(16.dp),
+                                                    strokeWidth = 2.dp,
+                                                    color = MaterialTheme.colorScheme.onPrimary
+                                                )
+                                            } else {
+                                                Text("Clone")
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if (grProjects.isEmpty() && !grLoading) {
+                                item {
+                                    Text(
+                                        if (query.isNotBlank()) "No projects match \"$query\""
+                                        else "No projects found",
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(16.dp)
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             }

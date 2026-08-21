@@ -4,10 +4,12 @@ import android.app.Application
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.quickgit.app.data.GerritAccountManager
 import com.quickgit.app.data.GitHubAccountManager
 import com.quickgit.app.data.GitLabAccountManager
 import com.quickgit.app.data.GitProgressNotifier
 import com.quickgit.app.data.RepoManager
+import com.quickgit.app.data.models.GerritProject
 import com.quickgit.app.data.models.GitHubRemoteRepo
 import com.quickgit.app.data.models.GitLabProject
 import com.quickgit.app.data.models.GitOpResult
@@ -22,14 +24,17 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
-enum class BrowseProviderTab { GITHUB, GITLAB }
+enum class BrowseProviderTab { GITHUB, GITLAB, GERRIT }
 
 data class BrowseGitHubUiState(
     val selectedTab: BrowseProviderTab = BrowseProviderTab.GITHUB,
     val githubConnected: Boolean = false,
     val gitlabConnected: Boolean = false,
+    val gerritConnected: Boolean = false,
     val githubLogin: String? = null,
     val gitlabUsername: String? = null,
+    val gerritHost: String? = null,
+    val gerritUsername: String? = null,
     val loading: Boolean = false,
     val loadingMore: Boolean = false,
     val cloning: Boolean = false,
@@ -37,12 +42,14 @@ data class BrowseGitHubUiState(
     val progressText: String = "",
     val githubRepos: List<GitHubRemoteRepo> = emptyList(),
     val gitlabProjects: List<GitLabProject> = emptyList(),
+    val gerritProjects: List<GerritProject> = emptyList(),
     val githubPage: Int = 0,
     val gitlabPage: Int = 0,
     val githubHasMore: Boolean = false,
     val gitlabHasMore: Boolean = false,
     val githubLoaded: Boolean = false,
     val gitlabLoaded: Boolean = false,
+    val gerritLoaded: Boolean = false,
     val query: String = "",
     val errorMessage: String? = null,
     val statusMessage: String? = null,
@@ -54,6 +61,7 @@ data class BrowseGitHubUiState(
 class BrowseGitHubViewModel(
     private val accountManager: GitHubAccountManager,
     private val gitLabAccountManager: GitLabAccountManager,
+    private val gerritAccountManager: GerritAccountManager,
     private val repoManager: RepoManager,
     app: Application
 ) : ViewModel() {
@@ -79,30 +87,38 @@ class BrowseGitHubViewModel(
             val ghConnected = accountManager.isConnected()
             val glHost = resolveGitLabHost()
             val glConnected = glHost != null
+            gerritAccountManager.restoreHost()
+            val grHost = gerritAccountManager.host.takeIf { it.isNotBlank() && gerritAccountManager.isConnected(it) }
+            val grConnected = grHost != null
 
-            if (!ghConnected && !glConnected) {
+            if (!ghConnected && !glConnected && !grConnected) {
                 _state.value = BrowseGitHubUiState(authRequired = true)
                 return@launch
             }
 
-            // Default tab: GitHub if connected, else GitLab
+            // Default tab: GitHub if connected, else GitLab, else Gerrit
             val defaultTab = when {
                 ghConnected -> BrowseProviderTab.GITHUB
-                else -> BrowseProviderTab.GITLAB
+                glConnected -> BrowseProviderTab.GITLAB
+                else -> BrowseProviderTab.GERRIT
             }
 
             _state.value = _state.value.copy(
                 authRequired = false,
                 githubConnected = ghConnected,
                 gitlabConnected = glConnected,
-                selectedTab = if (_state.value.githubLoaded || _state.value.gitlabLoaded)
+                gerritConnected = grConnected,
+                gerritHost = grHost,
+                selectedTab = if (_state.value.githubLoaded || _state.value.gitlabLoaded || _state.value.gerritLoaded)
                     _state.value.selectedTab
                 else defaultTab,
                 // reset lists so we reload active tab
                 githubLoaded = false,
                 gitlabLoaded = false,
+                gerritLoaded = false,
                 githubRepos = emptyList(),
                 gitlabProjects = emptyList(),
+                gerritProjects = emptyList(),
                 githubPage = 0,
                 gitlabPage = 0
             )
@@ -118,6 +134,13 @@ class BrowseGitHubViewModel(
                 if (account != null) {
                     _state.value = _state.value.copy(gitlabUsername = account.username, gitlabConnected = true)
                 }
+            }
+            if (grConnected && grHost != null) {
+                _state.value = _state.value.copy(
+                    gerritUsername = gerritAccountManager.storedUsername(grHost),
+                    gerritConnected = true,
+                    gerritHost = grHost
+                )
             }
 
             ensureTabLoaded(_state.value.selectedTab)
@@ -140,8 +163,10 @@ class BrowseGitHubViewModel(
             _state.value = _state.value.copy(
                 githubLoaded = false,
                 gitlabLoaded = false,
+                gerritLoaded = false,
                 githubRepos = emptyList(),
                 gitlabProjects = emptyList(),
+                gerritProjects = emptyList(),
                 githubPage = 0,
                 gitlabPage = 0
             )
@@ -154,6 +179,7 @@ class BrowseGitHubViewModel(
         val already = when (tab) {
             BrowseProviderTab.GITHUB -> s.githubLoaded
             BrowseProviderTab.GITLAB -> s.gitlabLoaded
+            BrowseProviderTab.GERRIT -> s.gerritLoaded
         }
         if (already) return
         loadPage(tab, reset = true)
@@ -164,6 +190,7 @@ class BrowseGitHubViewModel(
         val hasMore = when (tab) {
             BrowseProviderTab.GITHUB -> _state.value.githubHasMore
             BrowseProviderTab.GITLAB -> _state.value.gitlabHasMore
+            BrowseProviderTab.GERRIT -> false // Gerrit list is a single fetch
         }
         if (!hasMore || _state.value.loadingMore || _state.value.loading) return
         loadPage(tab, reset = false)
@@ -180,6 +207,7 @@ class BrowseGitHubViewModel(
             when (tab) {
                 BrowseProviderTab.GITHUB -> loadGitHubPage(q, reset)
                 BrowseProviderTab.GITLAB -> loadGitLabPage(q, reset)
+                BrowseProviderTab.GERRIT -> loadGerritPage(q)
             }
         }
     }
@@ -277,6 +305,50 @@ class BrowseGitHubViewModel(
         return null
     }
 
+    private suspend fun loadGerritPage(query: String) {
+        if (!_state.value.gerritConnected) {
+            _state.value = _state.value.copy(loading = false, loadingMore = false, gerritLoaded = true)
+            return
+        }
+        gerritAccountManager.restoreHost()
+        val h = gerritAccountManager.host
+        if (h.isBlank() || !gerritAccountManager.isConnected(h)) {
+            _state.value = _state.value.copy(
+                loading = false, loadingMore = false, gerritLoaded = true, gerritConnected = false
+            )
+            return
+        }
+        // Gerrit project query: keep ACTIVE and optionally narrow by user text
+        val gerritQuery = if (query.isBlank()) "state:ACTIVE" else "state:ACTIVE $query"
+        val (projects, result) = withContext(Dispatchers.IO) {
+            gerritAccountManager.listProjects(h, gerritQuery)
+        }
+        when (result) {
+            is PrOpResult.AuthRequired -> _state.value = _state.value.copy(
+                loading = false, loadingMore = false, gerritConnected = false, gerritLoaded = true
+            )
+            is PrOpResult.Error -> _state.value = _state.value.copy(
+                loading = false, loadingMore = false, gerritLoaded = true,
+                errorMessage = "Gerrit: ${result.message}"
+            )
+            is PrOpResult.Success -> {
+                val filtered = if (query.isBlank()) projects
+                else projects.filter {
+                    it.name.contains(query, ignoreCase = true) ||
+                        (it.description?.contains(query, ignoreCase = true) == true)
+                }
+                _state.value = _state.value.copy(
+                    loading = false,
+                    loadingMore = false,
+                    gerritProjects = filtered,
+                    gerritLoaded = true,
+                    gerritHost = h,
+                    gerritUsername = gerritAccountManager.storedUsername(h)
+                )
+            }
+        }
+    }
+
     fun onDestinationPicked(treeUri: Uri) {
         viewModelScope.launch {
             when (val result = repoManager.resolveCloneDestination(treeUri)) {
@@ -315,6 +387,20 @@ class BrowseGitHubViewModel(
     fun cloneGitLabProjectAfterPickingFolder(project: GitLabProject, useSsh: Boolean = false) {
         pendingCloneUrl = if (useSsh) project.sshUrlToRepo else project.httpUrlToRepo
         pendingCloneName = project.pathWithNamespace.substringAfterLast('/')
+    }
+
+    fun cloneGerritProject(project: GerritProject) {
+        val url = gerritAccountManager.cloneUrl(project.name) ?: run {
+            _state.value = _state.value.copy(errorMessage = "Could not build Gerrit clone URL")
+            return
+        }
+        val folder = project.name.substringAfterLast('/').ifBlank { project.name }
+        doClone(url, folder, File(repoManager.reposRoot, folder), "gr:${project.id}")
+    }
+
+    fun cloneGerritProjectAfterPickingFolder(project: GerritProject) {
+        pendingCloneUrl = gerritAccountManager.cloneUrl(project.name)
+        pendingCloneName = project.name.substringAfterLast('/').ifBlank { project.name }
     }
 
     private fun doClone(url: String, folderName: String, destination: File, key: String? = null) {

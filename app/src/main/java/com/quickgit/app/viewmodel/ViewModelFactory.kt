@@ -63,6 +63,7 @@ class ViewModelFactory(private val app: Application) : ViewModelProvider.Factory
                 BrowseGitHubViewModel(
                     gitApp.gitHubAccountManager,
                     gitApp.gitLabAccountManager,
+                    gitApp.gerritAccountManager,
                     gitApp.repoManager,
                     app
                 )
