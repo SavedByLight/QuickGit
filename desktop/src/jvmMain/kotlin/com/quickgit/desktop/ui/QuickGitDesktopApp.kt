@@ -3181,6 +3181,88 @@ fun ReleasesTab(
                     } else {
                         Text("No assets", color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
+
+                    // Source code archives (zipball / tarball)
+                    if (!rel.zipballUrl.isNullOrBlank() || !rel.tarballUrl.isNullOrBlank()) {
+                        Spacer(Modifier.height(16.dp))
+                        Text("Source code", fontWeight = FontWeight.SemiBold)
+                        Spacer(Modifier.height(8.dp))
+                        val or = ownerRepo
+                        val safeTag = rel.tagName.replace(Regex("[^A-Za-z0-9._-]+"), "_").ifBlank { "source" }
+                        val baseName = (or?.let { "${it.repo}-$safeTag" } ?: safeTag)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            if (!rel.zipballUrl.isNullOrBlank()) {
+                                var zipDownloading by remember(rel.id) { mutableStateOf(false) }
+                                OutlinedButton(
+                                    onClick = {
+                                        val url = rel.zipballUrl ?: return@OutlinedButton
+                                        scope.launch {
+                                            zipDownloading = true
+                                            val destDir = java.io.File(
+                                                System.getProperty("user.home"),
+                                                "Downloads/QuickGit"
+                                            )
+                                            destDir.mkdirs()
+                                            val dest = java.io.File(destDir, "$baseName.zip")
+                                            val r = withContext(Dispatchers.IO) {
+                                                githubApi.downloadSourceArchive(url, dest)
+                                            }
+                                            zipDownloading = false
+                                            r.fold(
+                                                { onMessage("Saved to ${it.absolutePath}") },
+                                                { onMessage("Download failed: ${it.message}") }
+                                            )
+                                        }
+                                    },
+                                    enabled = !zipDownloading
+                                ) {
+                                    if (zipDownloading) {
+                                        CircularProgressIndicator(
+                                            Modifier.size(16.dp),
+                                            strokeWidth = 2.dp
+                                        )
+                                    } else {
+                                        Text("zip")
+                                    }
+                                }
+                            }
+                            if (!rel.tarballUrl.isNullOrBlank()) {
+                                var tarDownloading by remember(rel.id) { mutableStateOf(false) }
+                                OutlinedButton(
+                                    onClick = {
+                                        val url = rel.tarballUrl ?: return@OutlinedButton
+                                        scope.launch {
+                                            tarDownloading = true
+                                            val destDir = java.io.File(
+                                                System.getProperty("user.home"),
+                                                "Downloads/QuickGit"
+                                            )
+                                            destDir.mkdirs()
+                                            val dest = java.io.File(destDir, "$baseName.tar.gz")
+                                            val r = withContext(Dispatchers.IO) {
+                                                githubApi.downloadSourceArchive(url, dest)
+                                            }
+                                            tarDownloading = false
+                                            r.fold(
+                                                { onMessage("Saved to ${it.absolutePath}") },
+                                                { onMessage("Download failed: ${it.message}") }
+                                            )
+                                        }
+                                    },
+                                    enabled = !tarDownloading
+                                ) {
+                                    if (tarDownloading) {
+                                        CircularProgressIndicator(
+                                            Modifier.size(16.dp),
+                                            strokeWidth = 2.dp
+                                        )
+                                    } else {
+                                        Text("tar.gz")
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

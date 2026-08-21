@@ -753,6 +753,67 @@ class GitHubApi(private val token: String?) {
         throw java.io.IOException("Too many redirects downloading asset")
     }
 
+    /**
+     * Download a source archive (zipball or tarball) for a release/tag.
+     * [archiveUrl] is typically [Release.zipballUrl] or [Release.tarballUrl]
+     * (e.g. https://api.github.com/repos/owner/repo/zipball/v1.0.0).
+     * Uses the configured token so private repos work.
+     */
+    fun downloadSourceArchive(
+        archiveUrl: String,
+        destFile: java.io.File,
+        onProgress: ((Long) -> Unit)? = null
+    ): Result<java.io.File> = runCatching {
+        if (archiveUrl.isBlank()) throw java.io.IOException("Empty archive URL")
+        destFile.parentFile?.mkdirs()
+        var currentUrl = java.net.URL(archiveUrl)
+        var redirects = 0
+        while (redirects < 8) {
+            val conn = currentUrl.openConnection() as java.net.HttpURLConnection
+            try {
+                conn.instanceFollowRedirects = false
+                conn.requestMethod = "GET"
+                conn.connectTimeout = 30_000
+                conn.readTimeout = 300_000
+                conn.setRequestProperty("Accept", "application/vnd.github+json")
+                conn.setRequestProperty("X-GitHub-Api-Version", "2022-11-28")
+                if ((currentUrl.host.contains("github.com") || currentUrl.host.contains("githubusercontent.com"))
+                    && !token.isNullOrBlank()
+                ) {
+                    conn.setRequestProperty("Authorization", "Bearer $token")
+                }
+                val status = conn.responseCode
+                if (status in 300..399) {
+                    val location = conn.getHeaderField("Location")
+                        ?: throw java.io.IOException("Redirect without Location")
+                    currentUrl = java.net.URL(currentUrl, location)
+                    redirects++
+                    continue
+                }
+                if (status !in 200..299) {
+                    throw java.io.IOException("Source archive download failed HTTP $status")
+                }
+                conn.inputStream.use { input ->
+                    java.io.BufferedOutputStream(java.io.FileOutputStream(destFile)).use { out ->
+                        val buf = ByteArray(64 * 1024)
+                        var total = 0L
+                        while (true) {
+                            val n = input.read(buf)
+                            if (n <= 0) break
+                            out.write(buf, 0, n)
+                            total += n
+                            onProgress?.invoke(total)
+                        }
+                    }
+                }
+                return@runCatching destFile
+            } finally {
+                conn.disconnect()
+            }
+        }
+        throw java.io.IOException("Too many redirects downloading source archive")
+    }
+
     private fun JSONObject.toRelease(): Release {
         val assetsArr = optJSONArray("assets")
         val assets = if (assetsArr == null) emptyList() else (0 until assetsArr.length()).map { i ->
