@@ -113,12 +113,20 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         }
     }
 
-    /** Force GC + finalization so SoftReferenced WindowCache Inflater instances are released. */
+    /**
+     * Force GC + finalization so SoftReferenced WindowCache Inflater instances are released.
+     * Also reinstalls a fresh WindowCacheConfig so the next pack open cannot reuse a closed
+     * Inflater left in a static SoftReference table (the usual Android 11+ failure mode).
+     */
     private fun releaseJGitSoftRefs() {
         try {
             System.gc()
             System.runFinalization()
             System.gc()
+            // Brief yield so the concurrent-mark GC can actually reclaim SoftRefs before
+            // the next pack open. Without this, materialize retries often fail in <1s.
+            try { Thread.sleep(150) } catch (_: InterruptedException) {}
+            installJGitMemoryLimits()
         } catch (_: Exception) {
         }
     }
@@ -815,16 +823,17 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                         // Apply mobile config BEFORE checkout so the index/working tree
                         // are not compared using desktop filemode/symlink rules.
                         applyMobileRepoConfig(git)
-
-                        // After setNoCheckout(true), materialize the working tree.
-                        // Do NOT treat "HEAD resolves to null" as empty by itself — large
-                        // GitLab dumps sometimes leave HEAD unborn while origin/ remote refs and
-                        // pack objects exist; skipping checkout then yields pull failures
-                        // ("did not advertise Ref for branch main") and checkout conflicts.
-                        materializeWorkingTreeAfterClone(git, destination, onProgress)
                     } finally {
-                        git.close()
+                        // Always close before materialize. Reusing the same Git/Repository
+                        // after an Inflater race keeps poisoned WindowCache SoftRefs alive
+                        // and makes every local retry fail instantly.
+                        try { git.close() } catch (_: Exception) {}
                     }
+                    // After setNoCheckout(true), materialize the working tree with its own
+                    // open/close cycle per attempt. Do NOT treat "HEAD resolves to null" as
+                    // empty by itself — large GitLab dumps sometimes leave HEAD unborn while
+                    // origin/ remote refs and pack objects exist.
+                    materializeWorkingTreeAfterClone(destination, onProgress)
                 }
                 ensureMobileRepoConfig(destination.absolutePath)
                 // Prefer the remote's actual default branch (origin/HEAD) over JGit/legacy
@@ -1964,39 +1973,43 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
      * Prefer HEAD when it points at a real commit. Otherwise use origin/HEAD or any
      * origin/ remote-tracking ref so we never skip checkout when pack objects already exist
      * (common failure mode on large GitLab repos that left HEAD unborn).
+     *
+     * Each attempt opens a **fresh** [Git] instance. Reusing a Repository after an
+     * "Inflater has been closed" leaves SoftReferenced pack windows in a dead state;
+     * only close + GC + reinstall WindowCache + reopen recovers on Android 11+.
      */
     private fun materializeWorkingTreeAfterClone(
-        git: Git,
         destination: File,
         onProgress: (String) -> Unit
     ) {
-        val repo = git.repository
-        val headId = try {
-            repo.resolve(org.eclipse.jgit.lib.Constants.HEAD)
-        } catch (_: Exception) {
-            null
-        }
-
-        fun remoteTrackingTips(): List<org.eclipse.jgit.lib.Ref> =
-            try {
-                repo.refDatabase.getRefsByPrefix("refs/remotes/origin/")
-                    .filter { !it.name.endsWith("/HEAD") }
-                    .sortedBy { it.name }
+        // Resolve which ref to check out using a short-lived open (ref DB only).
+        val resetRef: String? = openGit(destination.absolutePath).use { probe ->
+            val repo = probe.repository
+            val headId = try {
+                repo.resolve(org.eclipse.jgit.lib.Constants.HEAD)
             } catch (_: Exception) {
-                emptyList()
+                null
             }
-
-        val resetRef: String? = when {
-            headId != null -> "HEAD"
-            else -> {
-                val originHead = repo.findRef("refs/remotes/origin/HEAD")
-                val fromSym = when {
-                    originHead != null && originHead.isSymbolic -> originHead.target.name
-                    originHead != null -> originHead.name
-                    else -> null
+            fun remoteTrackingTips(): List<org.eclipse.jgit.lib.Ref> =
+                try {
+                    repo.refDatabase.getRefsByPrefix("refs/remotes/origin/")
+                        .filter { !it.name.endsWith("/HEAD") }
+                        .sortedBy { it.name }
+                } catch (_: Exception) {
+                    emptyList()
                 }
-                fromSym?.takeIf { repo.resolve(it) != null }
-                    ?: remoteTrackingTips().firstOrNull()?.name
+            when {
+                headId != null -> "HEAD"
+                else -> {
+                    val originHead = repo.findRef("refs/remotes/origin/HEAD")
+                    val fromSym = when {
+                        originHead != null && originHead.isSymbolic -> originHead.target.name
+                        originHead != null -> originHead.name
+                        else -> null
+                    }
+                    fromSym?.takeIf { repo.resolve(it) != null }
+                        ?: remoteTrackingTips().firstOrNull()?.name
+                }
             }
         }
 
@@ -2006,64 +2019,115 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
             return
         }
 
-        if (resetRef != "HEAD") {
-            val short = resetRef.removePrefix("refs/remotes/origin/")
-            val local = repo.findRef("refs/heads/$short")
-            if (local == null && short.isNotBlank()) {
-                try {
-                    git.checkout()
-                        .setCreateBranch(true)
-                        .setName(short)
-                        .setUpstreamMode(CreateBranchCommand.SetupUpstreamMode.TRACK)
-                        .setStartPoint(resetRef)
-                        .call()
-                    AppLog.i(TAG, "clone: created local branch '$short' from $resetRef")
-                } catch (e: Exception) {
-                    // Inflater races during branch create must bubble so the outer clone
-                    // retry loop can reinstall WindowCache and re-open the repo. Other
-                    // failures are non-fatal (we'll still try hard-reset below).
-                    if (isInflaterRace(e)) throw e
-                    AppLog.w(TAG, "clone: could not create branch '$short': ${e.message}")
-                }
-            }
-        }
-
         onProgress("Checking out files (large trees can take a while)…")
-        val hardRef = if (resetRef == "HEAD") {
-            "HEAD"
-        } else {
-            val short = resetRef.removePrefix("refs/remotes/origin/")
-            if (repo.findRef("refs/heads/$short") != null) short else resetRef
-        }
-        // Local retries for HARD reset: large trees on Android frequently hit
-        // "Inflater has been closed" mid-checkout; a short inner loop with GC +
-        // WindowCache reinstall often succeeds without burning an outer clone attempt.
-        val materializeAttempts = 4
+        val materializeAttempts = 6
         var lastMatErr: Exception? = null
         for (mAttempt in 1..materializeAttempts) {
+            if (mAttempt > 1) {
+                installJGitMemoryLimits()
+                releaseJGitSoftRefs()
+                // Longer pause on later attempts — SoftRefs need wall-clock time to clear
+                // under concurrent GC pressure from the rest of the app (org repo fetches).
+                try { Thread.sleep(700L * mAttempt) } catch (_: InterruptedException) {}
+                onProgress("Retrying checkout (local $mAttempt/$materializeAttempts)…")
+                AppLog.w(TAG, "materialize retry $mAttempt/$materializeAttempts after: ${lastMatErr?.message}")
+            }
+            var session: Git? = null
             try {
-                if (mAttempt > 1) {
-                    installJGitMemoryLimits()
-                    releaseJGitSoftRefs()
-                    try { Thread.sleep(400L * mAttempt) } catch (_: InterruptedException) {}
-                    onProgress("Retrying checkout (local $mAttempt/$materializeAttempts)…")
-                    AppLog.w(TAG, "materialize retry $mAttempt/$materializeAttempts after: ${lastMatErr?.message}")
+                installJGitMemoryLimits()
+                session = openGit(destination.absolutePath)
+                val repo = session.repository
+                applyMobileRepoConfig(session)
+
+                // Ensure a local branch exists. Prefer a pure RefUpdate when the tip
+                // ObjectId is already known — avoids an extra pack walk that can hit
+                // the Inflater race before the real checkout.
+                val hardRef: String = if (resetRef == "HEAD") {
+                    "HEAD"
+                } else {
+                    val short = resetRef.removePrefix("refs/remotes/origin/")
+                    if (repo.findRef("refs/heads/$short") == null && short.isNotBlank()) {
+                        val startId = try { repo.resolve(resetRef) } catch (_: Exception) { null }
+                        if (startId != null) {
+                            try {
+                                val ru = repo.updateRef("refs/heads/$short")
+                                ru.setNewObjectId(startId)
+                                ru.setRefLogMessage("clone: create $short", false)
+                                ru.update()
+                                // Track upstream when possible (best-effort).
+                                try {
+                                    val cfg = repo.config
+                                    cfg.setString("branch", short, "remote", "origin")
+                                    cfg.setString("branch", short, "merge", "refs/heads/$short")
+                                    cfg.save()
+                                } catch (_: Exception) {}
+                                AppLog.i(TAG, "clone: created local branch '$short' via RefUpdate from $resetRef")
+                            } catch (e: Exception) {
+                                if (isInflaterRace(e)) throw e
+                                // Fallback to CheckoutCommand create-branch path.
+                                try {
+                                    session.checkout()
+                                        .setCreateBranch(true)
+                                        .setName(short)
+                                        .setUpstreamMode(CreateBranchCommand.SetupUpstreamMode.TRACK)
+                                        .setStartPoint(resetRef)
+                                        .call()
+                                    AppLog.i(TAG, "clone: created local branch '$short' via checkout from $resetRef")
+                                } catch (e2: Exception) {
+                                    if (isInflaterRace(e2)) throw e2
+                                    AppLog.w(TAG, "clone: could not create branch '$short': ${e2.message}")
+                                }
+                            }
+                        } else {
+                            try {
+                                session.checkout()
+                                    .setCreateBranch(true)
+                                    .setName(short)
+                                    .setUpstreamMode(CreateBranchCommand.SetupUpstreamMode.TRACK)
+                                    .setStartPoint(resetRef)
+                                    .call()
+                                AppLog.i(TAG, "clone: created local branch '$short' from $resetRef")
+                            } catch (e: Exception) {
+                                if (isInflaterRace(e)) throw e
+                                AppLog.w(TAG, "clone: could not create branch '$short': ${e.message}")
+                            }
+                        }
+                    }
+                    if (repo.findRef("refs/heads/$short") != null) short else resetRef
                 }
-                git.reset()
-                    .setMode(org.eclipse.jgit.api.ResetCommand.ResetType.HARD)
-                    .setRef(hardRef)
-                    .setProgressMonitor(TextProgress(onProgress))
-                    .call()
+
+                // Prefer CheckoutCommand (force) over Reset HARD — different JGit code path
+                // and often more resilient under SoftRef eviction on Android.
+                try {
+                    session.checkout()
+                        .setName(hardRef)
+                        .setForced(true)
+                        .setProgressMonitor(TextProgress(onProgress))
+                        .call()
+                } catch (e: Exception) {
+                    if (isInflaterRace(e)) throw e
+                    // Fallback to reset --hard if checkout path fails for other reasons.
+                    session.reset()
+                        .setMode(org.eclipse.jgit.api.ResetCommand.ResetType.HARD)
+                        .setRef(hardRef)
+                        .setProgressMonitor(TextProgress(onProgress))
+                        .call()
+                }
                 lastMatErr = null
-                break
+                onProgress("Working tree ready")
+                AppLog.i(TAG, "clone: materialized working tree at $hardRef")
+                return
             } catch (e: Exception) {
                 lastMatErr = e
-                if (!isInflaterRace(e) || mAttempt == materializeAttempts) throw e
+                AppLog.w(TAG, "materialize attempt $mAttempt failed: ${e.message}")
+                if (!isInflaterRace(e) || mAttempt == materializeAttempts) {
+                    throw e
+                }
+            } finally {
+                try { session?.close() } catch (_: Exception) {}
             }
         }
-        if (lastMatErr != null) throw lastMatErr
-        onProgress("Working tree ready")
-        AppLog.i(TAG, "clone: materialized working tree at $hardRef")
+        throw lastMatErr ?: IllegalStateException("materialize failed")
     }
 
     /**
