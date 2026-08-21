@@ -69,11 +69,16 @@ class GerritAccountManager(private val credentialStore: DesktopCredentialStore) 
         }
     }
 
-    fun listProjects(h: String = host, query: String? = "state:ACTIVE"): Result<List<GerritProject>> {
+    fun listProjects(
+        h: String = host,
+        query: String? = "state:ACTIVE",
+        limit: Int = 100,
+        start: Int = 0
+    ): Result<List<GerritProject>> {
         if (h.isBlank()) return Result.failure(IllegalStateException("No Gerrit host connected"))
         val user = credentialStore.getHttpsUsername(h)
         val pass = credentialStore.getHttpsToken(h)
-        return GerritApi(h, user, pass).listProjects(query)
+        return GerritApi(h, user, pass).listProjects(query, limit = limit, start = start)
     }
 
     fun cloneUrl(projectName: String, h: String = host): String? {

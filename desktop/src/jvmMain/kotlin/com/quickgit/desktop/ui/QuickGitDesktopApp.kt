@@ -3479,7 +3479,10 @@ fun BrowseAccountScreen(
     // ---- Gerrit state ----
     var grProjects by remember { mutableStateOf<List<GerritProject>>(emptyList()) }
     var grLoading by remember { mutableStateOf(false) }
+    var grLoadingMore by remember { mutableStateOf(false) }
     var grLoaded by remember { mutableStateOf(false) }
+    var grHasMore by remember { mutableStateOf(false) }
+    var grStart by remember { mutableStateOf(0) }
 
     fun loadGitHubRepos(org: String?, reset: Boolean = true) {
         if (!githubConnected) return
@@ -3559,24 +3562,37 @@ fun BrowseAccountScreen(
         }
     }
 
-    fun loadGerritProjects() {
+    fun loadGerritProjects(reset: Boolean = true) {
         if (!gerritConnected) return
         scope.launch {
-            grLoading = true
+            if (reset) {
+                grLoading = true
+                grStart = 0
+                grProjects = emptyList()
+            } else {
+                grLoadingMore = true
+            }
+            val start = if (reset) 0 else grStart
             val q = if (query.isBlank()) "state:ACTIVE" else "state:ACTIVE $query"
-            val result = withContext(Dispatchers.IO) { gerritMgr.listProjects(gerritHost, q) }
+            val result = withContext(Dispatchers.IO) {
+                gerritMgr.listProjects(gerritHost, q, limit = pageSize, start = start)
+            }
             result.fold(
                 onSuccess = { list ->
-                    grProjects = if (query.isBlank()) list
+                    val batch = if (query.isBlank()) list
                     else list.filter {
                         it.name.contains(query, true) ||
                             (it.description?.contains(query, true) == true)
                     }
+                    grProjects = if (reset) batch else grProjects + batch
+                    grStart = start + list.size
+                    grHasMore = list.size >= pageSize
                     grLoaded = true
                 },
                 onFailure = { onMessage("Failed to list Gerrit projects: ${it.message}") }
             )
             grLoading = false
+            grLoadingMore = false
         }
     }
 
@@ -3589,7 +3605,7 @@ fun BrowseAccountScreen(
                 }
             }
             BrowseDesktopTab.GITLAB -> if (!glLoaded && gitlabConnected) loadGitLabProjects(true)
-            BrowseDesktopTab.GERRIT -> if (!grLoaded && gerritConnected) loadGerritProjects()
+            BrowseDesktopTab.GERRIT -> if (!grLoaded && gerritConnected) loadGerritProjects(true)
         }
     }
 
@@ -3694,7 +3710,7 @@ fun BrowseAccountScreen(
                     }
                     BrowseDesktopTab.GERRIT -> {
                         grLoaded = false
-                        loadGerritProjects()
+                        loadGerritProjects(true)
                     }
                 }
             },
@@ -4029,6 +4045,23 @@ fun BrowseAccountScreen(
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         modifier = Modifier.padding(16.dp)
                                     )
+                                }
+                            }
+                            if (grHasMore) {
+                                item {
+                                    Box(
+                                        Modifier.fillMaxWidth().padding(vertical = 12.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        if (grLoadingMore) {
+                                            CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
+                                        } else {
+                                            OutlinedButton(
+                                                onClick = { loadGerritProjects(reset = false) },
+                                                enabled = !grLoadingMore && !grLoading
+                                            ) { Text("Load more") }
+                                        }
+                                    }
                                 }
                             }
                         }

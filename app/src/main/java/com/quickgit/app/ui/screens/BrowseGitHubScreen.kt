@@ -269,9 +269,9 @@ fun BrowseGitHubScreen(
                         empty = state.gerritProjects.isEmpty() && state.gerritLoaded && !state.loading,
                         emptyText = if (!state.gerritConnected) "Connect Gerrit under Credentials."
                         else "No Gerrit projects match.",
-                        loadingMore = false,
-                        hasMore = false,
-                        onLoadMore = {}
+                        loadingMore = state.loadingMore,
+                        hasMore = state.gerritHasMore,
+                        onLoadMore = { vm.loadMore() }
                     ) {
                         items(state.gerritProjects, key = { "gr-${it.id}" }) { project ->
                             RemoteRepoRow(

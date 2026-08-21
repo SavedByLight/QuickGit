@@ -94,11 +94,16 @@ class GerritAccountManager(private val credentialStore: CredentialStore) {
         }
     }
 
-    fun listProjects(h: String = host, query: String? = "state:ACTIVE"): Pair<List<GerritProject>, PrOpResult> {
+    fun listProjects(
+        h: String = host,
+        query: String? = "state:ACTIVE",
+        limit: Int = 100,
+        start: Int = 0
+    ): Pair<List<GerritProject>, PrOpResult> {
         if (h.isBlank()) return emptyList<GerritProject>() to PrOpResult.Error("No Gerrit host connected")
         val user = credentialStore.getHttpsUsername(h)
         val pass = credentialStore.getHttpsToken(h)
-        val result = GerritApi(h, user, pass).listProjects(query)
+        val result = GerritApi(h, user, pass).listProjects(query, limit = limit, start = start)
         return result.getOrElse { emptyList() } to result.toPrOpResult(h)
     }
 

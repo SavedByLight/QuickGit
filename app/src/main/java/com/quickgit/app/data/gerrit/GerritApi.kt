@@ -59,7 +59,14 @@ class GerritApi(
      * @param query optional filter. Supports `state:ACTIVE` (etc.) and free-text substring.
      *              Examples: null/"state:ACTIVE", "state:ACTIVE foo", "android"
      */
-    fun listProjects(query: String? = "state:ACTIVE", limit: Int = 100): Result<List<GerritProject>> =
+    /**
+     * @param start skip the first [start] projects (Gerrit `S` / `start` query param).
+     */
+    fun listProjects(
+        query: String? = "state:ACTIVE",
+        limit: Int = 100,
+        start: Int = 0
+    ): Result<List<GerritProject>> =
         runCatching {
             val raw = query?.trim().orEmpty()
             val stateRegex = Regex("""(?i)\bstate:(ACTIVE|READ_ONLY|HIDDEN)\b""")
@@ -70,6 +77,7 @@ class GerritApi(
 
             val path = buildString {
                 append("/a/projects/?d&n=$limit")
+                if (start > 0) append("&S=$start")
                 if (state != null) append("&state=").append(state)
                 if (substring != null) {
                     append("&m=").append(URLEncoder.encode(substring, "UTF-8"))

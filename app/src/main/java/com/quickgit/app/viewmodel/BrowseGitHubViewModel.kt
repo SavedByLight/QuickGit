@@ -47,6 +47,9 @@ data class BrowseGitHubUiState(
     val gitlabPage: Int = 0,
     val githubHasMore: Boolean = false,
     val gitlabHasMore: Boolean = false,
+    val gerritHasMore: Boolean = false,
+    /** Offset into the Gerrit project list (Gerrit `S` param). */
+    val gerritStart: Int = 0,
     val githubLoaded: Boolean = false,
     val gitlabLoaded: Boolean = false,
     val gerritLoaded: Boolean = false,
@@ -190,7 +193,7 @@ class BrowseGitHubViewModel(
         val hasMore = when (tab) {
             BrowseProviderTab.GITHUB -> _state.value.githubHasMore
             BrowseProviderTab.GITLAB -> _state.value.gitlabHasMore
-            BrowseProviderTab.GERRIT -> false // Gerrit list is a single fetch
+            BrowseProviderTab.GERRIT -> _state.value.gerritHasMore
         }
         if (!hasMore || _state.value.loadingMore || _state.value.loading) return
         loadPage(tab, reset = false)
@@ -207,7 +210,7 @@ class BrowseGitHubViewModel(
             when (tab) {
                 BrowseProviderTab.GITHUB -> loadGitHubPage(q, reset)
                 BrowseProviderTab.GITLAB -> loadGitLabPage(q, reset)
-                BrowseProviderTab.GERRIT -> loadGerritPage(q)
+                BrowseProviderTab.GERRIT -> loadGerritPage(q, reset)
             }
         }
     }
@@ -305,7 +308,7 @@ class BrowseGitHubViewModel(
         return null
     }
 
-    private suspend fun loadGerritPage(query: String) {
+    private suspend fun loadGerritPage(query: String, reset: Boolean) {
         if (!_state.value.gerritConnected) {
             _state.value = _state.value.copy(loading = false, loadingMore = false, gerritLoaded = true)
             return
@@ -318,10 +321,11 @@ class BrowseGitHubViewModel(
             )
             return
         }
+        val start = if (reset) 0 else _state.value.gerritStart
         // Gerrit project query: keep ACTIVE and optionally narrow by user text
         val gerritQuery = if (query.isBlank()) "state:ACTIVE" else "state:ACTIVE $query"
         val (projects, result) = withContext(Dispatchers.IO) {
-            gerritAccountManager.listProjects(h, gerritQuery)
+            gerritAccountManager.listProjects(h, gerritQuery, limit = PAGE_SIZE, start = start)
         }
         when (result) {
             is PrOpResult.AuthRequired -> _state.value = _state.value.copy(
@@ -337,10 +341,13 @@ class BrowseGitHubViewModel(
                     it.name.contains(query, ignoreCase = true) ||
                         (it.description?.contains(query, ignoreCase = true) == true)
                 }
+                val merged = if (reset) filtered else _state.value.gerritProjects + filtered
                 _state.value = _state.value.copy(
                     loading = false,
                     loadingMore = false,
-                    gerritProjects = filtered,
+                    gerritProjects = merged,
+                    gerritStart = start + projects.size,
+                    gerritHasMore = projects.size >= PAGE_SIZE,
                     gerritLoaded = true,
                     gerritHost = h,
                     gerritUsername = gerritAccountManager.storedUsername(h)
