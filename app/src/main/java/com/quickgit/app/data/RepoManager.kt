@@ -157,9 +157,9 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
      * JGit's LockFile.commit() does one atomic rename (config.lock -> config, etc.) and, on
      * Unix/Android (FS_POSIX.retryFailedLockFileCommit() == false), does NOT retry on failure —
      * unlike Windows, which retries up to 9x to dodge transient AV/indexer locks. On public
-     * storage (Documents/...) this can be flaky under MediaProvider/FUSE; [cloneIntoStaging]
-     * retries and [clearStaleGitLockFiles] clears leftover *.lock files between attempts.
-     * Clones go directly to the final Documents path (no private-staging + copy).
+     * storage this can be flaky under MediaProvider/FUSE; [cloneIntoStaging] retries and
+     * [clearStaleGitLockFiles] clears leftover *.lock files between attempts. Default
+     * [reposRoot] is app internal files (fastest); user may still pick a public folder.
      */
     private fun isLockFileCommitRace(e: Throwable): Boolean {
         var t: Throwable? = e
@@ -240,22 +240,15 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     }
 
     /**
-     * Local clones live under Documents/QuickGit so they are visible in the
-     * system file manager. Falls back to app-specific external storage if the
-     * public Documents tree isn't actually writable (scoped storage on API 30+,
-     * or missing permission below that) — see [resolveReposRoot].
+     * Local clones live under the app **internal** files dir by default:
+     * `context.filesDir/repos/` — fastest path for JGit (real ext4/f2fs, no
+     * FUSE/MediaProvider). Only this app can read it without root; cleared on
+     * uninstall. Use Settings → pick folder (SAF) for Documents or another
+     * shared path if the user needs external visibility.
      *
-     * The user can override this from Settings by picking a folder via SAF
-     * (see [setReposRootFromTree]); that choice is what actually fixes the
-     * "external file manager can't reach the repo" problem, since it lets the
-     * user point QuickGit at a folder they can *also* browse to directly.
-     *
-     * Both the override and the auto-detected default are resolved once and
-     * cached — re-checking on every access let the two auto-detected roots
-     * flip mid-session (canWrite() is racy under scoped storage), which made
-     * JGit's index see files as missing right after a resolve, showing up in
-     * the UI as every file being "deleted". A real probe write, done once,
-     * avoids both problems.
+     * Override and default are resolved once and cached — re-checking on every
+     * access could flip roots mid-session under scoped storage and make JGit
+     * see files as missing. A real probe write validates user overrides.
      */
     var reposRoot: File = readStoredOverride() ?: resolveReposRoot()
         private set
@@ -537,19 +530,18 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         }
     }
 
+    /**
+     * Default root: app internal storage (`context.filesDir/repos`). Fastest
+     * git I/O on device; not visible to other apps without root.
+     */
     private fun resolveReposRoot(): File {
-        val publicRoot = File(
-            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS),
-            "QuickGit"
-        )
-        val usablePublic = try {
-            if (!publicRoot.exists() && !publicRoot.mkdirs()) false
-            else publicRoot.isDirectory && canActuallyWrite(publicRoot)
+        val root = File(context.filesDir, "repos")
+        try {
+            if (!root.exists()) root.mkdirs()
         } catch (_: Exception) {
-            false
         }
-        AppLog.i(TAG, "reposRoot: public Documents/QuickGit usable=$usablePublic")
-        return if (usablePublic) publicRoot else fallbackReposRoot()
+        AppLog.i(TAG, "reposRoot: app internal files/repos path=${root.absolutePath}")
+        return root
     }
 
     /**
@@ -567,13 +559,6 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
             probe.delete()
             false
         }
-    }
-
-    private fun fallbackReposRoot(): File {
-        val base = context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS)
-            ?: context.getExternalFilesDir(null)
-            ?: context.filesDir
-        return File(base, "QuickGit").apply { mkdirs() }
     }
 
     private val sshFactory by lazy { SshSupport.buildSessionFactory(context, credentialStore) }
@@ -643,7 +628,7 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         onProgress: (String) -> Unit = {}
     ): GitOpResult = cloneRepo(url, File(reposRoot, folderName), depth, onProgress)
 
-    /** Clones into an explicit [destination], e.g. Documents/QuickGit/<name> or a user-picked folder. */
+    /** Clones into an explicit [destination], e.g. under [reposRoot] or a user-picked folder. */
     fun cloneRepo(
         url: String,
         destination: File,
@@ -657,10 +642,9 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         val alreadyExisted = destination.exists()
         val cloneUrl = normalizeCloneUrl(url)
 
-        // Clone directly into the final location (Documents/QuickGit by default). No
-        // app-private staging + multi-GB copy afterward — that doubled disk use and time
-        // on large dumps. Lock-file races on scoped storage are handled by retries in
-        // cloneIntoStaging / clearStaleGitLockFiles.
+        // Clone directly into the final location (app internal files/repos by default).
+        // Lock-file races on slower public paths (if the user overrode reposRoot) are
+        // handled by retries in cloneIntoStaging / clearStaleGitLockFiles.
         destination.parentFile?.mkdirs()
         if (!destination.exists() && !destination.mkdirs()) {
             return GitOpResult.Error("Could not create folder: ${destination.absolutePath}")
@@ -682,8 +666,8 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     }
 
     /**
-     * Does the actual JGit clone + checkout + LFS fetch into [destination] (the final
-     * Documents path, or any user-picked folder). Retry logic handles Inflater SoftRef
+     * Does the actual JGit clone + checkout + LFS fetch into [destination] (under
+     * [reposRoot] or any user-picked folder). Retry logic handles Inflater SoftRef
      * races under memory pressure and occasional lock-file commit races on scoped storage.
      */
     private fun cloneIntoStaging(
