@@ -77,12 +77,12 @@ fun RepoListScreen(
         uri?.let { vm.importFromTree(it) }
     }
 
-    // Re-scan after clone/settings: ViewModel stays alive on the back stack, so init{}
-    // only runs once. Refresh whenever this screen is shown again.
+    // ViewModel stays alive on the back stack, so init{} only runs once. Re-scan only when
+    // a clone marked the list dirty — not on every resume (settings, profile, etc.).
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) vm.refresh()
+            if (event == Lifecycle.Event.ON_RESUME) vm.refreshIfDirty()
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }

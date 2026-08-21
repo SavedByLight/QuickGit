@@ -48,6 +48,24 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
 
     private val repoOperationLocks = ConcurrentHashMap<String, Any>()
 
+    /**
+     * Set when a local clone (or similar) changes the on-disk repo set.
+     * [RepoListViewModel] only re-scans when this is true, not on every resume.
+     */
+    @Volatile
+    private var localReposDirty: Boolean = false
+
+    fun markLocalReposChanged() {
+        localReposDirty = true
+    }
+
+    /** Returns true once if the list should be re-scanned, then clears the flag. */
+    fun consumeLocalReposDirty(): Boolean {
+        if (!localReposDirty) return false
+        localReposDirty = false
+        return true
+    }
+
     private val prefs: SharedPreferences =
         context.getSharedPreferences("quickgit_prefs", Context.MODE_PRIVATE)
 
@@ -607,6 +625,7 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
             moveDirectory(staging, destination)
             rememberExternalRepoPath(destination)
             AppLog.i(TAG, "clone: moved staged clone into place: ${destination.absolutePath}")
+            markLocalReposChanged()
             GitOpResult.Success
         } catch (e: Exception) {
             AppLog.e(TAG, "clone: failed to move staged clone into place: ${destination.absolutePath}", e)

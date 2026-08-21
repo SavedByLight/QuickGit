@@ -63,6 +63,13 @@ class RepoListViewModel(
         }
     }
 
+    /** Re-scan local repos only if a clone marked the list dirty (not on every resume). */
+    fun refreshIfDirty() {
+        if (repoManager.consumeLocalReposDirty()) {
+            refresh()
+        }
+    }
+
     private fun loadAccount() {
         if (!accountManager.isConnected()) {
             _account.value = null
