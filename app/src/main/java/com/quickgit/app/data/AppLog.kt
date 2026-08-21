@@ -17,7 +17,16 @@ data class LogEntry(
     val message: String
 ) {
     val formattedTime: String
-        get() = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date(timestampMillis))
+        get() = TIME_FMT.format(Date(timestampMillis))
+
+    /** Single line suitable for export / file dump. */
+    val formattedLine: String
+        get() = "${FULL_FMT.format(Date(timestampMillis))} ${level.name} [$tag] $message"
+
+    companion object {
+        private val TIME_FMT = SimpleDateFormat("HH:mm:ss", Locale.US)
+        private val FULL_FMT = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US)
+    }
 }
 
 /**
@@ -39,6 +48,21 @@ object AppLog {
 
     fun clear() {
         _entries.value = emptyList()
+    }
+
+    /** Full text of the current ring buffer (for copy / save-to-file). */
+    fun dumpText(): String = synchronized(this) {
+        _entries.value.joinToString("\n") { it.formattedLine }
+    }
+
+    /**
+     * Write the current log buffer to [target]. Parent directories are created if needed.
+     * Useful for app-private files; prefer SAF [CreateDocument] from the UI for user-visible paths.
+     */
+    fun saveToFile(target: java.io.File): Result<java.io.File> = runCatching {
+        target.parentFile?.mkdirs()
+        target.writeText(dumpText())
+        target
     }
 
     private fun add(tag: String, level: LogLevel, message: String) {
