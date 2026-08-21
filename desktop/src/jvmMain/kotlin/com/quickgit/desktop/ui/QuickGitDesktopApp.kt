@@ -3414,9 +3414,9 @@ fun CloneScreen(
     }
 }
 
-@Composable
 private enum class BrowseDesktopTab { GITHUB, GITLAB, GERRIT }
 
+@Composable
 fun BrowseAccountScreen(
     credentialStore: DesktopCredentialStore,
     githubApi: GitHubApi,
