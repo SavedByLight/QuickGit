@@ -111,6 +111,13 @@ class DesktopCredentialStore {
         else put("gitlab_token", token)
     }
 
+    /** Preferred GitLab host for browse/API (gitlab.com or self-hosted). */
+    fun getPreferredGitlabHost(): String? = get("gitlab_preferred_host")?.takeIf { it.isNotBlank() }
+    fun setPreferredGitlabHost(host: String?) {
+        if (host.isNullOrBlank()) remove("gitlab_preferred_host")
+        else put("gitlab_preferred_host", host.trim().lowercase().removePrefix("https://").removePrefix("http://").trimEnd('/'))
+    }
+
     fun getAuthorName(): String? = get("author_name")
     fun setAuthorName(name: String?) {
         if (name.isNullOrBlank()) remove("author_name")

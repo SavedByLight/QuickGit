@@ -353,10 +353,13 @@ class GitLabApi(
 
     private fun JSONObject.toProject(): GitLabProject {
         val visibility = optString("visibility", "private")
+        val path = optString("path_with_namespace").ifBlank {
+            optString("path").ifBlank { optString("name", "") }
+        }
         return GitLabProject(
             id = getLong("id"),
-            name = getString("name"),
-            pathWithNamespace = getString("path_with_namespace"),
+            name = optString("name", path.substringAfterLast('/').ifBlank { "project" }),
+            pathWithNamespace = path,
             description = optString("description").takeIf { it.isNotBlank() },
             webUrl = optString("web_url", ""),
             httpUrlToRepo = optString("http_url_to_repo", ""),
@@ -438,7 +441,7 @@ class GitLabApi(
 
     private fun request(method: String, path: String, body: JSONObject? = null): Any {
         val url = URL(baseUrl + path)
-        AppLog.d(TAG, "$method $url")
+        AppLog.i(TAG, "$method $url")
         val conn = (url.openConnection() as HttpURLConnection).apply {
             requestMethod = method
             connectTimeout = 20_000

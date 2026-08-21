@@ -3427,11 +3427,12 @@ fun BrowseAccountScreen(
     val gerritMgr = remember { GerritAccountManager(credentialStore) }
     val githubToken = credentialStore.getGithubToken() ?: credentialStore.getHttpsToken("github.com")
     val githubConnected = !githubToken.isNullOrBlank()
-    // Prefer gitlab.com, then any host that has a stored HTTPS token named like gitlab
+    // Use preferred host from Credentials (self-hosted or gitlab.com). Fallback gitlab.com.
     val gitlabHost = remember {
+        val preferred = credentialStore.getPreferredGitlabHost()
         when {
+            !preferred.isNullOrBlank() -> preferred
             !credentialStore.getHttpsToken("gitlab.com").isNullOrBlank() -> "gitlab.com"
-            !credentialStore.getGitlabToken().isNullOrBlank() -> "gitlab.com"
             else -> "gitlab.com"
         }
     }
@@ -4826,9 +4827,17 @@ fun CredentialsScreen(
     var httpsHost by remember { mutableStateOf("github.com") }
     var httpsUsername by remember { mutableStateOf(credentialStore.getHttpsUsername("github.com") ?: "") }
     var httpsToken by remember { mutableStateOf(credentialStore.getHttpsToken("github.com") ?: "") }
-    var gitlabHost by remember { mutableStateOf("gitlab.com") }
-    var gitlabToken by remember { mutableStateOf(credentialStore.getHttpsToken("gitlab.com") ?: "") }
-    var gitlabUsername by remember { mutableStateOf(credentialStore.getHttpsUsername("gitlab.com") ?: "") }
+    var gitlabHost by remember {
+        mutableStateOf(credentialStore.getPreferredGitlabHost() ?: "gitlab.com")
+    }
+    var gitlabToken by remember {
+        val h = credentialStore.getPreferredGitlabHost() ?: "gitlab.com"
+        mutableStateOf(credentialStore.getHttpsToken(h) ?: credentialStore.getGitlabToken() ?: "")
+    }
+    var gitlabUsername by remember {
+        val h = credentialStore.getPreferredGitlabHost() ?: "gitlab.com"
+        mutableStateOf(credentialStore.getHttpsUsername(h) ?: "")
+    }
     var sshKey by remember { mutableStateOf(credentialStore.getSshPrivateKey() ?: "") }
     var sshPass by remember { mutableStateOf(credentialStore.getSshPassphrase() ?: "") }
 
@@ -4875,10 +4884,13 @@ fun CredentialsScreen(
         OutlinedTextField(value = gitlabUsername, onValueChange = { gitlabUsername = it }, label = { Text("Username") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
         OutlinedTextField(value = gitlabToken, onValueChange = { gitlabToken = it }, label = { Text("Personal access token") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
         Button(onClick = {
-            credentialStore.setHttpsUsername(gitlabHost, gitlabUsername.ifBlank { null })
-            credentialStore.setHttpsToken(gitlabHost, gitlabToken.ifBlank { null })
+            val host = gitlabHost.trim().removePrefix("https://").removePrefix("http://").trimEnd('/')
+                .ifBlank { "gitlab.com" }
+            credentialStore.setPreferredGitlabHost(host)
+            credentialStore.setHttpsUsername(host, gitlabUsername.ifBlank { null })
+            credentialStore.setHttpsToken(host, gitlabToken.ifBlank { null })
             credentialStore.setGitlabToken(gitlabToken.ifBlank { null })
-            onMessage("GitLab credentials saved for $gitlabHost")
+            onMessage("GitLab credentials saved for $host")
         }) { Text("Save GitLab credentials") }
 
         HorizontalDivider()
