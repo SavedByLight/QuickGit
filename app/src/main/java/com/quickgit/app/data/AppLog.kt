@@ -19,7 +19,7 @@ data class LogEntry(
     val formattedTime: String
         get() = TIME_FMT.format(Date(timestampMillis))
 
-    /** Single line suitable for export / file dump. */
+    /** Single line / multi-line block suitable for export / file dump. */
     val formattedLine: String
         get() = "${FULL_FMT.format(Date(timestampMillis))} ${level.name} [$tag] $message"
 
@@ -35,16 +35,37 @@ data class LogEntry(
  * errors or checkout conflicts can be inspected without pulling logcat off the device.
  */
 object AppLog {
-    private const val MAX_ENTRIES = 500
+    // Stack traces are multi-line; keep more room so a few ERROR dumps do not
+    // push out the preceding context (clone / checkout / stage lines).
+    private const val MAX_ENTRIES = 800
 
     private val _entries = MutableStateFlow<List<LogEntry>>(emptyList())
     val entries: StateFlow<List<LogEntry>> = _entries.asStateFlow()
 
     fun d(tag: String, message: String) = add(tag, LogLevel.DEBUG, message)
     fun i(tag: String, message: String) = add(tag, LogLevel.INFO, message)
-    fun w(tag: String, message: String) = add(tag, LogLevel.WARN, message)
-    fun e(tag: String, message: String, throwable: Throwable? = null) =
-        add(tag, LogLevel.ERROR, if (throwable != null) "$message: ${throwable.message}" else message)
+    fun w(tag: String, message: String, throwable: Throwable? = null) {
+        if (throwable != null) {
+            add(tag, LogLevel.WARN, formatWithStack(message, throwable))
+            Log.w(tag, message, throwable)
+        } else {
+            add(tag, LogLevel.WARN, message)
+        }
+    }
+
+    /**
+     * Log an error. When [throwable] is set, the full stack (including causes) is
+     * stored in the in-app buffer and passed to logcat so both the Logs screen and
+     * `adb logcat` show the same detail.
+     */
+    fun e(tag: String, message: String, throwable: Throwable? = null) {
+        if (throwable != null) {
+            add(tag, LogLevel.ERROR, formatWithStack(message, throwable), logToLogcat = false)
+            Log.e(tag, message, throwable)
+        } else {
+            add(tag, LogLevel.ERROR, message)
+        }
+    }
 
     fun clear() {
         _entries.value = emptyList()
@@ -65,11 +86,37 @@ object AppLog {
         target
     }
 
-    private fun add(tag: String, level: LogLevel, message: String) {
+    private fun formatWithStack(message: String, throwable: Throwable): String = buildString {
+        append(message)
+        if (throwable.message != null) {
+            append(": ")
+            append(throwable.message)
+        }
+        append('\n')
+        append(throwable.stackTraceToString().trimEnd())
+        var cause = throwable.cause
+        // stackTraceToString() already walks causes on recent Kotlin; guard against
+        // duplicates while still covering older runtimes / wrapped exceptions.
+        val seen = mutableSetOf<Throwable>()
+        seen.add(throwable)
+        while (cause != null && seen.add(cause)) {
+            append("\nCaused by: ")
+            append(cause.stackTraceToString().trimEnd())
+            cause = cause.cause
+        }
+    }
+
+    private fun add(
+        tag: String,
+        level: LogLevel,
+        message: String,
+        logToLogcat: Boolean = true
+    ) {
         val entry = LogEntry(System.currentTimeMillis(), tag, level, message)
         synchronized(this) {
             _entries.value = (_entries.value + entry).takeLast(MAX_ENTRIES)
         }
+        if (!logToLogcat) return
         when (level) {
             LogLevel.DEBUG -> Log.d(tag, message)
             LogLevel.INFO -> Log.i(tag, message)
