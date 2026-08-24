@@ -207,9 +207,9 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         try {
             clearInflaterCache()
             installJGitMemoryLimits()
+            // JGit 5.13 GarbageCollectCommand has setAggressive but not setPackRefs.
             git.gc()
                 .setAggressive(false)
-                .setPackRefs(false)
                 .call()
             clearInflaterCache()
             installJGitMemoryLimits()
