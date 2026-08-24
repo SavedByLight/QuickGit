@@ -99,6 +99,14 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
             // mmap of pack files is unreliable on many Android devices / filesystems.
             // Use the Java setter — the field itself is private in WindowCacheConfig.
             cfg.setPackedGitMMAP(false)
+            // Strong refs prevent Android GC from reclaiming ByteWindow/Inflater mid-read.
+            // SoftRefs are the root cause of "Inflater has been closed" on mobile heaps;
+            // with a bounded packedGitLimit this stays within phone memory budgets.
+            try {
+                cfg.setPackedGitUseStrongRefs(true)
+            } catch (_: Exception) {
+                // Method available since JGit 5.1.13; ignore if somehow absent.
+            }
             // Limit concurrently open pack files; reduces SoftRef churn under GC pressure.
             try {
                 cfg.javaClass.getMethod("setPackedGitOpenFiles", Int::class.javaPrimitiveType)
