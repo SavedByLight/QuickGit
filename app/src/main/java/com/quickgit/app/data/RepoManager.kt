@@ -1590,76 +1590,110 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         }
         val remoteName = remote.ifBlank { "origin" }
         AppLog.i(TAG, "push: $path remote=$remoteName mode=$mode")
-        return try {
-            openGit(path).use { git ->
-                val remoteUrl = git.repository.config.getString("remote", remoteName, "url") ?: ""
-                if (remoteUrl.isBlank()) {
-                    return@use GitOpResult.Error("No URL configured for remote '$remoteName'")
-                }
-                maybeUploadLfs(path, remoteUrl)?.let { AppLog.i(TAG, it) }
 
-                if (forceWithLease || force) {
-                    onProgress("Force pushing…")
-                    pushForced(git, remoteUrl, withLease = forceWithLease)
-                } else {
-                    onProgress("Pushing…")
-                    val cmd = git.push()
-                        .setRemote(remoteName)
-                        .setProgressMonitor(TextProgress(onProgress))
-                    // Always push a single branch — never all local branches. Local-only
-                    // branches stay local until the user explicitly pushes them.
-                    val current = try { git.repository.branch } catch (_: Exception) { null }
-                    val lb = localBranch?.takeIf { it.isNotBlank() } ?: current
-                    val rb = remoteBranch?.takeIf { it.isNotBlank() } ?: lb
-                    if (lb.isNullOrBlank()) {
-                        return@use GitOpResult.Error("Detached HEAD — check out a branch before push")
-                    }
-                    cmd.setRefSpecs(org.eclipse.jgit.transport.RefSpec("refs/heads/$lb:refs/heads/$rb"))
-                    applyTransportConfig(cmd, remoteUrl)
-                    val results = cmd.call()
-                    val rejected = results.flatMap { it.remoteUpdates }
-                        .filter { it.status.name.contains("REJECTED") || it.status.name.contains("NON_EXISTING") }
-                    if (rejected.isNotEmpty()) {
-                        val details = rejected.joinToString("; ") { upd ->
-                            val msg = upd.message?.takeIf { it.isNotBlank() }
-                            val status = upd.status?.name ?: "REJECTED"
-                            when {
-                                status.contains("NONFASTFORWARD") ->
-                                    "non-fast-forward (pull/rebase first)" + (msg?.let { ": $it" } ?: "")
-                                status.contains("OTHER") || status.contains("REMOTE_CHANGED") ->
-                                    msg ?: status
-                                else -> msg ?: status
+        // Android SoftRef/WindowCache races can close an Inflater while packing/sending
+        // objects (especially after large kernel/module trees). Retry the same way clone does.
+        val maxAttempts = 5
+        var lastError: Exception? = null
+        for (attempt in 1..maxAttempts) {
+            if (attempt > 1) {
+                releaseJGitSoftRefs()
+                try { Thread.sleep(400L * attempt) } catch (_: InterruptedException) {}
+                onProgress("Retrying push (attempt $attempt/$maxAttempts)…")
+                AppLog.w(TAG, "push retry $attempt/$maxAttempts after: ${lastError?.message}")
+            } else {
+                // Clear any poisoned SoftRefs left by a prior clone/checkout race on this repo.
+                releaseJGitSoftRefsLight()
+                installJGitMemoryLimits()
+            }
+            try {
+                return synchronized(jgitIoLock) {
+                    openGit(path).use { git ->
+                        val remoteUrl = git.repository.config.getString("remote", remoteName, "url") ?: ""
+                        if (remoteUrl.isBlank()) {
+                            return@use GitOpResult.Error("No URL configured for remote '$remoteName'")
+                        }
+                        maybeUploadLfs(path, remoteUrl)?.let { AppLog.i(TAG, it) }
+
+                        if (forceWithLease || force) {
+                            onProgress("Force pushing…")
+                            pushForced(git, remoteUrl, withLease = forceWithLease)
+                        } else {
+                            onProgress("Pushing…")
+                            val cmd = git.push()
+                                .setRemote(remoteName)
+                                .setProgressMonitor(TextProgress(onProgress))
+                            // Always push a single branch — never all local branches. Local-only
+                            // branches stay local until the user explicitly pushes them.
+                            val current = try { git.repository.branch } catch (_: Exception) { null }
+                            val lb = localBranch?.takeIf { it.isNotBlank() } ?: current
+                            val rb = remoteBranch?.takeIf { it.isNotBlank() } ?: lb
+                            if (lb.isNullOrBlank()) {
+                                return@use GitOpResult.Error("Detached HEAD — check out a branch before push")
+                            }
+                            cmd.setRefSpecs(org.eclipse.jgit.transport.RefSpec("refs/heads/$lb:refs/heads/$rb"))
+                            applyTransportConfig(cmd, remoteUrl)
+                            val results = cmd.call()
+                            val rejected = results.flatMap { it.remoteUpdates }
+                                .filter { it.status.name.contains("REJECTED") || it.status.name.contains("NON_EXISTING") }
+                            if (rejected.isNotEmpty()) {
+                                val details = rejected.joinToString("; ") { upd ->
+                                    val msg = upd.message?.takeIf { it.isNotBlank() }
+                                    val status = upd.status?.name ?: "REJECTED"
+                                    when {
+                                        status.contains("NONFASTFORWARD") ->
+                                            "non-fast-forward (pull/rebase first)" + (msg?.let { ": $it" } ?: "")
+                                        status.contains("OTHER") || status.contains("REMOTE_CHANGED") ->
+                                            msg ?: status
+                                        else -> msg ?: status
+                                    }
+                                }
+                                AppLog.w(TAG, "push rejected: $details")
+                                // GitHub rejects workflow-file updates without the `workflow` scope with a
+                                // clear message in RemoteRefUpdate.message; surface it instead of always
+                                // blaming a missing pull.
+                                val hint = when {
+                                    details.contains("workflow", ignoreCase = true) ||
+                                        details.contains("refusing to allow", ignoreCase = true) ->
+                                        "Push rejected (token may lack the workflow scope): $details"
+                                    details.contains("non-fast-forward", ignoreCase = true) ->
+                                        "Push rejected — pull first: $details"
+                                    else -> "Push rejected: $details"
+                                }
+                                GitOpResult.Error(hint)
+                            } else {
+                                AppLog.i(TAG, "push succeeded")
+                                GitOpResult.Success
                             }
                         }
-                        AppLog.w(TAG, "push rejected: $details")
-                        // GitHub rejects workflow-file updates without the `workflow` scope with a
-                        // clear message in RemoteRefUpdate.message; surface it instead of always
-                        // blaming a missing pull.
-                        val hint = when {
-                            details.contains("workflow", ignoreCase = true) ||
-                                details.contains("refusing to allow", ignoreCase = true) ->
-                                "Push rejected (token may lack the workflow scope): $details"
-                            details.contains("non-fast-forward", ignoreCase = true) ->
-                                "Push rejected — pull first: $details"
-                            else -> "Push rejected: $details"
-                        }
-                        GitOpResult.Error(hint)
-                    } else {
-                        AppLog.i(TAG, "push succeeded")
-                        GitOpResult.Success
                     }
                 }
+            } catch (e: org.eclipse.jgit.api.errors.TransportException) {
+                lastError = e
+                if (isInflaterRace(e) && attempt < maxAttempts) {
+                    AppLog.w(TAG, "push inflater race (transport) — will retry")
+                    continue
+                }
+                AppLog.e(TAG, "push failed (transport)", e)
+                if (isAuthFailure(e)) {
+                    val url = runCatching {
+                        openGit(path).use { it.repository.config.getString("remote", "origin", "url") }
+                    }.getOrNull() ?: ""
+                    return GitOpResult.AuthRequired(url)
+                }
+                return GitOpResult.Error(e.message ?: "Push failed", e)
+            } catch (e: Exception) {
+                lastError = e
+                if (isInflaterRace(e) && attempt < maxAttempts) {
+                    AppLog.w(TAG, "push inflater race — will retry")
+                    continue
+                }
+                AppLog.e(TAG, "push failed", e)
+                return GitOpResult.Error(e.message ?: "Push failed", e)
             }
-        } catch (e: org.eclipse.jgit.api.errors.TransportException) {
-            AppLog.e(TAG, "push failed (transport)", e)
-            if (isAuthFailure(e)) {
-                val url = openGit(path).use { it.repository.config.getString("remote", "origin", "url") } ?: ""
-                GitOpResult.AuthRequired(url)
-            } else GitOpResult.Error(e.message ?: "Push failed", e)
-        } catch (e: Exception) {
-            AppLog.e(TAG, "push failed", e)
-            GitOpResult.Error(e.message ?: "Push failed", e)
         }
+        AppLog.e(TAG, "push failed after $maxAttempts attempts", lastError)
+        return GitOpResult.Error(lastError?.message ?: "Push failed", lastError)
     }
 
     /**
