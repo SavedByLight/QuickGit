@@ -1639,14 +1639,17 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         var lastError: Exception? = null
         for (attempt in 1..maxAttempts) {
             if (attempt > 1) {
-                releaseJGitSoftRefs()
-                try { Thread.sleep(400L * attempt) } catch (_: InterruptedException) {}
+                // Do NOT force System.gc()/runFinalization() here — on ART that can
+                // finalize Inflaters still reachable from a previous attempt's pack
+                // path and make the next attempt fail immediately.
+                clearInflaterCache()
+                installJGitMemoryLimits()
+                try { Thread.sleep(600L * attempt) } catch (_: InterruptedException) {}
                 onProgress("Retrying push (attempt $attempt/$maxAttempts)…")
                 AppLog.w(TAG, "push retry $attempt/$maxAttempts after: ${lastError?.message}")
             } else {
                 // Clear any poisoned SoftRefs / closed Inflaters left by a prior
                 // clone/checkout race on this repo (InflaterCache is process-wide).
-                releaseJGitSoftRefsLight()
                 clearInflaterCache()
                 installJGitMemoryLimits()
             }
@@ -1664,6 +1667,18 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                             pushForced(git, remoteUrl, withLease = forceWithLease)
                         } else {
                             onProgress("Pushing…")
+                            // Avoid inflating delta bases from existing packs — large
+                            // kernel/module objects from device-tree clones reliably hit
+                            // "Inflater has been closed" on Android when PackWriter reuses
+                            // deltas. Prefer whole objects for the push pack only.
+                            try {
+                                val cfg = git.repository.config
+                                cfg.setBoolean("pack", null, "reuseDeltas", false)
+                                cfg.setBoolean("pack", null, "reuseObjects", false)
+                                cfg.save()
+                            } catch (e: Exception) {
+                                AppLog.w(TAG, "Could not disable pack.reuseDeltas: ${e.message}")
+                            }
                             val cmd = git.push()
                                 .setRemote(remoteName)
                                 .setProgressMonitor(TextProgress(onProgress))
@@ -1718,7 +1733,7 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                     AppLog.w(TAG, "push inflater race (transport) — will retry")
                     continue
                 }
-                AppLog.e(TAG, "push failed (transport)", e)
+                AppLog.e(TAG, "push failed (transport): ${e.message}", e)
                 if (isAuthFailure(e)) {
                     val url = runCatching {
                         openGit(path).use { it.repository.config.getString("remote", "origin", "url") }
