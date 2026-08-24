@@ -107,15 +107,16 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
             } catch (_: Exception) {
                 // Method available since JGit 5.1.13; ignore if somehow absent.
             }
-            // Limit concurrently open pack files; reduces SoftRef churn under GC pressure.
+            // With strong refs, allow a few more concurrent pack files; 2 was too tight
+            // for push packing of multi-pack device trees and could force thrashing.
             try {
                 cfg.javaClass.getMethod("setPackedGitOpenFiles", Int::class.javaPrimitiveType)
-                    .invoke(cfg, 2)
+                    .invoke(cfg, 8)
             } catch (_: Exception) {
                 // Method may be absent on older JGit; ignore.
             }
             cfg.install()
-            AppLog.i(TAG, "JGit WindowCache limits installed for mobile heap")
+            AppLog.i(TAG, "JGit WindowCache limits installed for mobile heap (strongRefs=true)")
         } catch (e: Exception) {
             AppLog.w(TAG, "Could not install JGit WindowCache config: ${e.message}")
         }
@@ -144,8 +145,41 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
             System.runFinalization()
             System.gc()
             try { Thread.sleep(150) } catch (_: InterruptedException) {}
+            clearInflaterCache()
             installJGitMemoryLimits()
         } catch (_: Exception) {
+        }
+    }
+
+    /**
+     * Drain JGit's static InflaterCache. On Android, GC can finalize an Inflater that is
+     * still sitting in the 4-slot pool; the next release()/reset() then throws
+     * "Inflater has been closed". Emptying the pool forces fresh Inflaters for the next
+     * pack read (see Eclipse bug 462746 — same workaround used by other Android JGit apps).
+     */
+    private fun clearInflaterCache() {
+        try {
+            val clazz = Class.forName("org.eclipse.jgit.lib.InflaterCache")
+            val cacheField = clazz.getDeclaredField("inflaterCache")
+            cacheField.isAccessible = true
+            val countField = clazz.getDeclaredField("openInflaterCount")
+            countField.isAccessible = true
+            synchronized(clazz) {
+                val arr = cacheField.get(null) as? Array<*>
+                if (arr != null) {
+                    for (i in arr.indices) {
+                        val inf = arr[i]
+                        if (inf is java.util.zip.Inflater) {
+                            try { inf.end() } catch (_: Exception) {}
+                        }
+                        arr[i] = null
+                    }
+                }
+                countField.setInt(null, 0)
+            }
+            AppLog.i(TAG, "InflaterCache cleared")
+        } catch (e: Exception) {
+            AppLog.w(TAG, "Could not clear InflaterCache: ${e.message}")
         }
     }
 
@@ -1610,8 +1644,10 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                 onProgress("Retrying push (attempt $attempt/$maxAttempts)…")
                 AppLog.w(TAG, "push retry $attempt/$maxAttempts after: ${lastError?.message}")
             } else {
-                // Clear any poisoned SoftRefs left by a prior clone/checkout race on this repo.
+                // Clear any poisoned SoftRefs / closed Inflaters left by a prior
+                // clone/checkout race on this repo (InflaterCache is process-wide).
                 releaseJGitSoftRefsLight()
+                clearInflaterCache()
                 installJGitMemoryLimits()
             }
             try {
