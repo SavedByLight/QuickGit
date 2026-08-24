@@ -158,6 +158,10 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
      * pack read (see Eclipse bug 462746 — same workaround used by other Android JGit apps).
      */
     private fun clearInflaterCache() {
+        // Drop pooled Inflaters without calling end(). On Android, end()'d Inflaters left in
+        // (or returned to) the pool make InflaterCache.release → reset() throw
+        // "Inflater has been closed" (see stack: UnpackedObject.LargeObject.openStream →
+        // InflaterCache.release). Null the slots and let GC reclaim; JGit will allocate fresh.
         try {
             val clazz = Class.forName("org.eclipse.jgit.lib.InflaterCache")
             val cacheField = clazz.getDeclaredField("inflaterCache")
@@ -168,10 +172,6 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                 val raw = cacheField.get(null)
                 if (raw is Array<*>) {
                     for (i in raw.indices) {
-                        val inf = java.lang.reflect.Array.get(raw, i)
-                        if (inf is java.util.zip.Inflater) {
-                            try { inf.end() } catch (_: Exception) {}
-                        }
                         java.lang.reflect.Array.set(raw, i, null)
                     }
                 }
@@ -180,6 +180,43 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
             AppLog.i(TAG, "InflaterCache cleared")
         } catch (e: Exception) {
             AppLog.w(TAG, "Could not clear InflaterCache: ${e.message}")
+        }
+    }
+
+    /**
+     * Large loose objects (kernel modules, prebuilts) take UnpackedObject.LargeObject.openStream
+     * during push packing. On Android that path reliably hits InflaterCache.release with a
+     * closed Inflater. Packing them first lets PackWriter read from pack files instead.
+     */
+    private fun packLooseObjectsIfNeeded(git: Git, onProgress: (String) -> Unit) {
+        val objectsDir = File(git.repository.directory, "objects")
+        if (!objectsDir.isDirectory) return
+        var looseCount = 0
+        try {
+            objectsDir.listFiles()?.forEach { fanout ->
+                if (fanout.isDirectory && fanout.name.length == 2 && fanout.name != "pack" && fanout.name != "info") {
+                    looseCount += fanout.listFiles()?.size ?: 0
+                }
+            }
+        } catch (_: Exception) {
+            return
+        }
+        if (looseCount == 0) return
+        onProgress("Packing $looseCount loose object(s) before push…")
+        AppLog.i(TAG, "packLooseObjectsIfNeeded: packing $looseCount loose objects")
+        try {
+            clearInflaterCache()
+            installJGitMemoryLimits()
+            git.gc()
+                .setAggressive(false)
+                .setPackRefs(false)
+                .call()
+            clearInflaterCache()
+            installJGitMemoryLimits()
+            AppLog.i(TAG, "packLooseObjectsIfNeeded: gc finished")
+        } catch (e: Exception) {
+            // Non-fatal — push may still succeed for small objects; log and continue.
+            AppLog.w(TAG, "packLooseObjectsIfNeeded failed: ${e.message}", e)
         }
     }
 
@@ -1661,6 +1698,9 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                             return@use GitOpResult.Error("No URL configured for remote '$remoteName'")
                         }
                         maybeUploadLfs(path, remoteUrl)?.let { AppLog.i(TAG, it) }
+                        // Large loose blobs from "upgrade kernel" commits fail in
+                        // UnpackedObject.LargeObject.openStream on Android; pack first.
+                        packLooseObjectsIfNeeded(git, onProgress)
 
                         if (forceWithLease || force) {
                             onProgress("Force pushing…")
