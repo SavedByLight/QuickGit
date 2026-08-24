@@ -165,14 +165,14 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
             val countField = clazz.getDeclaredField("openInflaterCount")
             countField.isAccessible = true
             synchronized(clazz) {
-                val arr = cacheField.get(null) as? Array<*>
-                if (arr != null) {
-                    for (i in arr.indices) {
-                        val inf = arr[i]
+                val raw = cacheField.get(null)
+                if (raw is Array<*>) {
+                    for (i in raw.indices) {
+                        val inf = java.lang.reflect.Array.get(raw, i)
                         if (inf is java.util.zip.Inflater) {
                             try { inf.end() } catch (_: Exception) {}
                         }
-                        arr[i] = null
+                        java.lang.reflect.Array.set(raw, i, null)
                     }
                 }
                 countField.setInt(null, 0)
