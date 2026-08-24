@@ -95,7 +95,11 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
             // Prefer loading objects into windows rather than pure streaming where possible.
             // Streaming + concurrent SoftRef GC is a common "Inflater has been closed" source
             // on Android. Keep the threshold modest so large blobs still use the window path.
-            cfg.streamFileThreshold = 8 * 1024 * 1024
+            // Prefer SmallObject (full inflate into heap) over LargeObject.openStream.
+            // LargeObject is what fails on Android during push (InflaterCache.release NPE).
+            // 64 MiB covers typical kernel modules; very large blobs may still OOM — better
+            // than a hard crash in InflaterCache.release.
+            cfg.streamFileThreshold = 64 * 1024 * 1024
             // mmap of pack files is unreliable on many Android devices / filesystems.
             // Use the Java setter — the field itself is private in WindowCacheConfig.
             cfg.setPackedGitMMAP(false)
@@ -184,11 +188,17 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     }
 
     /**
-     * Large loose objects (kernel modules, prebuilts) take UnpackedObject.LargeObject.openStream
-     * during push packing. On Android that path reliably hits InflaterCache.release with a
-     * closed Inflater. Packing them first lets PackWriter read from pack files instead.
+     * JGit's GarbageCollectCommand uses java.lang.management.ManagementFactory for a PID
+     * lock (GC$PidLock) — that class does not exist on Android and crashes with
+     * NoClassDefFoundError. Do not call git.gc() here.
+     *
+     * Instead we raise streamFileThreshold so large loose blobs avoid
+     * UnpackedObject.LargeObject.openStream (the path that hits InflaterCache.release
+     * with a closed Inflater on Android). See installJGitMemoryLimits().
      */
     private fun packLooseObjectsIfNeeded(git: Git, onProgress: (String) -> Unit) {
+        // No-op on Android: git.gc() requires ManagementFactory.
+        // Threshold / InflaterCache handling is done in installJGitMemoryLimits + clearInflaterCache.
         val objectsDir = File(git.repository.directory, "objects")
         if (!objectsDir.isDirectory) return
         var looseCount = 0
@@ -201,22 +211,8 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         } catch (_: Exception) {
             return
         }
-        if (looseCount == 0) return
-        onProgress("Packing $looseCount loose object(s) before push…")
-        AppLog.i(TAG, "packLooseObjectsIfNeeded: packing $looseCount loose objects")
-        try {
-            clearInflaterCache()
-            installJGitMemoryLimits()
-            // JGit 5.13 GarbageCollectCommand has setAggressive but not setPackRefs.
-            git.gc()
-                .setAggressive(false)
-                .call()
-            clearInflaterCache()
-            installJGitMemoryLimits()
-            AppLog.i(TAG, "packLooseObjectsIfNeeded: gc finished")
-        } catch (e: Exception) {
-            // Non-fatal — push may still succeed for small objects; log and continue.
-            AppLog.w(TAG, "packLooseObjectsIfNeeded failed: ${e.message}", e)
+        if (looseCount > 0) {
+            AppLog.i(TAG, "packLooseObjectsIfNeeded: $looseCount loose object(s) present (gc skipped on Android)")
         }
     }
 
