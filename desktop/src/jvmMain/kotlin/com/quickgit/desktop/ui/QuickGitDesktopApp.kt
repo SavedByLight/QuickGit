@@ -1540,6 +1540,8 @@ fun FilesEditorTab(repoPath: String, repoManager: DesktopRepoManager, onMessage:
     var pendingUploadConflicts by remember { mutableStateOf<List<Pair<java.io.File, java.io.File>>>(emptyList()) }
     var entryToRename by remember { mutableStateOf<FsEntry?>(null) }
     var renameName by remember { mutableStateOf("") }
+    var entryToMove by remember { mutableStateOf<FsEntry?>(null) }
+    var moveDestDir by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
     val root = remember(repoPath) { java.io.File(repoPath) }
 

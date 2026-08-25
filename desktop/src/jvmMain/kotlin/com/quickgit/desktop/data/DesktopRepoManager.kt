@@ -1368,8 +1368,8 @@ class DesktopRepoManager(
      */
     fun moveWorkingPath(repoPath: String, relativePath: String, destDirRelative: String): Result<String> {
         return try {
-            val cleaned = relativePath.trim().trimStart('/').replace("\", "/")
-            var destDir = destDirRelative.trim().trimStart('/').replace("\", "/")
+            val cleaned = relativePath.trim().trimStart('/').replace("\\", "/")
+            var destDir = destDirRelative.trim().trimStart('/').replace("\\", "/")
             while (destDir.endsWith("/")) destDir = destDir.dropLast(1)
             if (cleaned.isBlank()) return Result.failure(IllegalArgumentException("Path is required"))
             if (cleaned.contains("..") || destDir.contains("..")) {
