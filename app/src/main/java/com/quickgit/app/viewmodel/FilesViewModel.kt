@@ -133,6 +133,27 @@ class FilesViewModel(private val repoManager: RepoManager) : ViewModel() {
         }
     }
 
+    /**
+     * Move [entry] into [destDirRelative] ("" = repo root). Basename is preserved.
+     */
+    fun moveEntry(entry: com.quickgit.app.data.models.RepoEntry, destDirRelative: String) {
+        viewModelScope.launch {
+            try {
+                val newRel = withContext(Dispatchers.IO) {
+                    repoManager.moveWorkingPath(repoPath, entry.relativePath, destDirRelative)
+                }
+                val kind = if (entry.isDirectory) "folder" else "file"
+                val destLabel = destDirRelative.ifBlank { "repo root" }
+                _state.value = _state.value.copy(
+                    statusMessage = "Moved $kind ${entry.name} → $destLabel"
+                )
+                openDir(_state.value.currentDir)
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(error = e.message ?: "Could not move")
+            }
+        }
+    }
+
 
     /**
      * Begins importing one or more files picked from local/device storage into the current

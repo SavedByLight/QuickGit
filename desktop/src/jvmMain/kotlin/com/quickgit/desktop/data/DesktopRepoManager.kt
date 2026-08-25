@@ -1361,4 +1361,80 @@ class DesktopRepoManager(
         }
     }
 
+    /**
+     * Moves a file or directory to another folder inside the working tree.
+     * [destDirRelative] is the destination folder relative to the repo root ("" = root).
+     * Keeps the basename. Does not stage the change.
+     */
+    fun moveWorkingPath(repoPath: String, relativePath: String, destDirRelative: String): Result<String> {
+        return try {
+            val cleaned = relativePath.trim().trimStart('/').replace("\", "/")
+            var destDir = destDirRelative.trim().trimStart('/').replace("\", "/")
+            while (destDir.endsWith("/")) destDir = destDir.dropLast(1)
+            if (cleaned.isBlank()) return Result.failure(IllegalArgumentException("Path is required"))
+            if (cleaned.contains("..") || destDir.contains("..")) {
+                return Result.failure(IllegalArgumentException("Invalid path"))
+            }
+            if (cleaned == ".git" || cleaned.startsWith(".git/")) {
+                return Result.failure(IllegalArgumentException("Refusing to move .git"))
+            }
+            if (destDir == ".git" || destDir.startsWith(".git/")) {
+                return Result.failure(IllegalArgumentException("Refusing to move into .git"))
+            }
+            val root = File(repoPath).canonicalFile
+            val source = File(repoPath, cleaned).canonicalFile
+            if (!source.path.startsWith(root.path + File.separator) && source.path != root.path) {
+                return Result.failure(IllegalArgumentException("Path escapes repository"))
+            }
+            if (!source.exists()) return Result.failure(IllegalArgumentException("Not found: $cleaned"))
+            val baseName = cleaned.substringAfterLast('/')
+            if (source.isDirectory) {
+                val prefix = cleaned.trimEnd('/') + "/"
+                if (destDir == cleaned || destDir.startsWith(prefix)) {
+                    return Result.failure(IllegalArgumentException("Cannot move a folder into itself"))
+                }
+            }
+            val destParent = if (destDir.isBlank()) root else File(repoPath, destDir).canonicalFile
+            if (!destParent.path.startsWith(root.path + File.separator) && destParent.path != root.path) {
+                return Result.failure(IllegalArgumentException("Destination escapes repository"))
+            }
+            if (!destParent.exists()) {
+                if (!destParent.mkdirs()) {
+                    return Result.failure(IllegalStateException("Could not create folder: $destDir"))
+                }
+            }
+            if (!destParent.isDirectory) {
+                return Result.failure(IllegalArgumentException("Destination is not a folder: $destDir"))
+            }
+            val destRel = if (destDir.isBlank()) baseName else "$destDir/$baseName"
+            val dest = File(repoPath, destRel).canonicalFile
+            if (!dest.path.startsWith(root.path + File.separator) && dest.path != root.path) {
+                return Result.failure(IllegalArgumentException("Destination escapes repository"))
+            }
+            if (dest.canonicalFile == source.canonicalFile) {
+                return Result.success(destRel)
+            }
+            if (dest.exists()) return Result.failure(IllegalArgumentException("Already exists: $destRel"))
+            if (!source.renameTo(dest)) {
+                if (source.isDirectory) {
+                    source.copyRecursively(dest, overwrite = false)
+                    if (!source.deleteRecursively()) {
+                        dest.deleteRecursively()
+                        return Result.failure(IllegalStateException("Could not move: $cleaned"))
+                    }
+                } else {
+                    source.copyTo(dest, overwrite = false)
+                    if (!source.delete()) {
+                        dest.delete()
+                        return Result.failure(IllegalStateException("Could not move: $cleaned"))
+                    }
+                }
+            }
+            AppLog.i(TAG, "moved working path: $cleaned -> $destRel")
+            Result.success(destRel)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
 }

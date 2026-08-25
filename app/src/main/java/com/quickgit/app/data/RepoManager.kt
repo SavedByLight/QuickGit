@@ -95,32 +95,19 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
             // Prefer loading objects into windows rather than pure streaming where possible.
             // Streaming + concurrent SoftRef GC is a common "Inflater has been closed" source
             // on Android. Keep the threshold modest so large blobs still use the window path.
-            // Prefer SmallObject (full inflate into heap) over LargeObject.openStream.
-            // LargeObject is what fails on Android during push (InflaterCache.release NPE).
-            // 64 MiB covers typical kernel modules; very large blobs may still OOM — better
-            // than a hard crash in InflaterCache.release.
-            cfg.streamFileThreshold = 64 * 1024 * 1024
+            cfg.streamFileThreshold = 8 * 1024 * 1024
             // mmap of pack files is unreliable on many Android devices / filesystems.
             // Use the Java setter — the field itself is private in WindowCacheConfig.
             cfg.setPackedGitMMAP(false)
-            // Strong refs prevent Android GC from reclaiming ByteWindow/Inflater mid-read.
-            // SoftRefs are the root cause of "Inflater has been closed" on mobile heaps;
-            // with a bounded packedGitLimit this stays within phone memory budgets.
-            try {
-                cfg.setPackedGitUseStrongRefs(true)
-            } catch (_: Exception) {
-                // Method available since JGit 5.1.13; ignore if somehow absent.
-            }
-            // With strong refs, allow a few more concurrent pack files; 2 was too tight
-            // for push packing of multi-pack device trees and could force thrashing.
+            // Limit concurrently open pack files; reduces SoftRef churn under GC pressure.
             try {
                 cfg.javaClass.getMethod("setPackedGitOpenFiles", Int::class.javaPrimitiveType)
-                    .invoke(cfg, 8)
+                    .invoke(cfg, 2)
             } catch (_: Exception) {
                 // Method may be absent on older JGit; ignore.
             }
             cfg.install()
-            AppLog.i(TAG, "JGit WindowCache limits installed for mobile heap (strongRefs=true)")
+            AppLog.i(TAG, "JGit WindowCache limits installed for mobile heap")
         } catch (e: Exception) {
             AppLog.w(TAG, "Could not install JGit WindowCache config: ${e.message}")
         }
@@ -149,70 +136,8 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
             System.runFinalization()
             System.gc()
             try { Thread.sleep(150) } catch (_: InterruptedException) {}
-            clearInflaterCache()
             installJGitMemoryLimits()
         } catch (_: Exception) {
-        }
-    }
-
-    /**
-     * Drain JGit's static InflaterCache. On Android, GC can finalize an Inflater that is
-     * still sitting in the 4-slot pool; the next release()/reset() then throws
-     * "Inflater has been closed". Emptying the pool forces fresh Inflaters for the next
-     * pack read (see Eclipse bug 462746 — same workaround used by other Android JGit apps).
-     */
-    private fun clearInflaterCache() {
-        // Drop pooled Inflaters without calling end(). On Android, end()'d Inflaters left in
-        // (or returned to) the pool make InflaterCache.release → reset() throw
-        // "Inflater has been closed" (see stack: UnpackedObject.LargeObject.openStream →
-        // InflaterCache.release). Null the slots and let GC reclaim; JGit will allocate fresh.
-        try {
-            val clazz = Class.forName("org.eclipse.jgit.lib.InflaterCache")
-            val cacheField = clazz.getDeclaredField("inflaterCache")
-            cacheField.isAccessible = true
-            val countField = clazz.getDeclaredField("openInflaterCount")
-            countField.isAccessible = true
-            synchronized(clazz) {
-                val raw = cacheField.get(null)
-                if (raw is Array<*>) {
-                    for (i in raw.indices) {
-                        java.lang.reflect.Array.set(raw, i, null)
-                    }
-                }
-                countField.setInt(null, 0)
-            }
-            AppLog.i(TAG, "InflaterCache cleared")
-        } catch (e: Exception) {
-            AppLog.w(TAG, "Could not clear InflaterCache: ${e.message}")
-        }
-    }
-
-    /**
-     * JGit's GarbageCollectCommand uses java.lang.management.ManagementFactory for a PID
-     * lock (GC$PidLock) — that class does not exist on Android and crashes with
-     * NoClassDefFoundError. Do not call git.gc() here.
-     *
-     * Instead we raise streamFileThreshold so large loose blobs avoid
-     * UnpackedObject.LargeObject.openStream (the path that hits InflaterCache.release
-     * with a closed Inflater on Android). See installJGitMemoryLimits().
-     */
-    private fun packLooseObjectsIfNeeded(git: Git, onProgress: (String) -> Unit) {
-        // No-op on Android: git.gc() requires ManagementFactory.
-        // Threshold / InflaterCache handling is done in installJGitMemoryLimits + clearInflaterCache.
-        val objectsDir = File(git.repository.directory, "objects")
-        if (!objectsDir.isDirectory) return
-        var looseCount = 0
-        try {
-            objectsDir.listFiles()?.forEach { fanout ->
-                if (fanout.isDirectory && fanout.name.length == 2 && fanout.name != "pack" && fanout.name != "info") {
-                    looseCount += fanout.listFiles()?.size ?: 0
-                }
-            }
-        } catch (_: Exception) {
-            return
-        }
-        if (looseCount > 0) {
-            AppLog.i(TAG, "packLooseObjectsIfNeeded: $looseCount loose object(s) present (gc skipped on Android)")
         }
     }
 
@@ -1665,130 +1590,76 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         }
         val remoteName = remote.ifBlank { "origin" }
         AppLog.i(TAG, "push: $path remote=$remoteName mode=$mode")
+        return try {
+            openGit(path).use { git ->
+                val remoteUrl = git.repository.config.getString("remote", remoteName, "url") ?: ""
+                if (remoteUrl.isBlank()) {
+                    return@use GitOpResult.Error("No URL configured for remote '$remoteName'")
+                }
+                maybeUploadLfs(path, remoteUrl)?.let { AppLog.i(TAG, it) }
 
-        // Android SoftRef/WindowCache races can close an Inflater while packing/sending
-        // objects (especially after large kernel/module trees). Retry the same way clone does.
-        val maxAttempts = 5
-        var lastError: Exception? = null
-        for (attempt in 1..maxAttempts) {
-            if (attempt > 1) {
-                // Do NOT force System.gc()/runFinalization() here — on ART that can
-                // finalize Inflaters still reachable from a previous attempt's pack
-                // path and make the next attempt fail immediately.
-                clearInflaterCache()
-                installJGitMemoryLimits()
-                try { Thread.sleep(600L * attempt) } catch (_: InterruptedException) {}
-                onProgress("Retrying push (attempt $attempt/$maxAttempts)…")
-                AppLog.w(TAG, "push retry $attempt/$maxAttempts after: ${lastError?.message}")
-            } else {
-                // Clear any poisoned SoftRefs / closed Inflaters left by a prior
-                // clone/checkout race on this repo (InflaterCache is process-wide).
-                clearInflaterCache()
-                installJGitMemoryLimits()
-            }
-            try {
-                return synchronized(jgitIoLock) {
-                    openGit(path).use { git ->
-                        val remoteUrl = git.repository.config.getString("remote", remoteName, "url") ?: ""
-                        if (remoteUrl.isBlank()) {
-                            return@use GitOpResult.Error("No URL configured for remote '$remoteName'")
-                        }
-                        maybeUploadLfs(path, remoteUrl)?.let { AppLog.i(TAG, it) }
-                        // Large loose blobs from "upgrade kernel" commits fail in
-                        // UnpackedObject.LargeObject.openStream on Android; pack first.
-                        packLooseObjectsIfNeeded(git, onProgress)
-
-                        if (forceWithLease || force) {
-                            onProgress("Force pushing…")
-                            pushForced(git, remoteUrl, withLease = forceWithLease)
-                        } else {
-                            onProgress("Pushing…")
-                            // Avoid inflating delta bases from existing packs — large
-                            // kernel/module objects from device-tree clones reliably hit
-                            // "Inflater has been closed" on Android when PackWriter reuses
-                            // deltas. Prefer whole objects for the push pack only.
-                            try {
-                                val cfg = git.repository.config
-                                cfg.setBoolean("pack", null, "reuseDeltas", false)
-                                cfg.setBoolean("pack", null, "reuseObjects", false)
-                                cfg.save()
-                            } catch (e: Exception) {
-                                AppLog.w(TAG, "Could not disable pack.reuseDeltas: ${e.message}")
-                            }
-                            val cmd = git.push()
-                                .setRemote(remoteName)
-                                .setProgressMonitor(TextProgress(onProgress))
-                            // Always push a single branch — never all local branches. Local-only
-                            // branches stay local until the user explicitly pushes them.
-                            val current = try { git.repository.branch } catch (_: Exception) { null }
-                            val lb = localBranch?.takeIf { it.isNotBlank() } ?: current
-                            val rb = remoteBranch?.takeIf { it.isNotBlank() } ?: lb
-                            if (lb.isNullOrBlank()) {
-                                return@use GitOpResult.Error("Detached HEAD — check out a branch before push")
-                            }
-                            cmd.setRefSpecs(org.eclipse.jgit.transport.RefSpec("refs/heads/$lb:refs/heads/$rb"))
-                            applyTransportConfig(cmd, remoteUrl)
-                            val results = cmd.call()
-                            val rejected = results.flatMap { it.remoteUpdates }
-                                .filter { it.status.name.contains("REJECTED") || it.status.name.contains("NON_EXISTING") }
-                            if (rejected.isNotEmpty()) {
-                                val details = rejected.joinToString("; ") { upd ->
-                                    val msg = upd.message?.takeIf { it.isNotBlank() }
-                                    val status = upd.status?.name ?: "REJECTED"
-                                    when {
-                                        status.contains("NONFASTFORWARD") ->
-                                            "non-fast-forward (pull/rebase first)" + (msg?.let { ": $it" } ?: "")
-                                        status.contains("OTHER") || status.contains("REMOTE_CHANGED") ->
-                                            msg ?: status
-                                        else -> msg ?: status
-                                    }
-                                }
-                                AppLog.w(TAG, "push rejected: $details")
-                                // GitHub rejects workflow-file updates without the `workflow` scope with a
-                                // clear message in RemoteRefUpdate.message; surface it instead of always
-                                // blaming a missing pull.
-                                val hint = when {
-                                    details.contains("workflow", ignoreCase = true) ||
-                                        details.contains("refusing to allow", ignoreCase = true) ->
-                                        "Push rejected (token may lack the workflow scope): $details"
-                                    details.contains("non-fast-forward", ignoreCase = true) ->
-                                        "Push rejected — pull first: $details"
-                                    else -> "Push rejected: $details"
-                                }
-                                GitOpResult.Error(hint)
-                            } else {
-                                AppLog.i(TAG, "push succeeded")
-                                GitOpResult.Success
+                if (forceWithLease || force) {
+                    onProgress("Force pushing…")
+                    pushForced(git, remoteUrl, withLease = forceWithLease)
+                } else {
+                    onProgress("Pushing…")
+                    val cmd = git.push()
+                        .setRemote(remoteName)
+                        .setProgressMonitor(TextProgress(onProgress))
+                    // Always push a single branch — never all local branches. Local-only
+                    // branches stay local until the user explicitly pushes them.
+                    val current = try { git.repository.branch } catch (_: Exception) { null }
+                    val lb = localBranch?.takeIf { it.isNotBlank() } ?: current
+                    val rb = remoteBranch?.takeIf { it.isNotBlank() } ?: lb
+                    if (lb.isNullOrBlank()) {
+                        return@use GitOpResult.Error("Detached HEAD — check out a branch before push")
+                    }
+                    cmd.setRefSpecs(org.eclipse.jgit.transport.RefSpec("refs/heads/$lb:refs/heads/$rb"))
+                    applyTransportConfig(cmd, remoteUrl)
+                    val results = cmd.call()
+                    val rejected = results.flatMap { it.remoteUpdates }
+                        .filter { it.status.name.contains("REJECTED") || it.status.name.contains("NON_EXISTING") }
+                    if (rejected.isNotEmpty()) {
+                        val details = rejected.joinToString("; ") { upd ->
+                            val msg = upd.message?.takeIf { it.isNotBlank() }
+                            val status = upd.status?.name ?: "REJECTED"
+                            when {
+                                status.contains("NONFASTFORWARD") ->
+                                    "non-fast-forward (pull/rebase first)" + (msg?.let { ": $it" } ?: "")
+                                status.contains("OTHER") || status.contains("REMOTE_CHANGED") ->
+                                    msg ?: status
+                                else -> msg ?: status
                             }
                         }
+                        AppLog.w(TAG, "push rejected: $details")
+                        // GitHub rejects workflow-file updates without the `workflow` scope with a
+                        // clear message in RemoteRefUpdate.message; surface it instead of always
+                        // blaming a missing pull.
+                        val hint = when {
+                            details.contains("workflow", ignoreCase = true) ||
+                                details.contains("refusing to allow", ignoreCase = true) ->
+                                "Push rejected (token may lack the workflow scope): $details"
+                            details.contains("non-fast-forward", ignoreCase = true) ->
+                                "Push rejected — pull first: $details"
+                            else -> "Push rejected: $details"
+                        }
+                        GitOpResult.Error(hint)
+                    } else {
+                        AppLog.i(TAG, "push succeeded")
+                        GitOpResult.Success
                     }
                 }
-            } catch (e: org.eclipse.jgit.api.errors.TransportException) {
-                lastError = e
-                if (isInflaterRace(e) && attempt < maxAttempts) {
-                    AppLog.w(TAG, "push inflater race (transport) — will retry")
-                    continue
-                }
-                AppLog.e(TAG, "push failed (transport): ${e.message}", e)
-                if (isAuthFailure(e)) {
-                    val url = runCatching {
-                        openGit(path).use { it.repository.config.getString("remote", "origin", "url") }
-                    }.getOrNull() ?: ""
-                    return GitOpResult.AuthRequired(url)
-                }
-                return GitOpResult.Error(e.message ?: "Push failed", e)
-            } catch (e: Exception) {
-                lastError = e
-                if (isInflaterRace(e) && attempt < maxAttempts) {
-                    AppLog.w(TAG, "push inflater race — will retry")
-                    continue
-                }
-                AppLog.e(TAG, "push failed", e)
-                return GitOpResult.Error(e.message ?: "Push failed", e)
             }
+        } catch (e: org.eclipse.jgit.api.errors.TransportException) {
+            AppLog.e(TAG, "push failed (transport)", e)
+            if (isAuthFailure(e)) {
+                val url = openGit(path).use { it.repository.config.getString("remote", "origin", "url") } ?: ""
+                GitOpResult.AuthRequired(url)
+            } else GitOpResult.Error(e.message ?: "Push failed", e)
+        } catch (e: Exception) {
+            AppLog.e(TAG, "push failed", e)
+            GitOpResult.Error(e.message ?: "Push failed", e)
         }
-        AppLog.e(TAG, "push failed after $maxAttempts attempts", lastError)
-        return GitOpResult.Error(lastError?.message ?: "Push failed", lastError)
     }
 
     /**
@@ -3156,6 +3027,76 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
             }
         }
         AppLog.i(TAG, "renamed working path: $cleaned -> $destRel")
+        return destRel
+    }
+
+    /**
+     * Moves a file or directory to another folder inside the working tree.
+     * [destDirRelative] is the destination folder relative to the repo root ("" = root).
+     * The entry keeps its basename. Does not stage the change.
+     * @return the new relative path from the repo root
+     */
+    fun moveWorkingPath(repoPath: String, relativePath: String, destDirRelative: String): String {
+        val cleaned = relativePath.trim().trimStart('/').replace("\\", "/")
+        var destDir = destDirRelative.trim().trimStart('/').replace("\\", "/")
+        while (destDir.endsWith("/")) destDir = destDir.dropLast(1)
+        if (cleaned.isBlank()) throw IllegalArgumentException("Path is required")
+        if (cleaned.contains("..") || destDir.contains("..")) {
+            throw IllegalArgumentException("Invalid path")
+        }
+        if (cleaned == ".git" || cleaned.startsWith(".git/")) {
+            throw IllegalArgumentException("Refusing to move .git")
+        }
+        if (destDir == ".git" || destDir.startsWith(".git/")) {
+            throw IllegalArgumentException("Refusing to move into .git")
+        }
+        val root = File(repoPath).canonicalFile
+        val source = File(repoPath, cleaned).canonicalFile
+        if (!source.path.startsWith(root.path + File.separator) && source.path != root.path) {
+            throw IllegalArgumentException("Path escapes repository")
+        }
+        if (!source.exists()) throw IllegalArgumentException("Not found: $cleaned")
+        val baseName = cleaned.substringAfterLast('/')
+        // Cannot move a directory into itself or a descendant
+        if (source.isDirectory) {
+            val prefix = cleaned.trimEnd('/') + "/"
+            if (destDir == cleaned || destDir.startsWith(prefix)) {
+                throw IllegalArgumentException("Cannot move a folder into itself")
+            }
+        }
+        val destParent = if (destDir.isBlank()) root else File(repoPath, destDir).canonicalFile
+        if (!destParent.path.startsWith(root.path + File.separator) && destParent.path != root.path) {
+            throw IllegalArgumentException("Destination escapes repository")
+        }
+        if (!destParent.exists()) {
+            if (!destParent.mkdirs()) throw IllegalStateException("Could not create folder: $destDir")
+        }
+        if (!destParent.isDirectory) throw IllegalArgumentException("Destination is not a folder: $destDir")
+        val destRel = if (destDir.isBlank()) baseName else "$destDir/$baseName"
+        val dest = File(repoPath, destRel).canonicalFile
+        if (!dest.path.startsWith(root.path + File.separator) && dest.path != root.path) {
+            throw IllegalArgumentException("Destination escapes repository")
+        }
+        if (dest.canonicalFile == source.canonicalFile) {
+            return destRel // already there
+        }
+        if (dest.exists()) throw IllegalArgumentException("Already exists: $destRel")
+        if (!source.renameTo(dest)) {
+            if (source.isDirectory) {
+                source.copyRecursively(dest, overwrite = false)
+                if (!source.deleteRecursively()) {
+                    dest.deleteRecursively()
+                    throw IllegalStateException("Could not move: $cleaned")
+                }
+            } else {
+                source.copyTo(dest, overwrite = false)
+                if (!source.delete()) {
+                    dest.delete()
+                    throw IllegalStateException("Could not move: $cleaned")
+                }
+            }
+        }
+        AppLog.i(TAG, "moved working path: $cleaned -> $destRel")
         return destRel
     }
 

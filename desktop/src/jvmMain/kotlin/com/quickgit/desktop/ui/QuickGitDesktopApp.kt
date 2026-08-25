@@ -1843,6 +1843,19 @@ fun FilesEditorTab(repoPath: String, repoManager: DesktopRepoManager, onMessage:
                                     modifier = Modifier.size(18.dp)
                                 )
                             }
+                            IconButton(
+                                onClick = {
+                                    entryToMove = entry
+                                    moveDestDir = currentDir
+                                },
+                                modifier = Modifier.size(32.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.DriveFileMove,
+                                    contentDescription = "Move",
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
                             if (entry.isDirectory) {
                                 Icon(
                                     Icons.Default.ChevronRight,
@@ -2067,6 +2080,73 @@ fun FilesEditorTab(repoPath: String, repoManager: DesktopRepoManager, onMessage:
             },
             dismissButton = {
                 TextButton(onClick = { entryToRename = null }) { Text("Cancel") }
+            }
+        )
+    }
+
+    entryToMove?.let { entry ->
+        AlertDialog(
+            onDismissRequest = { entryToMove = null },
+            title = { Text(if (entry.isDirectory) "Move folder" else "Move file") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Moving '${entry.name}'")
+                    Text(
+                        "Destination: ${moveDestDir.ifBlank { "(repo root)" }}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    OutlinedTextField(
+                        value = moveDestDir,
+                        onValueChange = { moveDestDir = it.replace("\", "/").trimStart('/') },
+                        label = { Text("Destination folder (relative path)") },
+                        placeholder = { Text("empty = repo root") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Text(
+                        "Examples: docs, src/main — leave empty for repository root.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val dest = moveDestDir.trim().trimStart('/').replace("\", "/")
+                        val currentParent = entry.relativePath.substringBeforeLast('/', "")
+                        if (dest == currentParent) {
+                            entryToMove = null
+                            return@Button
+                        }
+                        scope.launch {
+                            val result = withContext(Dispatchers.IO) {
+                                repoManager.moveWorkingPath(repoPath, entry.relativePath, dest)
+                            }
+                            entryToMove = null
+                            result.fold(
+                                onSuccess = { newRel ->
+                                    onMessage("Moved to $newRel")
+                                    if (selectedFile == entry.relativePath) {
+                                        selectedFile = newRel
+                                    } else if (selectedFile?.startsWith(entry.relativePath + "/") == true) {
+                                        selectedFile = newRel + selectedFile!!.removePrefix(entry.relativePath)
+                                    }
+                                    if (entry.isDirectory && (currentDir == entry.relativePath || currentDir.startsWith(entry.relativePath + "/"))) {
+                                        currentDir = if (currentDir == entry.relativePath) newRel
+                                        else newRel + currentDir.removePrefix(entry.relativePath)
+                                    }
+                                    listDir(currentDir)
+                                },
+                                onFailure = { onMessage("Move failed: ${it.message}") }
+                            )
+                        }
+                    }
+                ) { Text("Move here") }
+            },
+            dismissButton = {
+                TextButton(onClick = { entryToMove = null }) { Text("Cancel") }
             }
         )
     }

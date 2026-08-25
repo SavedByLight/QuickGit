@@ -17,6 +17,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DriveFileRenameOutline
+import androidx.compose.material.icons.filled.DriveFileMove
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Folder
@@ -75,6 +76,8 @@ fun FilesScreen(
     var entryToDelete by remember { mutableStateOf<com.quickgit.app.data.models.RepoEntry?>(null) }
     var entryToRename by remember { mutableStateOf<com.quickgit.app.data.models.RepoEntry?>(null) }
     var renameName by remember { mutableStateOf("") }
+    var entryToMove by remember { mutableStateOf<com.quickgit.app.data.models.RepoEntry?>(null) }
+    var moveDestDir by remember { mutableStateOf("") }
     var createFolderMode by remember { mutableStateOf(false) }
     var newName by remember { mutableStateOf("") }
 
@@ -285,6 +288,15 @@ fun FilesScreen(
                                         contentDescription = "Rename"
                                     )
                                 }
+                                IconButton(onClick = {
+                                    entryToMove = entry
+                                    moveDestDir = state.currentDir
+                                }) {
+                                    Icon(
+                                        Icons.Default.DriveFileMove,
+                                        contentDescription = "Move"
+                                    )
+                                }
                                 IconButton(onClick = { entryToDelete = entry }) {
                                     Icon(
                                         Icons.Default.Delete,
@@ -363,7 +375,58 @@ fun FilesScreen(
         )
     }
 
-    if (showCreateDialog) {
+    
+    entryToMove?.let { entry ->
+        AlertDialog(
+            onDismissRequest = { entryToMove = null },
+            title = { Text(if (entry.isDirectory) "Move folder" else "Move file") },
+            text = {
+                Column {
+                    Text(
+                        "Moving '${entry.name}'",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Text(
+                        "Destination: ${moveDestDir.ifBlank { "(repo root)" }}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(vertical = 8.dp)
+                    )
+                    OutlinedTextField(
+                        value = moveDestDir,
+                        onValueChange = { moveDestDir = it.replace("\", "/").trimStart('/') },
+                        label = { Text("Destination folder (relative path)") },
+                        placeholder = { Text("empty = repo root") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Text(
+                        "Examples: docs, src/main — leave empty for repository root.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val dest = moveDestDir.trim().trimStart('/').replace("\", "/")
+                        val currentParent = entry.relativePath.substringBeforeLast('/', "")
+                        if (dest != currentParent) {
+                            vm.moveEntry(entry, dest)
+                        }
+                        entryToMove = null
+                    }
+                ) { Text("Move here") }
+            },
+            dismissButton = {
+                TextButton(onClick = { entryToMove = null }) { Text("Cancel") }
+            }
+        )
+    }
+
+if (showCreateDialog) {
         AlertDialog(
             onDismissRequest = { showCreateDialog = false },
             title = { Text(if (createFolderMode) "New folder" else "New file") },
