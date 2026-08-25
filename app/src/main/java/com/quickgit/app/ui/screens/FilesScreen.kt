@@ -394,7 +394,7 @@ fun FilesScreen(
                     )
                     OutlinedTextField(
                         value = moveDestDir,
-                        onValueChange = { moveDestDir = it.replace("\", "/").trimStart('/') },
+                        onValueChange = { moveDestDir = it.replace("\\", "/").trimStart('/') },
                         label = { Text("Destination folder (relative path)") },
                         placeholder = { Text("empty = repo root") },
                         singleLine = true,
@@ -411,7 +411,7 @@ fun FilesScreen(
             confirmButton = {
                 Button(
                     onClick = {
-                        val dest = moveDestDir.trim().trimStart('/').replace("\", "/")
+                        val dest = moveDestDir.trim().trimStart('/').replace("\\", "/")
                         val currentParent = entry.relativePath.substringBeforeLast('/', "")
                         if (dest != currentParent) {
                             vm.moveEntry(entry, dest)

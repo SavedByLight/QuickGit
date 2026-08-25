@@ -2098,7 +2098,7 @@ fun FilesEditorTab(repoPath: String, repoManager: DesktopRepoManager, onMessage:
                     )
                     OutlinedTextField(
                         value = moveDestDir,
-                        onValueChange = { moveDestDir = it.replace("\", "/").trimStart('/') },
+                        onValueChange = { moveDestDir = it.replace("\\", "/").trimStart('/') },
                         label = { Text("Destination folder (relative path)") },
                         placeholder = { Text("empty = repo root") },
                         singleLine = true,
@@ -2114,7 +2114,7 @@ fun FilesEditorTab(repoPath: String, repoManager: DesktopRepoManager, onMessage:
             confirmButton = {
                 Button(
                     onClick = {
-                        val dest = moveDestDir.trim().trimStart('/').replace("\", "/")
+                        val dest = moveDestDir.trim().trimStart('/').replace("\\", "/")
                         val currentParent = entry.relativePath.substringBeforeLast('/', "")
                         if (dest == currentParent) {
                             entryToMove = null
