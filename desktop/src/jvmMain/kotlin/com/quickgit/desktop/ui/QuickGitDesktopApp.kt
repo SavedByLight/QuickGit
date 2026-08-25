@@ -958,6 +958,9 @@ fun ChangesTab(repoPath: String, repoManager: DesktopRepoManager, onMessage: (St
 @Composable
 fun HistoryTab(repoPath: String, repoManager: DesktopRepoManager, onMessage: (String) -> Unit) {
     var commits by remember { mutableStateOf(emptyList<DesktopRepoManager.CommitInfo>()) }
+    var branches by remember { mutableStateOf(emptyList<DesktopRepoManager.BranchInfo>()) }
+    /** null = current HEAD; otherwise a local or remote-tracking branch name. */
+    var logRef by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(true) }
     var busy by remember { mutableStateOf(false) }
     var confirmCherry by remember { mutableStateOf<DesktopRepoManager.CommitInfo?>(null) }
@@ -968,11 +971,18 @@ fun HistoryTab(repoPath: String, repoManager: DesktopRepoManager, onMessage: (St
     fun reload() {
         scope.launch {
             loading = true
-            commits = withContext(Dispatchers.IO) { repoManager.getHistory(repoPath, 200) }
+            branches = withContext(Dispatchers.IO) { repoManager.listBranches(repoPath) }
+            commits = withContext(Dispatchers.IO) {
+                runCatching { repoManager.getHistory(repoPath, 200, logRef) }
+                    .getOrElse {
+                        onMessage("Could not load history for ${logRef ?: "HEAD"}: ${it.message}")
+                        emptyList()
+                    }
+            }
             loading = false
         }
     }
-    LaunchedEffect(repoPath) { reload() }
+    LaunchedEffect(repoPath, logRef) { reload() }
 
     fun doCherryPick(c: DesktopRepoManager.CommitInfo) {
         scope.launch {
@@ -981,7 +991,11 @@ fun HistoryTab(repoPath: String, repoManager: DesktopRepoManager, onMessage: (St
             busy = false
             confirmCherry = null
             r.fold(
-                { reload(); onMessage("Cherry-picked ${c.shortId}") },
+                {
+                    logRef = null // show current branch so the new commit is visible
+                    reload()
+                    onMessage("Cherry-picked ${c.shortId} onto current branch")
+                },
                 { onMessage("Cherry-pick failed: ${it.message}") }
             )
         }
@@ -1002,11 +1016,39 @@ fun HistoryTab(repoPath: String, repoManager: DesktopRepoManager, onMessage: (St
 
     Column(Modifier.fillMaxSize()) {
         Text(
-            "Cherry-pick applies a commit onto the current branch. Revert creates an inverse commit.",
+            "Pick any local or remote-tracking branch to browse commits, then Cherry-pick onto your current branch. " +
+                "Add forks under Branches → Add remote, Fetch, then select origin/… or fork/… here.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
         )
+        // Branch / remote-tracking ref picker
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            FilterChip(
+                selected = logRef == null,
+                onClick = { logRef = null },
+                label = { Text("Current branch") }
+            )
+            branches.forEach { b ->
+                FilterChip(
+                    selected = logRef == b.name,
+                    onClick = { logRef = b.name },
+                    label = {
+                        Text(
+                            if (b.isRemote) b.name else b.name,
+                            maxLines = 1
+                        )
+                    }
+                )
+            }
+        }
         if (loading) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
         } else {
@@ -1093,13 +1135,21 @@ fun HistoryTab(repoPath: String, repoManager: DesktopRepoManager, onMessage: (St
 @Composable
 fun BranchesTab(repoPath: String, repoManager: DesktopRepoManager, onMessage: (String) -> Unit) {
     var branches by remember { mutableStateOf(emptyList<DesktopRepoManager.BranchInfo>()) }
+    var remotes by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     var newBranchName by remember { mutableStateOf("") }
     var loading by remember { mutableStateOf(true) }
+    var showAddRemote by remember { mutableStateOf(false) }
+    var remoteName by remember { mutableStateOf("") }
+    var remoteUrl by remember { mutableStateOf("") }
+    var remoteToDelete by remember { mutableStateOf<String?>(null) }
+    var busy by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+
     fun reload() {
         scope.launch {
             loading = true
             branches = withContext(Dispatchers.IO) { repoManager.listBranches(repoPath) }
+            remotes = withContext(Dispatchers.IO) { repoManager.listRemotes(repoPath) }
             loading = false
         }
     }
@@ -1132,38 +1182,126 @@ fun BranchesTab(repoPath: String, repoManager: DesktopRepoManager, onMessage: (S
         }
     }
 
+    fun doFetchRemote(name: String) {
+        scope.launch {
+            busy = true
+            val r = withContext(Dispatchers.IO) { repoManager.fetchRemote(repoPath, name) }
+            busy = false
+            r.fold(
+                { reload(); onMessage("Fetched $name") },
+                { onMessage("Fetch $name failed: ${it.message}") }
+            )
+        }
+    }
+
+    fun doAddRemote() {
+        val n = remoteName.trim()
+        val u = remoteUrl.trim()
+        if (n.isBlank() || u.isBlank()) return
+        scope.launch {
+            busy = true
+            val r = withContext(Dispatchers.IO) { repoManager.addOrSetRemote(repoPath, n, u) }
+            busy = false
+            r.fold(
+                {
+                    showAddRemote = false
+                    remoteName = ""
+                    remoteUrl = ""
+                    reload()
+                    onMessage("Remote '$n' saved — use Fetch to load its branches, then History to cherry-pick")
+                },
+                { onMessage("Add remote failed: ${it.message}") }
+            )
+        }
+    }
+
     Column(Modifier.fillMaxSize().padding(16.dp)) {
+        // ---- Remotes ----
+        Text("Remotes", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        Text(
+            "Add a fork URL, Fetch it, then open History and pick remote-tracking branches to cherry-pick commits.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(bottom = 8.dp)
+        )
+        if (remotes.isEmpty()) {
+            Text(
+                "No remotes configured.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        } else {
+            remotes.forEach { (name, url) ->
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(name, fontWeight = FontWeight.Medium)
+                        Text(
+                            url,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    TextButton(onClick = { doFetchRemote(name) }, enabled = !busy) {
+                        Text(if (busy) "…" else "Fetch")
+                    }
+                    TextButton(onClick = { remoteToDelete = name }, enabled = !busy) {
+                        Text("Remove")
+                    }
+                }
+            }
+        }
+        Row(
+            Modifier.padding(vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            OutlinedButton(onClick = { showAddRemote = true }) { Text("Add remote") }
+            OutlinedButton(
+                onClick = { doFetchRemote("origin") },
+                enabled = !busy && remotes.containsKey("origin")
+            ) { Text("Fetch origin") }
+        }
+
+        HorizontalDivider(Modifier.padding(vertical = 8.dp))
+
+        // ---- Branches ----
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedTextField(
                 value = newBranchName,
                 onValueChange = { newBranchName = it },
-                label = { Text("New local branch") },
-                modifier = Modifier.weight(1f),
-                singleLine = true
+                label = { Text("New branch name") },
+                singleLine = true,
+                modifier = Modifier.weight(1f)
             )
             Button(
                 onClick = {
                     val name = newBranchName.trim()
-                    if (name.isNotBlank()) scope.launch {
+                    if (name.isEmpty()) return@Button
+                    scope.launch {
                         val r = withContext(Dispatchers.IO) {
                             repoManager.createBranch(repoPath, name, checkout = true)
                         }
                         r.fold(
                             { newBranchName = ""; reload(); onMessage("Created & checked out $name") },
-                            { onMessage("Failed: ${it.message}") }
+                            { onMessage("Create branch failed: ${it.message}") }
                         )
                     }
                 },
                 enabled = newBranchName.isNotBlank()
-            ) { Text("Create & checkout") }
+            ) { Text("Create") }
         }
+        Spacer(Modifier.height(8.dp))
         Text(
-            "Click a local branch to switch, or a remote branch to create a local tracking branch and switch to it.",
+            "Click a local branch to switch, or a remote branch to create a local tracking branch and switch to it. " +
+                "Use History to cherry-pick commits from other branches or remotes.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(top = 8.dp, bottom = 4.dp)
+            modifier = Modifier.padding(bottom = 8.dp)
         )
-        Spacer(Modifier.height(8.dp))
         if (loading) CircularProgressIndicator()
         else LazyColumn(verticalArrangement = Arrangement.spacedBy(2.dp)) {
             items(branches, key = { (if (it.isRemote) "r_" else "l_") + it.name }) { b ->
@@ -1215,6 +1353,65 @@ fun BranchesTab(repoPath: String, repoManager: DesktopRepoManager, onMessage: (S
                 }
             }
         }
+    }
+
+    if (showAddRemote) {
+        AlertDialog(
+            onDismissRequest = { if (!busy) showAddRemote = false },
+            title = { Text("Add remote") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = remoteName,
+                        onValueChange = { remoteName = it },
+                        label = { Text("Name (e.g. fork)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = remoteUrl,
+                        onValueChange = { remoteUrl = it },
+                        label = { Text("URL") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = { doAddRemote() },
+                    enabled = remoteName.isNotBlank() && remoteUrl.isNotBlank() && !busy
+                ) { Text(if (busy) "Saving…" else "Save") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAddRemote = false }, enabled = !busy) { Text("Cancel") }
+            }
+        )
+    }
+
+    remoteToDelete?.let { name ->
+        AlertDialog(
+            onDismissRequest = { remoteToDelete = null },
+            title = { Text("Remove remote '$name'?") },
+            text = {
+                Text("This only removes the remote configuration. Local branches and fetched refs under refs/remotes/$name/ are not deleted.")
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    scope.launch {
+                        val r = withContext(Dispatchers.IO) { repoManager.removeRemote(repoPath, name) }
+                        remoteToDelete = null
+                        r.fold(
+                            { reload(); onMessage("Removed remote $name") },
+                            { onMessage("Remove failed: ${it.message}") }
+                        )
+                    }
+                }) { Text("Remove") }
+            },
+            dismissButton = {
+                TextButton(onClick = { remoteToDelete = null }) { Text("Cancel") }
+            }
+        )
     }
 }
 

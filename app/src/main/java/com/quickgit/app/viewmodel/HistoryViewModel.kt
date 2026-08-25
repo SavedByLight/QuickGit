@@ -14,8 +14,10 @@ import kotlinx.coroutines.withContext
 
 data class HistoryUiState(
     val commits: List<CommitInfo> = emptyList(),
-    /** null = current HEAD / default log; otherwise a ref like "fork/main". */
+    /** null = current HEAD / default log; otherwise a local branch or remote-tracking ref. */
     val logRef: String? = null,
+    /** Other local branches (not current) for cherry-pick browsing. */
+    val localBranches: List<String> = emptyList(),
     /** Remote-tracking branches available for viewing (for cherry-pick from forks). */
     val remoteBranches: List<String> = emptyList(),
     val loading: Boolean = false,
@@ -50,14 +52,20 @@ class HistoryViewModel(private val repoManager: RepoManager) : ViewModel() {
                 val commits = withContext(Dispatchers.IO) {
                     repoManager.getLog(repoPath, startRef = ref)
                 }
-                val remoteBranches = withContext(Dispatchers.IO) {
+                val allBranches = withContext(Dispatchers.IO) {
                     repoManager.listBranches(repoPath)
-                        .filter { it.isRemote }
-                        .map { it.name }
-                        .sorted()
                 }
+                val localBranches = allBranches
+                    .filter { !it.isRemote && !it.isCurrent }
+                    .map { it.name }
+                    .sorted()
+                val remoteBranches = allBranches
+                    .filter { it.isRemote }
+                    .map { it.name }
+                    .sorted()
                 _state.value = _state.value.copy(
                     commits = commits,
+                    localBranches = localBranches,
                     remoteBranches = remoteBranches,
                     loading = false
                 )

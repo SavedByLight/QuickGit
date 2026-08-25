@@ -128,6 +128,13 @@ fun HistoryScreen(
                     onClick = { vm.setLogRef(null) },
                     label = { Text("Current branch") }
                 )
+                state.localBranches.take(15).forEach { ref ->
+                    FilterChip(
+                        selected = state.logRef == ref,
+                        onClick = { vm.setLogRef(ref) },
+                        label = { Text(ref) }
+                    )
+                }
                 state.remoteBranches.take(20).forEach { ref ->
                     FilterChip(
                         selected = state.logRef == ref,
@@ -136,9 +143,9 @@ fun HistoryScreen(
                     )
                 }
             }
-            if (state.remoteBranches.isEmpty()) {
+            if (state.localBranches.isEmpty() && state.remoteBranches.isEmpty()) {
                 Text(
-                    "Tip: add a fork under Branches → Add remote, Fetch it, then pick its branch here to cherry-pick commits.",
+                    "Tip: other local branches appear here automatically. Add a fork under Branches → Add remote, Fetch it, then pick origin/… or fork/… here to cherry-pick.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)

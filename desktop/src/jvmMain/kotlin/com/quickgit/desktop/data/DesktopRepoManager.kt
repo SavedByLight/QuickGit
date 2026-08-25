@@ -638,9 +638,21 @@ class DesktopRepoManager(
         val time: Long
     )
 
-    fun getHistory(repoPath: String, maxCount: Int = 100): List<CommitInfo> {
+    /**
+     * @param startRef optional ref to walk from (local branch name, or remote-tracking
+     *   name like "origin/main" / "fork/feature"). null = current HEAD.
+     */
+    fun getHistory(repoPath: String, maxCount: Int = 100, startRef: String? = null): List<CommitInfo> {
         open(File(repoPath)).use { git ->
-            return git.log().setMaxCount(maxCount).call().map { c ->
+            val log = git.log().setMaxCount(maxCount)
+            if (!startRef.isNullOrBlank()) {
+                val start = git.repository.resolve(startRef)
+                    ?: git.repository.resolve("refs/remotes/$startRef")
+                    ?: git.repository.resolve("refs/heads/$startRef")
+                    ?: throw IllegalArgumentException("Ref not found: $startRef")
+                log.add(start)
+            }
+            return log.call().map { c ->
                 CommitInfo(
                     id = c.name,
                     shortId = c.name.take(7),
@@ -1095,7 +1107,7 @@ class DesktopRepoManager(
         } catch (_: Exception) { false }
     }
 
-    // ---------- Remote URL ----------
+    // ---------- Remotes ----------
 
     fun getRemoteUrl(repoPath: String): String? {
         return try {
@@ -1103,6 +1115,80 @@ class DesktopRepoManager(
                 git.repository.config.getString("remote", "origin", "url")
             }
         } catch (_: Exception) { null }
+    }
+
+    /** Configured remotes as name → fetch URL. */
+    fun listRemotes(repoPath: String): Map<String, String> {
+        return try {
+            open(File(repoPath)).use { git ->
+                val cfg = git.repository.config
+                cfg.getSubsections("remote").associateWith { name ->
+                    cfg.getString("remote", name, "url") ?: ""
+                }.filterValues { it.isNotBlank() }
+            }
+        } catch (_: Exception) {
+            emptyMap()
+        }
+    }
+
+    /** Add or update a remote (sets default fetch refspec for new remotes). */
+    fun addOrSetRemote(repoPath: String, name: String, url: String): Result<Unit> {
+        val n = name.trim()
+        val u = url.trim()
+        if (n.isBlank() || u.isBlank()) {
+            return Result.failure(IllegalArgumentException("Remote name and URL are required"))
+        }
+        return try {
+            open(File(repoPath)).use { git ->
+                val cfg = git.repository.config
+                cfg.setString("remote", n, "url", u)
+                if (cfg.getString("remote", n, "fetch") == null) {
+                    cfg.setString("remote", n, "fetch", "+refs/heads/*:refs/remotes/$n/*")
+                }
+                cfg.save()
+            }
+            AppLog.i(TAG, "remote set: $n -> $u")
+            Result.success(Unit)
+        } catch (e: Exception) {
+            AppLog.e(TAG, "addOrSetRemote failed", e)
+            Result.failure(e)
+        }
+    }
+
+    fun removeRemote(repoPath: String, name: String): Result<Unit> {
+        val n = name.trim()
+        if (n.isBlank()) return Result.failure(IllegalArgumentException("Remote name required"))
+        return try {
+            open(File(repoPath)).use { git ->
+                val cfg = git.repository.config
+                cfg.unsetSection("remote", n)
+                cfg.save()
+            }
+            AppLog.i(TAG, "remote removed: $n")
+            Result.success(Unit)
+        } catch (e: Exception) {
+            AppLog.e(TAG, "removeRemote failed", e)
+            Result.failure(e)
+        }
+    }
+
+    /** Fetch a specific remote (not only origin). */
+    fun fetchRemote(repoPath: String, remoteName: String = "origin"): Result<Unit> {
+        val remote = remoteName.trim().ifBlank { "origin" }
+        return try {
+            open(File(repoPath)).use { git ->
+                val remoteUrl = git.repository.config.getString("remote", remote, "url")
+                    ?: return Result.failure(IllegalStateException("No URL for remote '$remote'"))
+                val cmd = git.fetch().setRemote(remote).setRemoveDeletedRefs(true)
+                credentialsFor(remoteUrl)?.let { cmd.setCredentialsProvider(it) }
+                cmd.call()
+                AppLog.i(TAG, "fetchRemote ok: $remote")
+                Result.success(Unit)
+            }
+        } catch (e: Exception) {
+            AppLog.e(TAG, "fetchRemote failed: $remote", e)
+            Result.failure(e)
+        }
     }
 
     // ---------- Git LFS ----------
