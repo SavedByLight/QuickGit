@@ -1542,6 +1542,7 @@ fun FilesEditorTab(repoPath: String, repoManager: DesktopRepoManager, onMessage:
     var renameName by remember { mutableStateOf("") }
     var entryToMove by remember { mutableStateOf<FsEntry?>(null) }
     var moveDestDir by remember { mutableStateOf("") }
+    var entryToDelete by remember { mutableStateOf<FsEntry?>(null) }
     val scope = rememberCoroutineScope()
     val root = remember(repoPath) { java.io.File(repoPath) }
 
@@ -1858,6 +1859,17 @@ fun FilesEditorTab(repoPath: String, repoManager: DesktopRepoManager, onMessage:
                                     modifier = Modifier.size(18.dp)
                                 )
                             }
+                            IconButton(
+                                onClick = { entryToDelete = entry },
+                                modifier = Modifier.size(32.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.Delete,
+                                    contentDescription = "Delete",
+                                    modifier = Modifier.size(18.dp),
+                                    tint = MaterialTheme.colorScheme.error
+                                )
+                            }
                             if (entry.isDirectory) {
                                 Icon(
                                     Icons.Default.ChevronRight,
@@ -1879,7 +1891,7 @@ fun FilesEditorTab(repoPath: String, repoManager: DesktopRepoManager, onMessage:
             if (selectedFile == null) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text(
-                        "Open a folder, or select a file to view / edit.\nUse Upload to add local files or folders (multi-select supported; folders merge and overwrite matching files).",
+                        "Open a folder, or select a file to view / edit.\nUse Upload to add local files or folders (multi-select supported).\nRename, Move, or Delete entries with the icons on each row.",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         style = MaterialTheme.typography.bodyMedium
                     )
@@ -2008,24 +2020,41 @@ fun FilesEditorTab(repoPath: String, repoManager: DesktopRepoManager, onMessage:
                 append("\nReplace/merge all? Matching files inside folders will be overwritten.")
             }
         }
-        val confirmLabel = when {
-            conflicts.size == 1 && folderCount == 1 -> "Merge & overwrite"
-            conflicts.size == 1 -> "Replace"
-            else -> "Replace all"
-        }
+        val hasFolders = folderCount > 0
         AlertDialog(
             onDismissRequest = { pendingUploadConflicts = emptyList() },
             title = { Text(title) },
             text = { Text(body) },
             confirmButton = {
-                TextButton(
-                    onClick = {
-                        for ((src, dest) in conflicts) {
-                            copyUpload(src, dest, overwrite = true)
-                        }
-                        pendingUploadConflicts = emptyList()
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (hasFolders) {
+                        TextButton(
+                            onClick = {
+                                for ((src, dest) in conflicts) {
+                                    // Merge folders but skip files that already exist
+                                    copyUpload(src, dest, overwrite = false)
+                                }
+                                pendingUploadConflicts = emptyList()
+                            }
+                        ) { Text("Merge (skip existing)") }
                     }
-                ) { Text(confirmLabel) }
+                    TextButton(
+                        onClick = {
+                            for ((src, dest) in conflicts) {
+                                copyUpload(src, dest, overwrite = true)
+                            }
+                            pendingUploadConflicts = emptyList()
+                        }
+                    ) {
+                        Text(
+                            when {
+                                conflicts.size == 1 && folderCount == 1 -> "Merge & overwrite"
+                                conflicts.size == 1 -> "Replace"
+                                else -> "Replace all"
+                            }
+                        )
+                    }
+                }
             },
             dismissButton = {
                 TextButton(onClick = { pendingUploadConflicts = emptyList() }) { Text("Cancel") }
@@ -2149,6 +2178,57 @@ fun FilesEditorTab(repoPath: String, repoManager: DesktopRepoManager, onMessage:
             },
             dismissButton = {
                 TextButton(onClick = { entryToMove = null }) { Text("Cancel") }
+            }
+        )
+    }
+
+    entryToDelete?.let { entry ->
+        AlertDialog(
+            onDismissRequest = { entryToDelete = null },
+            title = { Text(if (entry.isDirectory) "Delete folder?" else "Delete file?") },
+            text = {
+                Text(
+                    if (entry.isDirectory) {
+                        "Delete '${entry.name}' and everything inside it from the working tree?\n\nThis does not stage the change. Use the Changes tab to stage and commit the deletion."
+                    } else {
+                        "Delete '${entry.name}' from the working tree?\n\nThis does not stage the change. Use the Changes tab to stage and commit the deletion."
+                    }
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        scope.launch {
+                            val result = withContext(Dispatchers.IO) {
+                                repoManager.deleteWorkingPath(repoPath, entry.relativePath)
+                            }
+                            entryToDelete = null
+                            result.fold(
+                                onSuccess = {
+                                    onMessage("Deleted ${entry.name}")
+                                    if (selectedFile == entry.relativePath) {
+                                        selectedFile = null
+                                        content = ""
+                                        original = ""
+                                    } else if (selectedFile?.startsWith(entry.relativePath + "/") == true) {
+                                        selectedFile = null
+                                        content = ""
+                                        original = ""
+                                    }
+                                    if (entry.isDirectory && (currentDir == entry.relativePath || currentDir.startsWith(entry.relativePath + "/"))) {
+                                        currentDir = entry.relativePath.substringBeforeLast('/', missingDelimiterValue = "")
+                                    }
+                                    listDir(currentDir)
+                                },
+                                onFailure = { onMessage("Delete failed: ${it.message}") }
+                            )
+                        }
+                    },
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                ) { Text("Delete") }
+            },
+            dismissButton = {
+                TextButton(onClick = { entryToDelete = null }) { Text("Cancel") }
             }
         )
     }

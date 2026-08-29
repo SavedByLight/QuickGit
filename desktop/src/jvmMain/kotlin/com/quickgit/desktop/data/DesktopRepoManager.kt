@@ -1309,6 +1309,37 @@ class DesktopRepoManager(
     }
 
     /**
+     * Deletes a file or directory from the working tree.
+     * Does not stage the change (it will show as deleted / untracked removal in status).
+     * Refuses to touch `.git`.
+     */
+    fun deleteWorkingPath(repoPath: String, relativePath: String): Result<Unit> {
+        return try {
+            val cleaned = relativePath.trim().trimStart('/').replace("\\", "/")
+            if (cleaned.isBlank()) return Result.failure(IllegalArgumentException("Path is required"))
+            if (cleaned.contains("..")) return Result.failure(IllegalArgumentException("Invalid path"))
+            if (cleaned == ".git" || cleaned.startsWith(".git/")) {
+                return Result.failure(IllegalArgumentException("Refusing to delete .git"))
+            }
+            val root = File(repoPath).canonicalFile
+            val target = File(repoPath, cleaned).canonicalFile
+            if (!target.path.startsWith(root.path + File.separator) && target.path != root.path) {
+                return Result.failure(IllegalArgumentException("Path escapes repository"))
+            }
+            if (target.path == root.path) {
+                return Result.failure(IllegalArgumentException("Refusing to delete repository root"))
+            }
+            if (!target.exists()) return Result.failure(IllegalArgumentException("Not found: $cleaned"))
+            val ok = if (target.isDirectory) target.deleteRecursively() else target.delete()
+            if (!ok) return Result.failure(IllegalStateException("Could not delete: $cleaned"))
+            AppLog.i(TAG, "deleted working path: $cleaned")
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
      * Renames a file or directory in the working tree (same parent directory).
      * [newName] is a single path segment. Does not stage the change.
      * @return the new relative path from the repo root
