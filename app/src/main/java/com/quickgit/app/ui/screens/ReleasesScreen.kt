@@ -1,5 +1,7 @@
 package com.quickgit.app.ui.screens
 
+import android.content.Intent
+import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -14,7 +16,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -171,7 +173,19 @@ private fun ReleaseDetailContent(
     loading: Boolean,
     onBack: () -> Unit
 ) {
-    val uriHandler = LocalUriHandler.current
+    val context = LocalContext.current
+
+    fun openUrl(url: String?) {
+        if (url.isNullOrBlank()) return
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        try {
+            context.startActivity(intent)
+        } catch (_: Exception) {
+            // No browser / activity available to handle the URI
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -222,7 +236,7 @@ private fun ReleaseDetailContent(
             InfoLine("Published", formatIso(release.publishedAt ?: release.createdAt))
             if (release.htmlUrl.isNotBlank()) {
                 Spacer(Modifier.height(4.dp))
-                TextButton(onClick = { uriHandler.openUri(release.htmlUrl) }) {
+                TextButton(onClick = { openUrl(release.htmlUrl) }) {
                     Text("Open on GitHub")
                 }
             }
@@ -244,26 +258,26 @@ private fun ReleaseDetailContent(
                 Spacer(Modifier.height(8.dp))
                 release.assets.forEach { asset ->
                     AssetRow(asset) {
-                        if (asset.browserDownloadUrl.isNotBlank()) {
-                            uriHandler.openUri(asset.browserDownloadUrl)
-                        }
+                        openUrl(asset.browserDownloadUrl)
                     }
                     Spacer(Modifier.height(6.dp))
                 }
             }
 
-            if (!release.zipballUrl.isNullOrBlank() || !release.tarballUrl.isNullOrBlank()) {
+            val zipUrl = release.zipballUrl
+            val tarUrl = release.tarballUrl
+            if (!zipUrl.isNullOrBlank() || !tarUrl.isNullOrBlank()) {
                 Spacer(Modifier.height(16.dp))
                 Text("Source code", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(6.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (!release.zipballUrl.isNullOrBlank()) {
-                        OutlinedButton(onClick = { uriHandler.openUri(release.zipballUrl) }) {
+                    if (!zipUrl.isNullOrBlank()) {
+                        OutlinedButton(onClick = { openUrl(zipUrl) }) {
                             Text("zip")
                         }
                     }
-                    if (!release.tarballUrl.isNullOrBlank()) {
-                        OutlinedButton(onClick = { uriHandler.openUri(release.tarballUrl) }) {
+                    if (!tarUrl.isNullOrBlank()) {
+                        OutlinedButton(onClick = { openUrl(tarUrl) }) {
                             Text("tar.gz")
                         }
                     }
