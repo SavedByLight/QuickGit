@@ -473,22 +473,30 @@ class GitHubApi(private val token: String?) {
         var required = false
         var default: String? = null
         var type = "string"
+        var options = mutableListOf<String>()
         var inputIndent = -1
 
         fun flush() {
             val n = currentName ?: return
+            val resolvedType = when {
+                type != "string" -> type
+                options.isNotEmpty() -> "choice"
+                else -> "string"
+            }
             result += WorkflowInput(
                 name = n,
                 description = description,
                 required = required,
                 default = default,
-                type = type
+                type = resolvedType,
+                options = options.toList()
             )
             currentName = null
             description = null
             required = false
             default = null
             type = "string"
+            options = mutableListOf()
         }
 
         while (i < lines.size) {
@@ -532,6 +540,43 @@ class GitHubApi(private val token: String?) {
                     }
                     trimmed.startsWith("type:") -> {
                         type = trimmed.substringAfter("type:").trim().trim('"', '\'')
+                    }
+                    trimmed.startsWith("options:") -> {
+                        val inline = trimmed.substringAfter("options:").trim()
+                        if (inline.startsWith("[") && inline.endsWith("]")) {
+                            // options: [a, b, c]
+                            options.addAll(
+                                inline.removePrefix("[").removeSuffix("]")
+                                    .split(",")
+                                    .map { it.trim().trim('"', '\'') }
+                                    .filter { it.isNotEmpty() }
+                            )
+                        } else if (inline.isNotEmpty() && !inline.startsWith("#")) {
+                            options.add(inline.trim('"', '\''))
+                        } else {
+                            // Multi-line list:
+                            // options:
+                            //   - a
+                            //   - b
+                            var j = i + 1
+                            while (j < lines.size) {
+                                val lr = lines[j]
+                                val lt = lr.trimStart()
+                                val li = lr.length - lt.length
+                                if (lt.isEmpty() || lt.startsWith("#")) {
+                                    j++
+                                    continue
+                                }
+                                if (li <= indent) break
+                                if (lt.startsWith("- ")) {
+                                    options.add(lt.removePrefix("- ").trim().trim('"', '\''))
+                                    j++
+                                } else {
+                                    break
+                                }
+                            }
+                            i = j - 1
+                        }
                     }
                 }
             }

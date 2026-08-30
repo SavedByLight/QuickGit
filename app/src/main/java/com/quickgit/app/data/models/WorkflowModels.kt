@@ -69,7 +69,9 @@ data class WorkflowInput(
     val description: String?,
     val required: Boolean,
     val default: String?,
-    val type: String = "string"     // string | boolean | choice | environment
+    val type: String = "string",    // string | boolean | choice | environment
+    /** Allowed values when [type] is "choice". */
+    val options: List<String> = emptyList()
 )
 
 /** GitHub check-run annotation (error/warning/notice) for a workflow job. */

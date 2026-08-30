@@ -228,16 +228,19 @@ fun WorkflowsScreen(
         var inputDefs by remember(wf.id) {
             mutableStateOf<List<com.quickgit.app.data.models.WorkflowInput>>(emptyList())
         }
+        var branches by remember(wf.id) { mutableStateOf<List<String>>(emptyList()) }
         var inputsLoading by remember(wf.id) { mutableStateOf(true) }
         LaunchedEffect(wf.id) {
             inputsLoading = true
             inputDefs = vm.loadDispatchInputs(wf)
+            branches = vm.loadDispatchBranches()
             inputsLoading = false
         }
         DispatchDialog(
             workflow = wf,
             busy = state.busy || inputsLoading,
             defaultRef = state.defaultBranch,
+            branches = branches,
             inputDefs = inputDefs,
             onDismiss = { showDispatch = null },
             onDispatch = { ref, inputs ->
@@ -865,68 +868,116 @@ private fun formatIso(iso: String): String {
     return iso.replace("T", " ").removeSuffix("Z").take(19)
 }
 
+private const val CUSTOM_REF = "Custom…"
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun DispatchDialog(
     workflow: Workflow,
     busy: Boolean,
     defaultRef: String,
+    branches: List<String> = emptyList(),
     inputDefs: List<com.quickgit.app.data.models.WorkflowInput> = emptyList(),
     onDismiss: () -> Unit,
     onDispatch: (ref: String, inputs: Map<String, String>) -> Unit
 ) {
-    var ref by remember { mutableStateOf(defaultRef) }
+    val branchChoices = remember(branches, defaultRef) {
+        val base = if (branches.isNotEmpty()) branches else listOfNotNull(defaultRef.takeIf { it.isNotBlank() })
+        (base + CUSTOM_REF).distinct()
+    }
+    var selectedBranch by remember(branchChoices) {
+        mutableStateOf(
+            when {
+                defaultRef.isNotBlank() && branchChoices.contains(defaultRef) -> defaultRef
+                branchChoices.firstOrNull() != CUSTOM_REF -> branchChoices.first()
+                else -> CUSTOM_REF
+            }
+        )
+    }
+    var customRef by remember { mutableStateOf(if (selectedBranch == CUSTOM_REF) defaultRef else "") }
+    var branchMenuExpanded by remember { mutableStateOf(false) }
+
+    val resolvedRef = if (selectedBranch == CUSTOM_REF) customRef.trim() else selectedBranch
+
     val inputValues = remember(inputDefs) {
         mutableStateMapOf<String, String>().apply {
-            inputDefs.forEach { put(it.name, it.default.orEmpty()) }
+            inputDefs.forEach { def ->
+                val initial = when {
+                    !def.default.isNullOrBlank() -> def.default!!
+                    def.type.equals("boolean", true) -> "false"
+                    def.type.equals("choice", true) && def.options.isNotEmpty() -> def.options.first()
+                    else -> ""
+                }
+                put(def.name, initial)
+            }
         }
     }
-    val requiredMissing = inputDefs.any { it.required && inputValues[it.name].isNullOrBlank() }
+    val requiredMissing = inputDefs.any { def ->
+        val v = inputValues[def.name].orEmpty()
+        def.required && v.isBlank() && !def.type.equals("boolean", true)
+    }
+
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Run “${workflow.name}”") },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
                 Text(
-                    "This triggers a workflow_dispatch event. Provide the branch/tag/SHA and any workflow inputs.",
+                    "This triggers a workflow_dispatch event. Pick a branch (or enter a tag/SHA) and fill any workflow inputs.",
                     style = MaterialTheme.typography.bodyMedium
                 )
                 Spacer(Modifier.height(12.dp))
-                OutlinedTextField(
-                    value = ref,
-                    onValueChange = { ref = it },
-                    label = { Text("Ref (branch / tag / SHA)") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
+
+                // ── Ref: branch dropdown + optional custom field ──────────
+                ExposedDropdownMenuBox(
+                    expanded = branchMenuExpanded,
+                    onExpandedChange = { branchMenuExpanded = it }
+                ) {
+                    OutlinedTextField(
+                        value = selectedBranch,
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("Branch") },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = branchMenuExpanded) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .menuAnchor()
+                    )
+                    ExposedDropdownMenu(
+                        expanded = branchMenuExpanded,
+                        onDismissRequest = { branchMenuExpanded = false }
+                    ) {
+                        branchChoices.forEach { name ->
+                            DropdownMenuItem(
+                                text = { Text(name) },
+                                onClick = {
+                                    selectedBranch = name
+                                    branchMenuExpanded = false
+                                }
+                            )
+                        }
+                    }
+                }
+                if (selectedBranch == CUSTOM_REF) {
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = customRef,
+                        onValueChange = { customRef = it },
+                        label = { Text("Tag / SHA / branch name") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+
                 if (inputDefs.isNotEmpty()) {
                     Spacer(Modifier.height(12.dp))
                     Text("Inputs", style = MaterialTheme.typography.titleSmall)
                     Spacer(Modifier.height(8.dp))
                     inputDefs.forEach { def ->
-                        OutlinedTextField(
+                        DispatchInputField(
+                            def = def,
                             value = inputValues[def.name].orEmpty(),
-                            onValueChange = { inputValues[def.name] = it },
-                            label = {
-                                Text(
-                                    buildString {
-                                        append(def.name)
-                                        if (def.required) append(" *")
-                                    }
-                                )
-                            },
-                            placeholder = {
-                                if (!def.description.isNullOrBlank()) {
-                                    Text(def.description!!, maxLines = 2)
-                                }
-                            },
-                            supportingText = {
-                                if (!def.description.isNullOrBlank()) {
-                                    Text(def.description!!)
-                                }
-                            },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
+                            onValueChange = { inputValues[def.name] = it }
                         )
                     }
                 }
@@ -935,11 +986,18 @@ private fun DispatchDialog(
         confirmButton = {
             Button(
                 onClick = {
-                    if (ref.isNotBlank()) {
-                        onDispatch(ref.trim(), inputValues.toMap().filter { it.value.isNotEmpty() || inputDefs.any { d -> d.name == it.key && d.required } })
+                    if (resolvedRef.isNotBlank()) {
+                        onDispatch(
+                            resolvedRef,
+                            inputValues.toMap().filter { entry ->
+                                entry.value.isNotEmpty() ||
+                                    inputDefs.any { d -> d.name == entry.key && d.required } ||
+                                    inputDefs.any { d -> d.name == entry.key && d.type.equals("boolean", true) }
+                            }
+                        )
                     }
                 },
-                enabled = !busy && ref.isNotBlank() && !requiredMissing
+                enabled = !busy && resolvedRef.isNotBlank() && !requiredMissing
             ) {
                 if (busy) {
                     CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
@@ -952,6 +1010,106 @@ private fun DispatchDialog(
             TextButton(onClick = onDismiss) { Text("Cancel") }
         }
     )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun DispatchInputField(
+    def: com.quickgit.app.data.models.WorkflowInput,
+    value: String,
+    onValueChange: (String) -> Unit
+) {
+    val labelText = buildString {
+        append(def.name)
+        if (def.required) append(" *")
+    }
+    val type = def.type.lowercase()
+
+    when {
+        type == "boolean" -> {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(labelText, style = MaterialTheme.typography.bodyLarge)
+                    if (!def.description.isNullOrBlank()) {
+                        Text(
+                            def.description!!,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                Switch(
+                    checked = value.equals("true", true),
+                    onCheckedChange = { onValueChange(if (it) "true" else "false") }
+                )
+            }
+        }
+        type == "choice" && def.options.isNotEmpty() -> {
+            var expanded by remember { mutableStateOf(false) }
+            ExposedDropdownMenuBox(
+                expanded = expanded,
+                onExpandedChange = { expanded = it },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 8.dp)
+            ) {
+                OutlinedTextField(
+                    value = value,
+                    onValueChange = {},
+                    readOnly = true,
+                    label = { Text(labelText) },
+                    supportingText = {
+                        if (!def.description.isNullOrBlank()) Text(def.description!!)
+                    },
+                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .menuAnchor()
+                )
+                ExposedDropdownMenu(
+                    expanded = expanded,
+                    onDismissRequest = { expanded = false }
+                ) {
+                    def.options.forEach { opt ->
+                        DropdownMenuItem(
+                            text = { Text(opt) },
+                            onClick = {
+                                onValueChange(opt)
+                                expanded = false
+                            }
+                        )
+                    }
+                }
+            }
+        }
+        else -> {
+            // string, environment, or choice without parsed options → free text
+            OutlinedTextField(
+                value = value,
+                onValueChange = onValueChange,
+                label = { Text(labelText) },
+                placeholder = {
+                    if (!def.description.isNullOrBlank()) {
+                        Text(def.description!!, maxLines = 2)
+                    }
+                },
+                supportingText = {
+                    if (!def.description.isNullOrBlank()) {
+                        Text(def.description!!)
+                    }
+                },
+                singleLine = true,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 8.dp)
+            )
+        }
+    }
 }
 
 

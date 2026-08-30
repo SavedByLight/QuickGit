@@ -256,6 +256,25 @@ class WorkflowManager(
             .getOrElse { emptyList() }
     }
 
+    /**
+     * Local branch short names for the repo (suitable as workflow_dispatch refs),
+     * current branch first when present.
+     */
+    fun listLocalBranchNames(path: String): List<String> {
+        val branches = repoManager.listBranches(path).filter { !it.isRemote }
+        val current = branches.firstOrNull { it.isCurrent }?.name
+        val names = branches.map { it.name }.distinct()
+        return if (current != null) {
+            listOf(current) + names.filter { it != current }.sorted()
+        } else {
+            names.sorted()
+        }
+    }
+
+    /** Current local branch short name, or null if detached / unknown. */
+    fun currentBranchName(path: String): String? =
+        repoManager.listBranches(path).firstOrNull { it.isCurrent && !it.isRemote }?.name
+
     fun cancelRun(ref: ProjectRef, runId: Long): PrOpResult {
         AppLog.i(TAG, "cancelRun: ${ref.projectPath} run=$runId")
         return if (ref.isGitLab) {

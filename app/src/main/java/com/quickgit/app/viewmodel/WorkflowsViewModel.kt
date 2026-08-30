@@ -78,7 +78,14 @@ class WorkflowsViewModel(
                 return@launch
             }
             project = ref
-            _state.value = _state.value.copy(supported = true, isGitLab = ref.isGitLab)
+            val current = withContext(Dispatchers.IO) {
+                workflowManager.currentBranchName(repoPath)
+            }
+            _state.value = _state.value.copy(
+                supported = true,
+                isGitLab = ref.isGitLab,
+                defaultBranch = current ?: _state.value.defaultBranch
+            )
             refresh()
         }
     }
@@ -215,6 +222,14 @@ class WorkflowsViewModel(
         val ref = project ?: return emptyList()
         return withContext(Dispatchers.IO) {
             workflowManager.listDispatchInputs(ref, workflow, branch = _state.value.defaultBranch)
+        }
+    }
+
+    /** Local branch names for the dispatch ref dropdown (current first). */
+    suspend fun loadDispatchBranches(): List<String> {
+        if (!::repoPath.isInitialized) return emptyList()
+        return withContext(Dispatchers.IO) {
+            workflowManager.listLocalBranchNames(repoPath)
         }
     }
 
