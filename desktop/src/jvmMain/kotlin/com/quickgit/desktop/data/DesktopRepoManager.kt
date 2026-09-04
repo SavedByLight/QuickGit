@@ -574,7 +574,15 @@ class DesktopRepoManager(
         return Result.success(Unit)
     }
 
-    fun pull(repoPath: String): Result<Unit> {
+    fun pull(repoPath: String): Result<Unit> = pullInternal(repoPath, rebase = false)
+
+    /**
+     * Pull with rebase (`git pull --rebase`): rebase the current branch onto upstream
+     * instead of creating a merge commit.
+     */
+    fun pullRebase(repoPath: String): Result<Unit> = pullInternal(repoPath, rebase = true)
+
+    private fun pullInternal(repoPath: String, rebase: Boolean): Result<Unit> {
         return try {
             open(File(repoPath)).use { git ->
                 val repo = git.repository
@@ -584,14 +592,21 @@ class DesktopRepoManager(
 
                 // 1) Prefer a normal pull when the remote advertises this branch
                 try {
-                    val cmd = git.pull().setRemote("origin")
+                    val cmd = git.pull().setRemote("origin").setRebase(rebase)
                     creds?.let { cmd.setCredentialsProvider(it) }
                     val result = cmd.call()
                     if (result.mergeResult?.mergeStatus?.isSuccessful == false) {
                         AppLog.w(TAG, "pull merge conflict: $repoPath")
                         return Result.failure(IllegalStateException("Merge conflict during pull"))
                     }
-                    AppLog.i(TAG, "pull OK: $repoPath (branch=${localBranch ?: "?"})")
+                    val rebaseStatus = result.rebaseResult?.status?.name
+                    if (rebase && rebaseStatus != null &&
+                        rebaseStatus.contains("CONFLICT", ignoreCase = true)
+                    ) {
+                        AppLog.w(TAG, "pull --rebase conflict: $repoPath ($rebaseStatus)")
+                        return Result.failure(IllegalStateException("Rebase conflict during pull"))
+                    }
+                    AppLog.i(TAG, "pull OK: $repoPath (branch=${localBranch ?: "?"}, rebase=$rebase)")
                     return Result.success(Unit)
                 } catch (e: org.eclipse.jgit.api.errors.RefNotAdvertisedException) {
                     AppLog.w(

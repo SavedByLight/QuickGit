@@ -123,6 +123,10 @@ fun RepoDetailScreenDesktop(
                             onClick = { pullMenuExpanded = false; vm.pull() }
                         )
                         DropdownMenuItem(
+                            text = { Text("Pull with rebase") },
+                            onClick = { pullMenuExpanded = false; vm.pullRebase() }
+                        )
+                        DropdownMenuItem(
                             text = { Text("LFS pull only") },
                             onClick = { pullMenuExpanded = false; vm.fetchLfs() }
                         )

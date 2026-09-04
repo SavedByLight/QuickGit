@@ -356,6 +356,26 @@ class RepoDetailViewModel(
         }
     }
 
+    /** Pull with rebase (`git pull --rebase`). */
+    fun pullRebase() {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(busy = true)
+            notifier.start(GitProgressNotifier.Kind.PULL, "Pulling with rebase…", "Starting…")
+            val result = withContext(Dispatchers.IO) {
+                repoManager.pullRebase(repoPath) { progress ->
+                    val percent = parsePercent(progress)
+                    notifier.update(GitProgressNotifier.Kind.PULL, progress, percent)
+                }
+            }
+            _state.value = _state.value.copy(busy = false, lastResult = result)
+            when (result) {
+                is GitOpResult.Success, is GitOpResult.UpToDate ->
+                    notifier.finish(GitProgressNotifier.Kind.PULL, "Pull --rebase finished")
+                else -> notifier.cancel(GitProgressNotifier.Kind.PULL)
+            }
+        }
+    }
+
     /** Git pull then LFS pull (when supported). */
     fun pullWithLfs() {
         viewModelScope.launch {

@@ -1817,14 +1817,22 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     }
 
     fun pull(path: String, onProgress: (String) -> Unit = {}): GitOpResult =
-        pullInternal(path, onProgress, allowBranchRecovery = true)
+        pullInternal(path, onProgress, allowBranchRecovery = true, rebase = false)
+
+    /**
+     * Pull with rebase (`git pull --rebase`): fetch upstream and rebase the current branch
+     * onto it instead of creating a merge commit.
+     */
+    fun pullRebase(path: String, onProgress: (String) -> Unit = {}): GitOpResult =
+        pullInternal(path, onProgress, allowBranchRecovery = true, rebase = true)
 
     private fun pullInternal(
         path: String,
         onProgress: (String) -> Unit,
-        allowBranchRecovery: Boolean
+        allowBranchRecovery: Boolean,
+        rebase: Boolean = false
     ): GitOpResult {
-        AppLog.i(TAG, "pull: $path")
+        AppLog.i(TAG, "pull: $path rebase=$rebase")
         return try {
             openGit(path).use { git ->
                 val repoState = git.repository.repositoryState
@@ -1840,15 +1848,27 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                     GitOpResult.Conflict(unresolved)
                 } else {
                     val remoteUrl = git.repository.config.getString("remote", "origin", "url") ?: ""
-                    onProgress("Pulling…")
+                    onProgress(if (rebase) "Pulling with rebase…" else "Pulling…")
                     val cmd = git.pull()
                         .setProgressMonitor(TextProgress(onProgress))
+                        .setRebase(rebase)
                     applyTransportConfig(cmd, remoteUrl)
                     val result = cmd.call()
                     when {
                         !result.isSuccessful && result.mergeResult?.mergeStatus == MergeResult.MergeStatus.CONFLICTING -> {
                             val paths = result.mergeResult.conflicts?.keys?.toList() ?: emptyList()
                             AppLog.w(TAG, "pull conflict: ${paths.size} path(s)")
+                            GitOpResult.Conflict(paths)
+                        }
+                        // Rebase path reports conflicts via rebaseResult rather than mergeResult
+                        rebase && result.rebaseResult != null &&
+                            result.rebaseResult.status?.name?.contains("CONFLICT", ignoreCase = true) == true -> {
+                            val paths = try {
+                                git.status().call().conflicting.toList().sorted()
+                            } catch (_: Exception) {
+                                emptyList()
+                            }
+                            AppLog.w(TAG, "pull --rebase conflict: ${paths.size} path(s)")
                             GitOpResult.Conflict(paths)
                         }
                         result.mergeResult?.mergeStatus == MergeResult.MergeStatus.ALREADY_UP_TO_DATE -> {
@@ -1858,12 +1878,15 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                         }
                         result.isSuccessful -> {
                             maybeFetchLfs(path, remoteUrl) {}?.let { AppLog.i(TAG, it) }
-                            AppLog.i(TAG, "pull succeeded")
+                            AppLog.i(TAG, "pull succeeded (rebase=$rebase)")
                             GitOpResult.Success
                         }
                         else -> {
-                            AppLog.w(TAG, "pull incomplete: ${result.mergeResult?.mergeStatus}")
-                            GitOpResult.Error("Pull did not complete: ${result.mergeResult?.mergeStatus}")
+                            val detail = result.mergeResult?.mergeStatus?.toString()
+                                ?: result.rebaseResult?.status?.toString()
+                                ?: "unknown"
+                            AppLog.w(TAG, "pull incomplete: $detail")
+                            GitOpResult.Error("Pull did not complete: $detail")
                         }
                     }
                 }

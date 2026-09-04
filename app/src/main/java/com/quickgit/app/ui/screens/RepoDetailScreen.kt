@@ -130,23 +130,28 @@ fun RepoDetailScreen(
                 }
             }
 
-            // Sub-page navigation under the name
+            // Sub-page navigation under the name — centered on phones
             androidx.compose.foundation.lazy.LazyRow(
                 Modifier
                     .fillMaxWidth()
                     .padding(vertical = 8.dp),
                 contentPadding = PaddingValues(horizontal = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                horizontalArrangement = Arrangement.Center
             ) {
                 item { SubPageButton(Icons.Default.FolderOpen, "Files", onOpenFiles) }
+                item { Spacer(Modifier.width(4.dp)) }
                 item { SubPageButton(Icons.Default.AccountTree, "Branches", onOpenBranches) }
+                item { Spacer(Modifier.width(4.dp)) }
                 // GitLab: MRs / Issues board / Build. GitHub: PRs / Issues / Actions.
                 val prLabel = if (state.isGitLabRemote) "MRs" else "PRs"
                 val issuesLabel = if (state.isGitLabRemote) "Board" else "Issues"
                 val ciLabel = if (state.isGitLabRemote) "Build" else "Actions"
                 item { SubPageButton(Icons.Default.CallMerge, prLabel, onOpenPullRequests) }
+                item { Spacer(Modifier.width(4.dp)) }
                 item { SubPageButton(Icons.Default.BugReport, issuesLabel, onOpenIssues) }
+                item { Spacer(Modifier.width(4.dp)) }
                 item { SubPageButton(Icons.Default.PlayCircle, ciLabel, onOpenWorkflows) }
+                item { Spacer(Modifier.width(4.dp)) }
                 item { SubPageButton(Icons.Default.NewReleases, "Releases", onOpenReleases) }
             }
 
@@ -217,6 +222,10 @@ fun RepoDetailScreen(
                                     onClick = { showPullOptions = false; vm.pull() },
                                     modifier = Modifier.fillMaxWidth()
                                 ) { Text("Git pull") }
+                                TextButton(
+                                    onClick = { showPullOptions = false; vm.pullRebase() },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) { Text("Pull with rebase") }
                                 TextButton(
                                     onClick = { showPullOptions = false; vm.fetchLfs() },
                                     modifier = Modifier.fillMaxWidth()

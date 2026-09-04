@@ -674,6 +674,18 @@ fun RepoDetailScreen(
                             r.fold({ onMessage("Pull OK") }, { onMessage("Pull failed: ${it.message}") })
                         }
                     })
+                    DropdownMenuItem(text = { Text("Pull with rebase") }, onClick = {
+                        pullMenuExpanded = false
+                        scope.launch {
+                            busy = true
+                            val r = withContext(Dispatchers.IO) { repoManager.pullRebase(repoPath) }
+                            busy = false
+                            r.fold(
+                                { onMessage("Pull --rebase OK") },
+                                { onMessage("Pull --rebase failed: ${it.message}") }
+                            )
+                        }
+                    })
                     DropdownMenuItem(text = { Text("LFS pull only") }, onClick = {
                         pullMenuExpanded = false
                         scope.launch {
