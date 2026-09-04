@@ -619,7 +619,14 @@ fun RepoDetailScreen(
     var forcePushUseLease by remember { mutableStateOf(true) }
     var showLfsTrack by remember { mutableStateOf(false) }
     var lfsTrackPattern by remember { mutableStateOf("*.psd") }
+    var isGerritRemote by remember { mutableStateOf(false) }
     val gitRed = com.quickgit.desktop.ui.theme.GitRed
+
+    LaunchedEffect(repoPath) {
+        isGerritRemote = withContext(Dispatchers.IO) {
+            repoManager.isGerritRemoteUrl(repoManager.getRemoteUrl(repoPath))
+        }
+    }
 
     fun doPush(force: Boolean = false, forceWithLease: Boolean = false, withLfs: Boolean = false) {
         scope.launch {
@@ -636,6 +643,18 @@ fun RepoDetailScreen(
                 else -> "Push"
             }
             r.fold({ onMessage("$label OK") }, { onMessage("$label failed: ${it.message}") })
+        }
+    }
+
+    fun doPushForReview() {
+        scope.launch {
+            busy = true
+            val r = withContext(Dispatchers.IO) { repoManager.pushForReview(repoPath) }
+            busy = false
+            r.fold(
+                { onMessage("Push for review OK") },
+                { onMessage("Push for review failed: ${it.message}") }
+            )
         }
     }
 
@@ -689,6 +708,15 @@ fun RepoDetailScreen(
                             doPush()
                         }
                     )
+                    if (isGerritRemote) {
+                        DropdownMenuItem(
+                            text = { Text("Push for review") },
+                            onClick = {
+                                pushMenuExpanded = false
+                                doPushForReview()
+                            }
+                        )
+                    }
                     DropdownMenuItem(
                         text = { Text("LFS push only") },
                         onClick = {

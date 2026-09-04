@@ -148,6 +148,15 @@ fun RepoDetailScreenDesktop(
                                 vm.push(force = false)
                             }
                         )
+                        if (state.isGerritRemote) {
+                            DropdownMenuItem(
+                                text = { Text("Push for review") },
+                                onClick = {
+                                    pushMenuExpanded = false
+                                    vm.pushForReview()
+                                }
+                            )
+                        }
                         DropdownMenuItem(
                             text = { Text("LFS push only") },
                             onClick = { pushMenuExpanded = false; vm.pushLfs() }

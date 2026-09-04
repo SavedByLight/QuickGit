@@ -456,6 +456,58 @@ class DesktopRepoManager(
     }
 
     /**
+     * Gerrit "push for review": pushes the current branch to `refs/for/<branch>`.
+     * Equivalent to `git push origin HEAD:refs/for/<branch>`.
+     */
+    fun pushForReview(
+        repoPath: String,
+        targetBranch: String? = null,
+        progress: ((String) -> Unit)? = null
+    ): Result<Unit> {
+        return try {
+            open(File(repoPath)).use { git ->
+                val remoteUrl = git.repository.config.getString("remote", "origin", "url")
+                    ?: return Result.failure(IllegalStateException("No URL configured for remote 'origin'"))
+                progress?.invoke("Pushing for review…")
+                val branch = try { git.repository.branch } catch (_: Exception) { null }
+                if (branch.isNullOrBlank()) {
+                    return Result.failure(IllegalStateException("Detached HEAD — check out a branch before push for review"))
+                }
+                val tb = targetBranch?.takeIf { it.isNotBlank() } ?: branch
+                val cmd = git.push().setRemote("origin")
+                credentialsFor(remoteUrl)?.let { cmd.setCredentialsProvider(it) }
+                cmd.setRefSpecs(RefSpec("refs/heads/$branch:refs/for/$tb"))
+                val results = cmd.call()
+                val rejected = results.flatMap { it.remoteUpdates }
+                    .filter { it.status.name.contains("REJECTED") || it.status.name.contains("NON_EXISTING") }
+                if (rejected.isNotEmpty()) {
+                    val details = rejected.joinToString("; ") {
+                        it.message?.takeIf { m -> m.isNotBlank() } ?: (it.status?.name ?: "REJECTED")
+                    }
+                    AppLog.w(TAG, "pushForReview rejected: $details")
+                    return Result.failure(IllegalStateException("Push for review rejected: $details"))
+                }
+                AppLog.i(TAG, "pushForReview OK → refs/for/$tb")
+                Result.success(Unit)
+            }
+        } catch (e: Exception) {
+            AppLog.e(TAG, "pushForReview failed: $repoPath", e)
+            Result.failure(e)
+        }
+    }
+
+    /** True when [remoteUrl] points at a Gerrit host (preferred host match or "gerrit" in host). */
+    fun isGerritRemoteUrl(remoteUrl: String?): Boolean {
+        if (remoteUrl.isNullOrBlank()) return false
+        val host = (credentialStore.hostFromRemoteUrl(remoteUrl) ?: remoteUrl).lowercase()
+        val preferred = credentialStore.getPreferredGerritHost()?.lowercase()
+        if (!preferred.isNullOrBlank() && (host == preferred || host.endsWith(".$preferred") || host.contains(preferred))) {
+            return true
+        }
+        return host.contains("gerrit")
+    }
+
+    /**
      * Force / force-with-lease push of the current branch via [RemoteRefUpdate].
      * Lease uses the remote-tracking ref (`refs/remotes/origin/<branch>`) as the expected
      * remote tip — same as `git push --force-with-lease`.

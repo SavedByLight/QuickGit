@@ -1663,6 +1663,82 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     }
 
     /**
+     * Gerrit "push for review": pushes the current (or [localBranch]) branch to
+     * `refs/for/[remoteBranch]` so Gerrit opens or updates a change for review.
+     * Equivalent to `git push origin HEAD:refs/for/<branch>`.
+     */
+    fun pushForReview(
+        path: String,
+        remote: String = "origin",
+        localBranch: String? = null,
+        targetBranch: String? = null,
+        onProgress: (String) -> Unit = {}
+    ): GitOpResult {
+        val remoteName = remote.ifBlank { "origin" }
+        AppLog.i(TAG, "pushForReview: $path remote=$remoteName")
+        return try {
+            openGit(path).use { git ->
+                val remoteUrl = git.repository.config.getString("remote", remoteName, "url") ?: ""
+                if (remoteUrl.isBlank()) {
+                    return@use GitOpResult.Error("No URL configured for remote '$remoteName'")
+                }
+                onProgress("Pushing for review…")
+                val current = try { git.repository.branch } catch (_: Exception) { null }
+                val lb = localBranch?.takeIf { it.isNotBlank() } ?: current
+                val tb = targetBranch?.takeIf { it.isNotBlank() } ?: lb
+                if (lb.isNullOrBlank() || tb.isNullOrBlank()) {
+                    return@use GitOpResult.Error("Detached HEAD — check out a branch before push for review")
+                }
+                val cmd = git.push()
+                    .setRemote(remoteName)
+                    .setProgressMonitor(TextProgress(onProgress))
+                    .setRefSpecs(
+                        org.eclipse.jgit.transport.RefSpec("refs/heads/$lb:refs/for/$tb")
+                    )
+                applyTransportConfig(cmd, remoteUrl)
+                val results = cmd.call()
+                val rejected = results.flatMap { it.remoteUpdates }
+                    .filter { it.status.name.contains("REJECTED") || it.status.name.contains("NON_EXISTING") }
+                if (rejected.isNotEmpty()) {
+                    val details = rejected.joinToString("; ") { upd ->
+                        upd.message?.takeIf { it.isNotBlank() } ?: (upd.status?.name ?: "REJECTED")
+                    }
+                    AppLog.w(TAG, "pushForReview rejected: $details")
+                    GitOpResult.Error("Push for review rejected: $details")
+                } else {
+                    AppLog.i(TAG, "pushForReview succeeded → refs/for/$tb")
+                    GitOpResult.Success
+                }
+            }
+        } catch (e: org.eclipse.jgit.api.errors.TransportException) {
+            AppLog.e(TAG, "pushForReview failed (transport)", e)
+            if (isAuthFailure(e)) {
+                val url = openGit(path).use { it.repository.config.getString("remote", "origin", "url") } ?: ""
+                GitOpResult.AuthRequired(url)
+            } else GitOpResult.Error(e.message ?: "Push for review failed", e)
+        } catch (e: Exception) {
+            AppLog.e(TAG, "pushForReview failed", e)
+            GitOpResult.Error(e.message ?: "Push for review failed", e)
+        }
+    }
+
+    /** True when [remoteUrl] points at a Gerrit host (preferred host match or "gerrit" in host). */
+    fun isGerritRemoteUrl(remoteUrl: String?): Boolean {
+        if (remoteUrl.isNullOrBlank()) return false
+        val host = try {
+            CredentialStore.hostOf(remoteUrl).lowercase()
+        } catch (_: Exception) {
+            remoteUrl.lowercase()
+        }
+        val preferred = credentialStore.getPreferredGerritHost()?.lowercase()
+        if (!preferred.isNullOrBlank() && (host == preferred || host.endsWith(".$preferred") || host.contains(preferred))) {
+            return true
+        }
+        // Common self-hosted naming: gerrit.example.com, review.example.com is too broad — stick to gerrit.
+        return host.contains("gerrit")
+    }
+
+    /**
      * Force / force-with-lease push of the current branch via [RemoteRefUpdate].
      * Lease uses the remote-tracking ref (`refs/remotes/origin/<branch>`) as the expected
      * remote tip — same as `git push --force-with-lease`.

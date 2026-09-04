@@ -37,6 +37,8 @@ data class RepoDetailUiState(
     val remoteUrl: String? = null,
     /** True when origin is GitLab (gitlab.com or self-hosted) — use MR/CI/Issues labels. */
     val isGitLabRemote: Boolean = false,
+    /** True when origin is a Gerrit host — show "Push for review" in the push menu. */
+    val isGerritRemote: Boolean = false,
     val remotes: Map<String, String> = emptyMap(),
     val pushRemote: String = "origin",
     val pushLocalBranch: String = "",
@@ -96,6 +98,7 @@ class RepoDetailViewModel(
                 }
             }
             val isGitLab = isGitLabRemoteUrl(remoteUrl)
+            val isGerrit = repoManager.isGerritRemoteUrl(remoteUrl)
             val remotes = withContext(Dispatchers.IO) { repoManager.listRemotes(repoPath) }
             val suggestion = withContext(Dispatchers.IO) { repoManager.suggestCommitMessage(repoPath) }
             val branchName = branch ?: ""
@@ -104,6 +107,7 @@ class RepoDetailViewModel(
                 branch = branchName,
                 remoteUrl = remoteUrl,
                 isGitLabRemote = isGitLab,
+                isGerritRemote = isGerrit,
                 remotes = remotes,
                 suggestedCommitMessage = suggestion,
                 pushLocalBranch = _state.value.pushLocalBranch.ifBlank { branchName },
@@ -295,6 +299,36 @@ class RepoDetailViewModel(
             when (result) {
                 is GitOpResult.Success -> {
                     notifier.finish(GitProgressNotifier.Kind.PUSH, "Push finished")
+                    loadStatus(showRefreshing = false)
+                }
+                else -> notifier.cancel(GitProgressNotifier.Kind.PUSH)
+            }
+        }
+    }
+
+    /** Gerrit only: push current branch to refs/for/<target> for code review. */
+    fun pushForReview() {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(busy = true)
+            notifier.start(GitProgressNotifier.Kind.PUSH, "Pushing for review…", "Starting…")
+            val remote = _state.value.pushRemote.ifBlank { "origin" }
+            val lb = _state.value.pushLocalBranch.ifBlank { null }
+            val tb = _state.value.pushRemoteBranch.ifBlank { null }
+            val result = withContext(Dispatchers.IO) {
+                repoManager.pushForReview(
+                    repoPath,
+                    remote = remote,
+                    localBranch = lb,
+                    targetBranch = tb
+                ) { progress ->
+                    val percent = parsePercent(progress)
+                    notifier.update(GitProgressNotifier.Kind.PUSH, progress, percent)
+                }
+            }
+            _state.value = _state.value.copy(busy = false, lastResult = result)
+            when (result) {
+                is GitOpResult.Success -> {
+                    notifier.finish(GitProgressNotifier.Kind.PUSH, "Push for review finished")
                     loadStatus(showRefreshing = false)
                 }
                 else -> notifier.cancel(GitProgressNotifier.Kind.PUSH)
