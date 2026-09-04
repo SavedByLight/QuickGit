@@ -789,24 +789,7 @@ fun RepoDetailScreen(
                             )
                         }
                     })
-                    DropdownMenuItem(text = { Text("LFS pull") }, onClick = {
-                        lfsMenuExpanded = false
-                        scope.launch {
-                            busy = true
-                            val r = withContext(Dispatchers.IO) { repoManager.fetchLfs(repoPath) }
-                            busy = false
-                            r.fold({ onMessage("LFS: $it") }, { onMessage("LFS pull failed: ${it.message}") })
-                        }
-                    })
-                    DropdownMenuItem(text = { Text("LFS push") }, onClick = {
-                        lfsMenuExpanded = false
-                        scope.launch {
-                            busy = true
-                            val r = withContext(Dispatchers.IO) { repoManager.pushLfs(repoPath) }
-                            busy = false
-                            r.fold({ onMessage("LFS: $it") }, { onMessage("LFS push failed: ${it.message}") })
-                        }
-                    })
+                    // LFS pull / push live under the Pull and Push menus
                 }
             }
             if (busy) { Spacer(Modifier.width(8.dp)); CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) }

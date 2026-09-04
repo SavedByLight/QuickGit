@@ -219,14 +219,7 @@ fun RepoDetailScreenDesktop(
                             text = { Text("LFS status") },
                             onClick = { lfsMenuExpanded = false; vm.lfsStatus() }
                         )
-                        DropdownMenuItem(
-                            text = { Text("LFS pull") },
-                            onClick = { lfsMenuExpanded = false; vm.fetchLfs() }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("LFS push") },
-                            onClick = { lfsMenuExpanded = false; vm.pushLfs() }
-                        )
+                        // LFS pull / push live under the Pull and Push menus
                     }
                 }
                 if (state.busy) {
