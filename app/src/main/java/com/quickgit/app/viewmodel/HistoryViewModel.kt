@@ -28,7 +28,9 @@ data class HistoryUiState(
     val selectedCommitId: String? = null,
     val selectedChanges: List<com.quickgit.app.data.models.CommitChange> = emptyList(),
     val changesLoading: Boolean = false,
-    val parentCommitId: String? = null
+    val parentCommitId: String? = null,
+    /** Commit ids marked for multi cherry-pick (from another branch/remote). */
+    val cherryPickSelection: Set<String> = emptySet()
 )
 
 class HistoryViewModel(private val repoManager: RepoManager) : ViewModel() {
@@ -80,26 +82,59 @@ class HistoryViewModel(private val repoManager: RepoManager) : ViewModel() {
 
     /** Show commits reachable from [ref] (e.g. "fork/feature") or HEAD if null. */
     fun setLogRef(ref: String?) {
-        _state.value = _state.value.copy(logRef = ref?.takeIf { it.isNotBlank() })
+        _state.value = _state.value.copy(
+            logRef = ref?.takeIf { it.isNotBlank() },
+            cherryPickSelection = emptySet()
+        )
         refreshHistory()
     }
 
+    fun toggleCherryPickSelection(commitId: String) {
+        val cur = _state.value.cherryPickSelection
+        _state.value = _state.value.copy(
+            cherryPickSelection = if (commitId in cur) cur - commitId else cur + commitId
+        )
+    }
+
+    fun clearCherryPickSelection() {
+        _state.value = _state.value.copy(cherryPickSelection = emptySet())
+    }
+
     fun cherryPick(commitHash: String) {
+        cherryPick(listOf(commitHash))
+    }
+
+    fun cherryPickSelected() {
+        val ids = _state.value.cherryPickSelection.toList()
+        if (ids.isEmpty()) return
+        cherryPick(ids)
+    }
+
+    fun cherryPick(commitHashes: List<String>) {
         if (!::repoPath.isInitialized) return
+        if (commitHashes.isEmpty()) return
         viewModelScope.launch {
             _state.value = _state.value.copy(loading = true, errorMessage = null, statusMessage = null)
-            val result = withContext(Dispatchers.IO) { repoManager.cherryPick(repoPath, commitHash) }
+            val result = withContext(Dispatchers.IO) {
+                repoManager.cherryPick(repoPath, commitHashes)
+            }
             when (result) {
                 is GitOpResult.Success -> {
-                    // After cherry-pick, show current branch history so the new commit is visible
+                    // After cherry-pick, show current branch history so the new commits are visible
                     val commits = withContext(Dispatchers.IO) {
                         repoManager.getLog(repoPath, startRef = null)
+                    }
+                    val label = if (commitHashes.size == 1) {
+                        "Cherry-picked ${commitHashes.first().take(7)} onto current branch"
+                    } else {
+                        "Cherry-picked ${commitHashes.size} commits onto current branch"
                     }
                     _state.value = _state.value.copy(
                         commits = commits,
                         logRef = null,
+                        cherryPickSelection = emptySet(),
                         loading = false,
-                        statusMessage = "Cherry-picked ${commitHash.take(7)} onto current branch",
+                        statusMessage = label,
                         lastResult = result
                     )
                 }

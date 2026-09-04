@@ -2717,40 +2717,64 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
      * Cherry-picks a single commit onto the current branch. Surfaces a [GitOpResult.Conflict]
      * with the affected paths if the cherry-pick cannot be applied cleanly.
      */
-    fun cherryPick(path: String, commitHash: String): GitOpResult = try {
-        AppLog.i(TAG, "cherryPick: $commitHash")
-        openGit(path).use { git ->
-            val repository = git.repository
-            val objectId = repository.resolve(commitHash)
-                ?: return GitOpResult.Error("Commit not found: $commitHash")
+    fun cherryPick(path: String, commitHash: String): GitOpResult =
+        cherryPick(path, listOf(commitHash))
 
-            RevWalk(repository).use { walk ->
-                val commit = walk.parseCommit(objectId)
-                val result = git.cherryPick().include(commit).call()
-
-                when (result.status) {
-                    org.eclipse.jgit.api.CherryPickResult.CherryPickStatus.OK -> {
-                        AppLog.i(TAG, "cherryPick succeeded: $commitHash")
-                        GitOpResult.Success
-                    }
-                    org.eclipse.jgit.api.CherryPickResult.CherryPickStatus.CONFLICTING -> {
-                        val conflicts = git.status().call().conflicting.toList().sorted()
-                        AppLog.w(TAG, "cherryPick conflict: $commitHash, ${conflicts.size} path(s)")
-                        GitOpResult.Conflict(conflicts)
-                    }
-                    else -> {
-                        AppLog.w(TAG, "cherryPick failed: $commitHash, status=${result.status}")
-                        GitOpResult.Error("Could not cherry-pick commit ${commitHash.take(7)}")
+    /**
+     * Cherry-picks one or more commits onto the current branch in chronological order
+     * (oldest first). Stops on the first conflict or error so the user can resolve and continue.
+     */
+    fun cherryPick(path: String, commitHashes: List<String>): GitOpResult {
+        val unique = commitHashes.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+        if (unique.isEmpty()) return GitOpResult.Error("No commits selected to cherry-pick")
+        AppLog.i(TAG, "cherryPick: ${unique.size} commit(s)")
+        return try {
+            openGit(path).use { git ->
+                val repository = git.repository
+                // Resolve + order oldest → newest so multi-pick from a history list is correct
+                val ordered = RevWalk(repository).use { walk ->
+                    unique.mapNotNull { hash ->
+                        val id = repository.resolve(hash) ?: return@mapNotNull null
+                        walk.parseCommit(id)
+                    }.sortedBy { it.commitTime }
+                }
+                if (ordered.isEmpty()) {
+                    return@use GitOpResult.Error("None of the selected commits could be resolved")
+                }
+                if (ordered.size < unique.size) {
+                    AppLog.w(TAG, "cherryPick: resolved ${ordered.size}/${unique.size} commits")
+                }
+                for (commit in ordered) {
+                    val result = git.cherryPick().include(commit).call()
+                    when (result.status) {
+                        org.eclipse.jgit.api.CherryPickResult.CherryPickStatus.OK -> {
+                            AppLog.i(TAG, "cherryPick succeeded: ${commit.name.take(7)}")
+                        }
+                        org.eclipse.jgit.api.CherryPickResult.CherryPickStatus.CONFLICTING -> {
+                            val conflicts = git.status().call().conflicting.toList().sorted()
+                            AppLog.w(
+                                TAG,
+                                "cherryPick conflict at ${commit.name.take(7)}, ${conflicts.size} path(s)"
+                            )
+                            return@use GitOpResult.Conflict(conflicts)
+                        }
+                        else -> {
+                            AppLog.w(TAG, "cherryPick failed: ${commit.name.take(7)}, status=${result.status}")
+                            return@use GitOpResult.Error(
+                                "Could not cherry-pick commit ${commit.name.take(7)} (${result.status})"
+                            )
+                        }
                     }
                 }
+                GitOpResult.Success
             }
+        } catch (e: GitAPIException) {
+            AppLog.e(TAG, "cherryPick failed", e)
+            GitOpResult.Error(e.message ?: "Cherry-pick failed", e)
+        } catch (e: Exception) {
+            AppLog.e(TAG, "cherryPick failed", e)
+            GitOpResult.Error(e.message ?: "Cherry-pick failed", e)
         }
-    } catch (e: GitAPIException) {
-        AppLog.e(TAG, "cherryPick failed: $commitHash", e)
-        GitOpResult.Error(e.message ?: "Cherry-pick failed", e)
-    } catch (e: Exception) {
-        AppLog.e(TAG, "cherryPick failed: $commitHash", e)
-        GitOpResult.Error(e.message ?: "Cherry-pick failed", e)
     }
 
     /**

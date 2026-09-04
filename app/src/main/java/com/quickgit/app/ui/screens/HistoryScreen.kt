@@ -19,6 +19,7 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
@@ -70,6 +71,7 @@ fun HistoryScreen(
     var showRevertDialog by remember { mutableStateOf(false) }
     var cherryTarget by remember { mutableStateOf<String?>(null) }
     var showCherryDialog by remember { mutableStateOf(false) }
+    var showMultiCherryDialog by remember { mutableStateOf(false) }
     var resetTarget by remember { mutableStateOf<String?>(null) }
     var showResetDialog by remember { mutableStateOf(false) }
 
@@ -154,6 +156,38 @@ fun HistoryScreen(
                 )
             }
 
+            if (state.cherryPickSelection.isNotEmpty()) {
+                Surface(
+                    tonalElevation = 2.dp,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "${state.cherryPickSelection.size} selected",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            TextButton(onClick = { vm.clearCherryPickSelection() }) {
+                                Text("Clear")
+                            }
+                            Button(
+                                onClick = { showMultiCherryDialog = true },
+                                enabled = !state.loading
+                            ) {
+                                Text("Cherry-pick ${state.cherryPickSelection.size}")
+                            }
+                        }
+                    }
+                }
+            }
+
             PullToRefreshBox(
                 isRefreshing = state.loading,
                 onRefresh = vm::refreshHistory,
@@ -177,12 +211,16 @@ fun HistoryScreen(
                         LazyColumn(Modifier.fillMaxSize()) {
                             items(state.commits, key = { it.id }) { commit ->
                                 val selected = state.selectedCommitId == commit.id
+                                val multiSelected = commit.id in state.cherryPickSelection
                                 Surface(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .clickable { vm.selectCommit(commit.id) },
-                                    color = if (selected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
-                                    else MaterialTheme.colorScheme.surface
+                                    color = when {
+                                        multiSelected -> MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f)
+                                        selected -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
+                                        else -> MaterialTheme.colorScheme.surface
+                                    }
                                 ) {
                                     Column(Modifier.padding(16.dp)) {
                                         Row(
@@ -190,12 +228,20 @@ fun HistoryScreen(
                                             horizontalArrangement = Arrangement.SpaceBetween,
                                             verticalAlignment = Alignment.CenterVertically
                                         ) {
-                                            Text(
-                                                commit.shortId,
-                                                style = MaterialTheme.typography.labelMedium,
-                                                fontWeight = FontWeight.Bold,
-                                                color = MaterialTheme.colorScheme.primary
-                                            )
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Checkbox(
+                                                    checked = multiSelected,
+                                                    onCheckedChange = {
+                                                        vm.toggleCherryPickSelection(commit.id)
+                                                    }
+                                                )
+                                                Text(
+                                                    commit.shortId,
+                                                    style = MaterialTheme.typography.labelMedium,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = MaterialTheme.colorScheme.primary
+                                                )
+                                            }
                                             Row {
                                                 OutlinedButton(onClick = {
                                                     cherryTarget = commit.id
@@ -371,6 +417,32 @@ fun HistoryScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showCherryDialog = false; cherryTarget = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    if (showMultiCherryDialog && state.cherryPickSelection.isNotEmpty()) {
+        val count = state.cherryPickSelection.size
+        AlertDialog(
+            onDismissRequest = { showMultiCherryDialog = false },
+            title = { Text("Cherry-pick $count commits?") },
+            text = {
+                Text(
+                    "Apply $count selected commits onto your current branch in chronological order " +
+                        "(oldest first). If you are viewing a fork remote, make sure that remote was fetched first.\n\n" +
+                        "Stops on the first conflict so you can resolve and continue."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    vm.cherryPickSelected()
+                    showMultiCherryDialog = false
+                }) { Text("Cherry-pick $count") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showMultiCherryDialog = false }) {
                     Text("Cancel")
                 }
             }

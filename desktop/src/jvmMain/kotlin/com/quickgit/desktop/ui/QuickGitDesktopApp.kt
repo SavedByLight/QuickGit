@@ -1008,6 +1008,8 @@ fun HistoryTab(repoPath: String, repoManager: DesktopRepoManager, onMessage: (St
     var confirmCherry by remember { mutableStateOf<DesktopRepoManager.CommitInfo?>(null) }
     var confirmRevert by remember { mutableStateOf<DesktopRepoManager.CommitInfo?>(null) }
     var confirmReset by remember { mutableStateOf<DesktopRepoManager.CommitInfo?>(null) }
+    var cherrySelection by remember { mutableStateOf(setOf<String>()) }
+    var confirmMultiCherry by remember { mutableStateOf(false) }
     val dateFormat = remember { SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()) }
     val scope = rememberCoroutineScope()
 
@@ -1025,7 +1027,10 @@ fun HistoryTab(repoPath: String, repoManager: DesktopRepoManager, onMessage: (St
             loading = false
         }
     }
-    LaunchedEffect(repoPath, logRef) { reload() }
+    LaunchedEffect(repoPath, logRef) {
+        cherrySelection = emptySet()
+        reload()
+    }
 
     fun doCherryPick(c: DesktopRepoManager.CommitInfo) {
         scope.launch {
@@ -1036,8 +1041,27 @@ fun HistoryTab(repoPath: String, repoManager: DesktopRepoManager, onMessage: (St
             r.fold(
                 {
                     logRef = null // show current branch so the new commit is visible
+                    cherrySelection = emptySet()
                     reload()
                     onMessage("Cherry-picked ${c.shortId} onto current branch")
+                },
+                { onMessage("Cherry-pick failed: ${it.message}") }
+            )
+        }
+    }
+
+    fun doCherryPickMany(ids: List<String>) {
+        scope.launch {
+            busy = true
+            val r = withContext(Dispatchers.IO) { repoManager.cherryPick(repoPath, ids) }
+            busy = false
+            confirmMultiCherry = false
+            r.fold(
+                {
+                    logRef = null
+                    cherrySelection = emptySet()
+                    reload()
+                    onMessage("Cherry-picked ${ids.size} commits onto current branch")
                 },
                 { onMessage("Cherry-pick failed: ${it.message}") }
             )
@@ -1076,7 +1100,7 @@ fun HistoryTab(repoPath: String, repoManager: DesktopRepoManager, onMessage: (St
 
     Column(Modifier.fillMaxSize()) {
         Text(
-            "Pick any local or remote-tracking branch to browse commits, then Cherry-pick onto your current branch. " +
+            "Pick any local or remote-tracking branch to browse commits, then cherry-pick one or more onto your current branch. " +
                 "Add forks under Branches → Add remote, Fetch, then select origin/… or fork/… here.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1109,6 +1133,32 @@ fun HistoryTab(repoPath: String, repoManager: DesktopRepoManager, onMessage: (St
                 )
             }
         }
+        if (cherrySelection.isNotEmpty()) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "${cherrySelection.size} selected",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = { cherrySelection = emptySet() }, enabled = !busy) {
+                        Text("Clear")
+                    }
+                    Button(
+                        onClick = { confirmMultiCherry = true },
+                        enabled = !busy
+                    ) {
+                        Text("Cherry-pick ${cherrySelection.size}")
+                    }
+                }
+            }
+        }
         if (loading) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
         } else {
@@ -1117,9 +1167,27 @@ fun HistoryTab(repoPath: String, repoManager: DesktopRepoManager, onMessage: (St
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 items(commits, key = { it.id }) { c ->
+                    val multiSelected = c.id in cherrySelection
                     Card(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(12.dp)) {
-                            Text(c.message, fontWeight = FontWeight.Medium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Checkbox(
+                                    checked = multiSelected,
+                                    onCheckedChange = {
+                                        cherrySelection =
+                                            if (multiSelected) cherrySelection - c.id
+                                            else cherrySelection + c.id
+                                    },
+                                    enabled = !busy
+                                )
+                                Text(
+                                    c.message,
+                                    fontWeight = FontWeight.Medium,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
                             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                                 Text(
                                     c.shortId,
@@ -1173,6 +1241,33 @@ fun HistoryTab(repoPath: String, repoManager: DesktopRepoManager, onMessage: (St
             },
             dismissButton = {
                 TextButton(onClick = { confirmCherry = null }, enabled = !busy) { Text("Cancel") }
+            }
+        )
+    }
+
+    if (confirmMultiCherry && cherrySelection.isNotEmpty()) {
+        val count = cherrySelection.size
+        AlertDialog(
+            onDismissRequest = { if (!busy) confirmMultiCherry = false },
+            title = { Text("Cherry-pick $count commits?") },
+            text = {
+                Text(
+                    "Apply $count selected commits onto the current branch in chronological order " +
+                        "(oldest first). Stops on the first conflict so you can resolve and continue."
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = { doCherryPickMany(cherrySelection.toList()) },
+                    enabled = !busy
+                ) {
+                    Text(if (busy) "Working…" else "Cherry-pick $count")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmMultiCherry = false }, enabled = !busy) {
+                    Text("Cancel")
+                }
             }
         )
     }

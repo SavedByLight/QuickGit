@@ -870,30 +870,51 @@ class DesktopRepoManager(
      * Cherry-pick [commitHash] onto the current branch.
      * Returns failure with a message that includes conflict paths when the pick conflicts.
      */
-    fun cherryPick(repoPath: String, commitHash: String): Result<Unit> {
+    fun cherryPick(repoPath: String, commitHash: String): Result<Unit> =
+        cherryPick(repoPath, listOf(commitHash))
+
+    /**
+     * Cherry-pick one or more commits onto the current branch in chronological order
+     * (oldest first). Stops on the first conflict or error.
+     */
+    fun cherryPick(repoPath: String, commitHashes: List<String>): Result<Unit> {
+        val unique = commitHashes.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+        if (unique.isEmpty()) {
+            return Result.failure(IllegalArgumentException("No commits selected to cherry-pick"))
+        }
         return try {
             open(File(repoPath)).use { git ->
-                val objectId = git.repository.resolve(commitHash)
-                    ?: return Result.failure(IllegalArgumentException("Commit not found: $commitHash"))
-                RevWalk(git.repository).use { walk ->
-                    val commit = walk.parseCommit(objectId)
+                val repository = git.repository
+                val ordered = RevWalk(repository).use { walk ->
+                    unique.mapNotNull { hash ->
+                        val id = repository.resolve(hash) ?: return@mapNotNull null
+                        walk.parseCommit(id)
+                    }.sortedBy { it.commitTime }
+                }
+                if (ordered.isEmpty()) {
+                    return Result.failure(IllegalArgumentException("None of the selected commits could be resolved"))
+                }
+                for (commit in ordered) {
                     val result = git.cherryPick().include(commit).call()
                     when (result.status) {
-                        org.eclipse.jgit.api.CherryPickResult.CherryPickStatus.OK ->
-                            Result.success(Unit)
+                        org.eclipse.jgit.api.CherryPickResult.CherryPickStatus.OK -> { /* continue */ }
                         org.eclipse.jgit.api.CherryPickResult.CherryPickStatus.CONFLICTING -> {
                             val conflicts = git.status().call().conflicting.toList().sorted()
-                            Result.failure(
+                            return Result.failure(
                                 IllegalStateException(
-                                    "Cherry-pick conflict on ${conflicts.joinToString().ifBlank { "unknown paths" }}"
+                                    "Cherry-pick conflict at ${commit.name.take(7)} on " +
+                                        conflicts.joinToString().ifBlank { "unknown paths" }
                                 )
                             )
                         }
-                        else -> Result.failure(
-                            IllegalStateException("Could not cherry-pick ${commitHash.take(7)} (${result.status})")
+                        else -> return Result.failure(
+                            IllegalStateException(
+                                "Could not cherry-pick ${commit.name.take(7)} (${result.status})"
+                            )
                         )
                     }
                 }
+                Result.success(Unit)
             }
         } catch (e: Exception) {
             Result.failure(e)
