@@ -965,6 +965,7 @@ fun HistoryTab(repoPath: String, repoManager: DesktopRepoManager, onMessage: (St
     var busy by remember { mutableStateOf(false) }
     var confirmCherry by remember { mutableStateOf<DesktopRepoManager.CommitInfo?>(null) }
     var confirmRevert by remember { mutableStateOf<DesktopRepoManager.CommitInfo?>(null) }
+    var confirmReset by remember { mutableStateOf<DesktopRepoManager.CommitInfo?>(null) }
     val dateFormat = remember { SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()) }
     val scope = rememberCoroutineScope()
 
@@ -1010,6 +1011,23 @@ fun HistoryTab(repoPath: String, repoManager: DesktopRepoManager, onMessage: (St
             r.fold(
                 { reload(); onMessage("Reverted ${c.shortId}") },
                 { onMessage("Revert failed: ${it.message}") }
+            )
+        }
+    }
+
+    fun doHardReset(c: DesktopRepoManager.CommitInfo) {
+        scope.launch {
+            busy = true
+            val r = withContext(Dispatchers.IO) { repoManager.hardReset(repoPath, c.id) }
+            busy = false
+            confirmReset = null
+            r.fold(
+                {
+                    logRef = null
+                    reload()
+                    onMessage("Hard reset to ${c.shortId}")
+                },
+                { onMessage("Hard reset failed: ${it.message}") }
             )
         }
     }
@@ -1086,6 +1104,10 @@ fun HistoryTab(repoPath: String, repoManager: DesktopRepoManager, onMessage: (St
                                     onClick = { confirmRevert = c },
                                     enabled = !busy
                                 ) { Text("Revert") }
+                                OutlinedButton(
+                                    onClick = { confirmReset = c },
+                                    enabled = !busy
+                                ) { Text("Reset --hard") }
                             }
                         }
                     }
@@ -1127,6 +1149,30 @@ fun HistoryTab(repoPath: String, repoManager: DesktopRepoManager, onMessage: (St
             },
             dismissButton = {
                 TextButton(onClick = { confirmRevert = null }, enabled = !busy) { Text("Cancel") }
+            }
+        )
+    }
+
+    confirmReset?.let { c ->
+        AlertDialog(
+            onDismissRequest = { if (!busy) confirmReset = null },
+            title = { Text("Hard reset to ${c.shortId}?") },
+            text = {
+                Text(
+                    "This runs git reset --hard ${c.shortId} on your current branch.\n\n" +
+                        "• Moves the branch tip to this commit\n" +
+                        "• Discards all uncommitted changes in the working tree and index\n" +
+                        "• Commits after this point on the current branch will no longer be reachable from HEAD\n\n" +
+                        "This cannot be undone easily. Continue only if you are sure.\n\n${c.message}"
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { doHardReset(c) }, enabled = !busy) {
+                    Text(if (busy) "Working…" else "Reset --hard")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmReset = null }, enabled = !busy) { Text("Cancel") }
             }
         )
     }

@@ -70,6 +70,8 @@ fun HistoryScreen(
     var showRevertDialog by remember { mutableStateOf(false) }
     var cherryTarget by remember { mutableStateOf<String?>(null) }
     var showCherryDialog by remember { mutableStateOf(false) }
+    var resetTarget by remember { mutableStateOf<String?>(null) }
+    var showResetDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(state.errorMessage, state.statusMessage) {
         state.errorMessage?.let {
@@ -208,6 +210,13 @@ fun HistoryScreen(
                                                     showRevertDialog = true
                                                 }) {
                                                     Text("Revert")
+                                                }
+                                                Spacer(Modifier.width(8.dp))
+                                                OutlinedButton(onClick = {
+                                                    resetTarget = commit.id
+                                                    showResetDialog = true
+                                                }) {
+                                                    Text("Reset --hard")
                                                 }
                                             }
                                         }
@@ -362,6 +371,35 @@ fun HistoryScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showCherryDialog = false; cherryTarget = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    if (showResetDialog && resetTarget != null) {
+        AlertDialog(
+            onDismissRequest = { showResetDialog = false; resetTarget = null },
+            title = { Text("Hard reset to this commit?") },
+            text = {
+                Text(
+                    "This runs git reset --hard ${resetTarget!!.take(7)} on your current branch.\n\n" +
+                        "• Moves the branch tip to this commit\n" +
+                        "• Discards all uncommitted changes in the working tree and index\n" +
+                        "• Commits after this point on the current branch will no longer be reachable from HEAD\n\n" +
+                        "This cannot be undone easily. Continue only if you are sure."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val hash = resetTarget ?: return@TextButton
+                    vm.hardReset(hash)
+                    showResetDialog = false
+                    resetTarget = null
+                }) { Text("Reset --hard") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showResetDialog = false; resetTarget = null }) {
                     Text("Cancel")
                 }
             }

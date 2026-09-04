@@ -161,6 +161,49 @@ class HistoryViewModel(private val repoManager: RepoManager) : ViewModel() {
         }
     }
 
+    /**
+     * Hard-reset current branch to [commitHash] (`git reset --hard`).
+     * Discards all uncommitted changes and moves the branch tip to that commit.
+     */
+    fun hardReset(commitHash: String) {
+        if (!::repoPath.isInitialized) return
+        viewModelScope.launch {
+            _state.value = _state.value.copy(loading = true, errorMessage = null, statusMessage = null)
+            val result = withContext(Dispatchers.IO) { repoManager.hardReset(repoPath, commitHash) }
+            when (result) {
+                is GitOpResult.Success -> {
+                    // After hard reset, always show current branch history at the new tip
+                    val commits = withContext(Dispatchers.IO) {
+                        repoManager.getLog(repoPath, startRef = null)
+                    }
+                    _state.value = _state.value.copy(
+                        commits = commits,
+                        logRef = null,
+                        selectedCommitId = null,
+                        selectedChanges = emptyList(),
+                        parentCommitId = null,
+                        loading = false,
+                        statusMessage = "Hard reset to ${commitHash.take(7)}",
+                        lastResult = result
+                    )
+                }
+                is GitOpResult.Error -> {
+                    _state.value = _state.value.copy(
+                        loading = false,
+                        errorMessage = result.message,
+                        lastResult = result
+                    )
+                }
+                else -> {
+                    _state.value = _state.value.copy(
+                        loading = false,
+                        lastResult = result
+                    )
+                }
+            }
+        }
+    }
+
     fun clearMessages() {
         _state.value = _state.value.copy(errorMessage = null, statusMessage = null)
     }

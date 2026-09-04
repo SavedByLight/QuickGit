@@ -857,6 +857,37 @@ class DesktopRepoManager(
         }
     }
 
+    /**
+     * Hard-resets the current branch (HEAD and working tree / index) to [commitHash].
+     * Equivalent to `git reset --hard <commitHash>`. Discards all uncommitted changes.
+     */
+    fun hardReset(repoPath: String, commitHash: String): Result<Unit> {
+        return try {
+            open(File(repoPath)).use { git ->
+                val objectId = git.repository.resolve(commitHash)
+                    ?: return Result.failure(IllegalArgumentException("Commit not found: $commitHash"))
+                RevWalk(git.repository).use { walk ->
+                    walk.parseCommit(objectId)
+                }
+                try {
+                    git.clean()
+                        .setCleanDirectories(true)
+                        .setForce(true)
+                        .call()
+                } catch (_: Exception) {
+                    // best-effort clean of untracked files
+                }
+                git.reset()
+                    .setMode(ResetCommand.ResetType.HARD)
+                    .setRef(commitHash)
+                    .call()
+                Result.success(Unit)
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     /** Current local branch short name, or null if detached / unborn. */
     fun currentBranch(repoPath: String): String? {
         return try {

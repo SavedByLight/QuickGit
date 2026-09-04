@@ -2622,6 +2622,46 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         GitOpResult.Error(e.message ?: "Cherry-pick failed", e)
     }
 
+    /**
+     * Hard-resets the current branch (HEAD and working tree / index) to [commitHash].
+     * Equivalent to `git reset --hard <commitHash>`. Discards all uncommitted changes.
+     * Does not change which branch is checked out — only moves the tip of the current branch.
+     */
+    fun hardReset(path: String, commitHash: String): GitOpResult = withRepoLock(path) {
+        AppLog.i(TAG, "hardReset: $path → $commitHash")
+        installJGitMemoryLimits()
+        try {
+            openGit(path).use { git ->
+                val objectId = git.repository.resolve(commitHash)
+                    ?: return@withRepoLock GitOpResult.Error("Commit not found: $commitHash")
+                // Ensure it is a commit
+                RevWalk(git.repository).use { walk ->
+                    walk.parseCommit(objectId)
+                }
+                try {
+                    git.clean()
+                        .setCleanDirectories(true)
+                        .setForce(true)
+                        .call()
+                } catch (e: Exception) {
+                    AppLog.w(TAG, "hardReset: clean skipped: ${e.message}")
+                }
+                git.reset()
+                    .setMode(org.eclipse.jgit.api.ResetCommand.ResetType.HARD)
+                    .setRef(commitHash)
+                    .call()
+                AppLog.i(TAG, "hardReset succeeded: ${commitHash.take(7)}")
+                GitOpResult.Success
+            }
+        } catch (e: GitAPIException) {
+            AppLog.e(TAG, "hardReset failed: $commitHash", e)
+            GitOpResult.Error(e.message ?: "Hard reset failed", e)
+        } catch (e: Exception) {
+            AppLog.e(TAG, "hardReset failed: $commitHash", e)
+            GitOpResult.Error(e.message ?: "Hard reset failed", e)
+        }
+    }
+
     // ---------------- Diff ----------------
 
     /** Working-tree diff for a single path (index vs. working tree), unstaged changes. */
