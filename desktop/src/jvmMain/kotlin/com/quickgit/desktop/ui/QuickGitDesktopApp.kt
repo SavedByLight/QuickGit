@@ -658,6 +658,18 @@ fun RepoDetailScreen(
         }
     }
 
+    fun doPushRebase() {
+        scope.launch {
+            busy = true
+            val r = withContext(Dispatchers.IO) { repoManager.pushRebase(repoPath) }
+            busy = false
+            r.fold(
+                { onMessage("Push with rebase OK") },
+                { onMessage("Push with rebase failed: ${it.message}") }
+            )
+        }
+    }
+
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back") }
@@ -718,6 +730,13 @@ fun RepoDetailScreen(
                         onClick = {
                             pushMenuExpanded = false
                             doPush()
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Push with rebase") },
+                        onClick = {
+                            pushMenuExpanded = false
+                            doPushRebase()
                         }
                     )
                     if (isGerritRemote) {

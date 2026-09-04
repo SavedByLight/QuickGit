@@ -496,6 +496,18 @@ class DesktopRepoManager(
         }
     }
 
+    /**
+     * Rebase the current branch onto its upstream (`git pull --rebase`), then push.
+     * Keeps remote history linear without a merge commit from the pull step.
+     */
+    fun pushRebase(repoPath: String, progress: ((String) -> Unit)? = null): Result<Unit> {
+        progress?.invoke("Rebasing onto upstream…")
+        val rebaseResult = pullRebase(repoPath)
+        if (rebaseResult.isFailure) return rebaseResult
+        progress?.invoke("Pushing…")
+        return push(repoPath, force = false, forceWithLease = false, progress = progress)
+    }
+
     /** True when [remoteUrl] points at a Gerrit host (preferred host match or "gerrit" in host). */
     fun isGerritRemoteUrl(remoteUrl: String?): Boolean {
         if (remoteUrl.isNullOrBlank()) return false

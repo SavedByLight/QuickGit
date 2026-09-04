@@ -1722,6 +1722,38 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         }
     }
 
+    /**
+     * Rebase the current branch onto its upstream (`git pull --rebase`), then push.
+     * Useful after local commits so the remote stays a linear history without a merge commit.
+     */
+    fun pushRebase(
+        path: String,
+        remote: String = "origin",
+        localBranch: String? = null,
+        remoteBranch: String? = null,
+        onProgress: (String) -> Unit = {}
+    ): GitOpResult {
+        AppLog.i(TAG, "pushRebase: $path")
+        onProgress("Rebasing onto upstream…")
+        val rebaseResult = pullRebase(path, onProgress)
+        if (rebaseResult is GitOpResult.Error ||
+            rebaseResult is GitOpResult.AuthRequired ||
+            rebaseResult is GitOpResult.Conflict
+        ) {
+            return rebaseResult
+        }
+        onProgress("Pushing…")
+        return push(
+            path = path,
+            force = false,
+            forceWithLease = false,
+            remote = remote,
+            localBranch = localBranch,
+            remoteBranch = remoteBranch,
+            onProgress = onProgress
+        )
+    }
+
     /** True when [remoteUrl] points at a Gerrit host (preferred host match or "gerrit" in host). */
     fun isGerritRemoteUrl(remoteUrl: String?): Boolean {
         if (remoteUrl.isNullOrBlank()) return false

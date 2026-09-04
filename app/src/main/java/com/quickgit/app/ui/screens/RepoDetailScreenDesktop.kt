@@ -152,6 +152,13 @@ fun RepoDetailScreenDesktop(
                                 vm.push(force = false)
                             }
                         )
+                        DropdownMenuItem(
+                            text = { Text("Push with rebase") },
+                            onClick = {
+                                pushMenuExpanded = false
+                                vm.pushRebase()
+                            }
+                        )
                         if (state.isGerritRemote) {
                             DropdownMenuItem(
                                 text = { Text("Push for review") },

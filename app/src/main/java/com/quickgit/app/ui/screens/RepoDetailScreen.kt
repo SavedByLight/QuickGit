@@ -267,6 +267,10 @@ fun RepoDetailScreen(
                                     onClick = { showPushOptions = false; vm.push(force = false) },
                                     modifier = Modifier.fillMaxWidth()
                                 ) { Text("Git push") }
+                                TextButton(
+                                    onClick = { showPushOptions = false; vm.pushRebase() },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) { Text("Push with rebase") }
                                 if (state.isGerritRemote) {
                                     TextButton(
                                         onClick = { showPushOptions = false; vm.pushForReview() },

@@ -336,6 +336,36 @@ class RepoDetailViewModel(
         }
     }
 
+    /** Rebase onto upstream then push (`git pull --rebase` + `git push`). */
+    fun pushRebase() {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(busy = true)
+            notifier.start(GitProgressNotifier.Kind.PUSH, "Push with rebase…", "Starting…")
+            val remote = _state.value.pushRemote.ifBlank { "origin" }
+            val lb = _state.value.pushLocalBranch.ifBlank { null }
+            val rb = _state.value.pushRemoteBranch.ifBlank { null }
+            val result = withContext(Dispatchers.IO) {
+                repoManager.pushRebase(
+                    repoPath,
+                    remote = remote,
+                    localBranch = lb,
+                    remoteBranch = rb
+                ) { progress ->
+                    val percent = parsePercent(progress)
+                    notifier.update(GitProgressNotifier.Kind.PUSH, progress, percent)
+                }
+            }
+            _state.value = _state.value.copy(busy = false, lastResult = result)
+            when (result) {
+                is GitOpResult.Success, is GitOpResult.UpToDate -> {
+                    notifier.finish(GitProgressNotifier.Kind.PUSH, "Push with rebase finished")
+                    loadStatus(showRefreshing = false)
+                }
+                else -> notifier.cancel(GitProgressNotifier.Kind.PUSH)
+            }
+        }
+    }
+
     fun pull() {
         viewModelScope.launch {
             _state.value = _state.value.copy(busy = true)
