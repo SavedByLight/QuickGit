@@ -23,7 +23,6 @@ import com.quickgit.app.data.models.GitOpResult
 import com.quickgit.app.ui.adaptive.AdaptiveContent
 import com.quickgit.app.ui.adaptive.LocalWindowSizeClass
 import com.quickgit.app.ui.adaptive.isCompactHeight
-import com.quickgit.app.ui.adaptive.isMediumWidth
 import com.quickgit.app.ui.adaptive.isTabletOrWider
 import com.quickgit.app.ui.components.PullToRefreshBox
 import com.quickgit.app.ui.theme.GitAmber
@@ -161,105 +160,75 @@ fun RepoDetailScreen(
             var showStatusOptions by remember { mutableStateOf(false) }
             var showLfsOptions by remember { mutableStateOf(false) }
 
-            // Phones (Compact width): keep the original 2×2 button grid.
-            // Tablets / wide windows (Medium+): single row so landscape height is preserved.
-            val wsc = LocalWindowSizeClass.current
-            if (wsc.isMediumWidth) {
-                Row(Modifier.fillMaxWidth().padding(16.dp, 4.dp)) {
-                    OutlinedButton(
-                        onClick = { showPullOptions = true },
-                        enabled = !state.busy,
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Icon(Icons.Default.ArrowDownward, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Pull")
-                    }
-                    Spacer(Modifier.width(8.dp))
-                    Button(
-                        onClick = { showPushOptions = true },
-                        enabled = !state.busy,
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Icon(Icons.Default.ArrowUpward, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Push")
-                    }
-                    Spacer(Modifier.width(8.dp))
-                    OutlinedButton(
-                        onClick = { showStatusOptions = true },
-                        enabled = !state.busy,
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Icon(Icons.Default.Info, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Status")
-                    }
-                    Spacer(Modifier.width(8.dp))
-                    OutlinedButton(
-                        onClick = { showLfsOptions = true },
-                        enabled = !state.busy,
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text("LFS")
-                    }
+            // Phones: single centered row of icon actions (Pull / Push / Status / LFS).
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(
+                    onClick = { showPullOptions = true },
+                    enabled = !state.busy
+                ) {
+                    Icon(Icons.Default.ArrowDownward, contentDescription = "Pull")
                 }
-            } else {
-                Row(Modifier.fillMaxWidth().padding(16.dp, 4.dp)) {
-                    OutlinedButton(
-                        onClick = { showPullOptions = true },
-                        enabled = !state.busy,
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Icon(Icons.Default.ArrowDownward, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Pull")
-                    }
-                    Spacer(Modifier.width(8.dp))
-                    Button(
-                        onClick = { showPushOptions = true },
-                        enabled = !state.busy,
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Icon(Icons.Default.ArrowUpward, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Push")
-                    }
+                IconButton(
+                    onClick = { showPushOptions = true },
+                    enabled = !state.busy
+                ) {
+                    Icon(Icons.Default.ArrowUpward, contentDescription = "Push")
                 }
-                Row(Modifier.fillMaxWidth().padding(16.dp, 0.dp, 16.dp, 4.dp)) {
-                    OutlinedButton(
-                        onClick = { showStatusOptions = true },
-                        enabled = !state.busy,
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Icon(Icons.Default.Info, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Status")
-                    }
-                    Spacer(Modifier.width(8.dp))
-                    OutlinedButton(
-                        onClick = { showLfsOptions = true },
-                        enabled = !state.busy,
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text("LFS")
-                    }
+                IconButton(
+                    onClick = { showStatusOptions = true },
+                    enabled = !state.busy
+                ) {
+                    Icon(Icons.Default.Info, contentDescription = "Status")
+                }
+                IconButton(
+                    onClick = { showLfsOptions = true },
+                    enabled = !state.busy
+                ) {
+                    Icon(Icons.Default.Storage, contentDescription = "LFS")
                 }
             }
 
             if (showPullOptions) {
                 androidx.compose.ui.window.Dialog(onDismissRequest = { showPullOptions = false }) {
-                    Surface(
-                        shape = MaterialTheme.shapes.extraLarge,
-                        tonalElevation = 6.dp,
-                        modifier = Modifier.fillMaxWidth().padding(24.dp)
+                    Box(
+                        Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+                        contentAlignment = Alignment.Center
                     ) {
-                        Column(Modifier.padding(24.dp)) {
-                            Text("Pull", style = MaterialTheme.typography.headlineSmall)
-                            Spacer(Modifier.height(12.dp))
-                            TextButton(
-                                onClick = { showPullOptions = false; vm.pull() },
-                                modifier = Modifier.fillMaxWidth()
-                            ) { Text("Git pull") }
-                            TextButton(
-                                onClick = { showPullOptions = false; vm.fetchLfs() },
-                                modifier = Modifier.fillMaxWidth()
-                            ) { Text("LFS pull only") }
-                            TextButton(
-                                onClick = { showPullOptions = false; vm.pullWithLfs() },
-                                modifier = Modifier.fillMaxWidth()
-                            ) { Text("Git pull + LFS") }
-                            Spacer(Modifier.height(8.dp))
-                            TextButton(onClick = { showPullOptions = false }, modifier = Modifier.align(Alignment.End)) {
-                                Text("Cancel")
+                        Surface(
+                            shape = MaterialTheme.shapes.extraLarge,
+                            tonalElevation = 6.dp,
+                            modifier = Modifier
+                                .widthIn(max = 400.dp)
+                                .fillMaxWidth()
+                        ) {
+                            Column(
+                                Modifier.padding(24.dp).fillMaxWidth(),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Text("Pull", style = MaterialTheme.typography.headlineSmall)
+                                Spacer(Modifier.height(12.dp))
+                                TextButton(
+                                    onClick = { showPullOptions = false; vm.pull() },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) { Text("Git pull") }
+                                TextButton(
+                                    onClick = { showPullOptions = false; vm.fetchLfs() },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) { Text("LFS pull only") }
+                                TextButton(
+                                    onClick = { showPullOptions = false; vm.pullWithLfs() },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) { Text("Git pull + LFS") }
+                                Spacer(Modifier.height(8.dp))
+                                TextButton(onClick = { showPullOptions = false }) {
+                                    Text("Cancel")
+                                }
                             }
                         }
                     }
@@ -268,60 +237,70 @@ fun RepoDetailScreen(
 
             if (showPushOptions) {
                 androidx.compose.ui.window.Dialog(onDismissRequest = { showPushOptions = false }) {
-                    Surface(
-                        shape = MaterialTheme.shapes.extraLarge,
-                        tonalElevation = 6.dp,
-                        modifier = Modifier.fillMaxWidth().padding(24.dp)
+                    Box(
+                        Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+                        contentAlignment = Alignment.Center
                     ) {
-                        Column(Modifier.padding(24.dp)) {
-                            Text("Push", style = MaterialTheme.typography.headlineSmall)
-                            Spacer(Modifier.height(12.dp))
-                            TextButton(
-                                onClick = { showPushOptions = false; vm.push(force = false) },
-                                modifier = Modifier.fillMaxWidth()
-                            ) { Text("Git push") }
-                            if (state.isGerritRemote) {
+                        Surface(
+                            shape = MaterialTheme.shapes.extraLarge,
+                            tonalElevation = 6.dp,
+                            modifier = Modifier
+                                .widthIn(max = 400.dp)
+                                .fillMaxWidth()
+                        ) {
+                            Column(
+                                Modifier.padding(24.dp).fillMaxWidth(),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Text("Push", style = MaterialTheme.typography.headlineSmall)
+                                Spacer(Modifier.height(12.dp))
                                 TextButton(
-                                    onClick = { showPushOptions = false; vm.pushForReview() },
+                                    onClick = { showPushOptions = false; vm.push(force = false) },
                                     modifier = Modifier.fillMaxWidth()
-                                ) { Text("Push for review") }
-                            }
-                            TextButton(
-                                onClick = { showPushOptions = false; vm.pushLfs() },
-                                modifier = Modifier.fillMaxWidth()
-                            ) { Text("LFS push only") }
-                            TextButton(
-                                onClick = { showPushOptions = false; vm.pushWithLfs() },
-                                modifier = Modifier.fillMaxWidth()
-                            ) { Text("Git push + LFS") }
-                            Spacer(Modifier.height(8.dp))
-                            Text(
-                                "Force push",
-                                style = MaterialTheme.typography.titleSmall,
-                                color = GitRed
-                            )
-                            Spacer(Modifier.height(4.dp))
-                            TextButton(
-                                onClick = {
-                                    showPushOptions = false
-                                    forcePushUseLease = true
-                                    showForcePushConfirm = true
-                                },
-                                modifier = Modifier.fillMaxWidth(),
-                                colors = ButtonDefaults.textButtonColors(contentColor = GitRed)
-                            ) { Text("Force with lease…") }
-                            TextButton(
-                                onClick = {
-                                    showPushOptions = false
-                                    forcePushUseLease = false
-                                    showForcePushConfirm = true
-                                },
-                                modifier = Modifier.fillMaxWidth(),
-                                colors = ButtonDefaults.textButtonColors(contentColor = GitRed)
-                            ) { Text("Force (no lease)…") }
-                            Spacer(Modifier.height(8.dp))
-                            TextButton(onClick = { showPushOptions = false }, modifier = Modifier.align(Alignment.End)) {
-                                Text("Cancel")
+                                ) { Text("Git push") }
+                                if (state.isGerritRemote) {
+                                    TextButton(
+                                        onClick = { showPushOptions = false; vm.pushForReview() },
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) { Text("Push for review") }
+                                }
+                                TextButton(
+                                    onClick = { showPushOptions = false; vm.pushLfs() },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) { Text("LFS push only") }
+                                TextButton(
+                                    onClick = { showPushOptions = false; vm.pushWithLfs() },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) { Text("Git push + LFS") }
+                                Spacer(Modifier.height(8.dp))
+                                Text(
+                                    "Force push",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = GitRed
+                                )
+                                Spacer(Modifier.height(4.dp))
+                                TextButton(
+                                    onClick = {
+                                        showPushOptions = false
+                                        forcePushUseLease = true
+                                        showForcePushConfirm = true
+                                    },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = ButtonDefaults.textButtonColors(contentColor = GitRed)
+                                ) { Text("Force with lease…") }
+                                TextButton(
+                                    onClick = {
+                                        showPushOptions = false
+                                        forcePushUseLease = false
+                                        showForcePushConfirm = true
+                                    },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = ButtonDefaults.textButtonColors(contentColor = GitRed)
+                                ) { Text("Force (no lease)…") }
+                                Spacer(Modifier.height(8.dp))
+                                TextButton(onClick = { showPushOptions = false }) {
+                                    Text("Cancel")
+                                }
                             }
                         }
                     }
@@ -330,26 +309,35 @@ fun RepoDetailScreen(
 
             if (showLfsOptions) {
                 androidx.compose.ui.window.Dialog(onDismissRequest = { showLfsOptions = false }) {
-                    Surface(
-                        shape = MaterialTheme.shapes.extraLarge,
-                        tonalElevation = 6.dp,
-                        modifier = Modifier.fillMaxWidth().padding(24.dp)
+                    Box(
+                        Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+                        contentAlignment = Alignment.Center
                     ) {
-                        Column(Modifier.padding(24.dp)) {
-                            Text("Git LFS", style = MaterialTheme.typography.headlineSmall)
-                            Spacer(Modifier.height(12.dp))
-                            TextButton(
-                                onClick = { showLfsOptions = false; vm.lfsInstall() },
-                                modifier = Modifier.fillMaxWidth()
-                            ) { Text("LFS install") }
-                            TextButton(
-                                onClick = { showLfsOptions = false; showLfsTrack = true },
-                                modifier = Modifier.fillMaxWidth()
-                            ) { Text("LFS track…") }
-                            // Pull / push / status live under the Status / Pull / Push menus
-                            Spacer(Modifier.height(8.dp))
-                            TextButton(onClick = { showLfsOptions = false }, modifier = Modifier.align(Alignment.End)) {
-                                Text("Cancel")
+                        Surface(
+                            shape = MaterialTheme.shapes.extraLarge,
+                            tonalElevation = 6.dp,
+                            modifier = Modifier
+                                .widthIn(max = 400.dp)
+                                .fillMaxWidth()
+                        ) {
+                            Column(
+                                Modifier.padding(24.dp).fillMaxWidth(),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Text("Git LFS", style = MaterialTheme.typography.headlineSmall)
+                                Spacer(Modifier.height(12.dp))
+                                TextButton(
+                                    onClick = { showLfsOptions = false; vm.lfsInstall() },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) { Text("LFS install") }
+                                TextButton(
+                                    onClick = { showLfsOptions = false; showLfsTrack = true },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) { Text("LFS track…") }
+                                Spacer(Modifier.height(8.dp))
+                                TextButton(onClick = { showLfsOptions = false }) {
+                                    Text("Cancel")
+                                }
                             }
                         }
                     }
@@ -395,29 +383,39 @@ fun RepoDetailScreen(
 
             if (showStatusOptions) {
                 androidx.compose.ui.window.Dialog(onDismissRequest = { showStatusOptions = false }) {
-                    Surface(
-                        shape = MaterialTheme.shapes.extraLarge,
-                        tonalElevation = 6.dp,
-                        modifier = Modifier.fillMaxWidth().padding(24.dp)
+                    Box(
+                        Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+                        contentAlignment = Alignment.Center
                     ) {
-                        Column(Modifier.padding(24.dp)) {
-                            Text("Status", style = MaterialTheme.typography.headlineSmall)
-                            Spacer(Modifier.height(12.dp))
-                            TextButton(
-                                onClick = { showStatusOptions = false; vm.gitStatus() },
-                                modifier = Modifier.fillMaxWidth()
-                            ) { Text("Git status") }
-                            TextButton(
-                                onClick = { showStatusOptions = false; vm.lfsStatus() },
-                                modifier = Modifier.fillMaxWidth()
-                            ) { Text("LFS status") }
-                            TextButton(
-                                onClick = { showStatusOptions = false; vm.fullStatus() },
-                                modifier = Modifier.fillMaxWidth()
-                            ) { Text("Git + LFS status") }
-                            Spacer(Modifier.height(8.dp))
-                            TextButton(onClick = { showStatusOptions = false }, modifier = Modifier.align(Alignment.End)) {
-                                Text("Cancel")
+                        Surface(
+                            shape = MaterialTheme.shapes.extraLarge,
+                            tonalElevation = 6.dp,
+                            modifier = Modifier
+                                .widthIn(max = 400.dp)
+                                .fillMaxWidth()
+                        ) {
+                            Column(
+                                Modifier.padding(24.dp).fillMaxWidth(),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Text("Status", style = MaterialTheme.typography.headlineSmall)
+                                Spacer(Modifier.height(12.dp))
+                                TextButton(
+                                    onClick = { showStatusOptions = false; vm.gitStatus() },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) { Text("Git status") }
+                                TextButton(
+                                    onClick = { showStatusOptions = false; vm.lfsStatus() },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) { Text("LFS status") }
+                                TextButton(
+                                    onClick = { showStatusOptions = false; vm.fullStatus() },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) { Text("Git + LFS status") }
+                                Spacer(Modifier.height(8.dp))
+                                TextButton(onClick = { showStatusOptions = false }) {
+                                    Text("Cancel")
+                                }
                             }
                         }
                     }
