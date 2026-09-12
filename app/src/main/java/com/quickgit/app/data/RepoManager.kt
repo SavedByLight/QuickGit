@@ -94,8 +94,10 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
             cfg.deltaBaseCacheLimit = 10 * 1024 * 1024
             // Prefer loading objects into windows rather than pure streaming where possible.
             // Streaming + concurrent SoftRef GC is a common "Inflater has been closed" source
-            // on Android. Keep the threshold modest so large blobs still use the window path.
-            cfg.streamFileThreshold = 8 * 1024 * 1024
+            // on Android (especially PackWriter streaming large loose objects on push after
+            // importDirectory of prebuilts). Raise threshold so more mid-size blobs stay on
+            // the window path instead of UnpackedObject.LargeObject streaming.
+            cfg.streamFileThreshold = 16 * 1024 * 1024
             // mmap of pack files is unreliable on many Android devices / filesystems.
             // Use the Java setter — the field itself is private in WindowCacheConfig.
             cfg.setPackedGitMMAP(false)
@@ -1590,76 +1592,111 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         }
         val remoteName = remote.ifBlank { "origin" }
         AppLog.i(TAG, "push: $path remote=$remoteName mode=$mode")
-        return try {
-            openGit(path).use { git ->
-                val remoteUrl = git.repository.config.getString("remote", remoteName, "url") ?: ""
-                if (remoteUrl.isBlank()) {
-                    return@use GitOpResult.Error("No URL configured for remote '$remoteName'")
-                }
-                maybeUploadLfs(path, remoteUrl)?.let { AppLog.i(TAG, it) }
 
-                if (forceWithLease || force) {
-                    onProgress("Force pushing…")
-                    pushForced(git, remoteUrl, withLease = forceWithLease)
-                } else {
-                    onProgress("Pushing…")
-                    val cmd = git.push()
-                        .setRemote(remoteName)
-                        .setProgressMonitor(TextProgress(onProgress))
-                    // Always push a single branch — never all local branches. Local-only
-                    // branches stay local until the user explicitly pushes them.
-                    val current = try { git.repository.branch } catch (_: Exception) { null }
-                    val lb = localBranch?.takeIf { it.isNotBlank() } ?: current
-                    val rb = remoteBranch?.takeIf { it.isNotBlank() } ?: lb
-                    if (lb.isNullOrBlank()) {
-                        return@use GitOpResult.Error("Detached HEAD — check out a branch before push")
-                    }
-                    cmd.setRefSpecs(org.eclipse.jgit.transport.RefSpec("refs/heads/$lb:refs/heads/$rb"))
-                    applyTransportConfig(cmd, remoteUrl)
-                    val results = cmd.call()
-                    val rejected = results.flatMap { it.remoteUpdates }
-                        .filter { it.status.name.contains("REJECTED") || it.status.name.contains("NON_EXISTING") }
-                    if (rejected.isNotEmpty()) {
-                        val details = rejected.joinToString("; ") { upd ->
-                            val msg = upd.message?.takeIf { it.isNotBlank() }
-                            val status = upd.status?.name ?: "REJECTED"
-                            when {
-                                status.contains("NONFASTFORWARD") ->
-                                    "non-fast-forward (pull/rebase first)" + (msg?.let { ": $it" } ?: "")
-                                status.contains("OTHER") || status.contains("REMOTE_CHANGED") ->
-                                    msg ?: status
-                                else -> msg ?: status
+        // Android SoftRef GC can close Inflater mid-pack while streaming large loose
+        // objects (common after importDirectory of prebuilts / binaries). Retry with a
+        // full WindowCache SoftRef release between attempts — same pattern as clone/checkout.
+        val maxAttempts = 5
+        var lastError: Exception? = null
+        for (attempt in 1..maxAttempts) {
+            try {
+                if (attempt > 1) {
+                    onProgress("Retrying push (attempt $attempt/$maxAttempts)…")
+                    releaseJGitSoftRefs()
+                    try { Thread.sleep(200L * attempt) } catch (_: InterruptedException) {}
+                }
+                return synchronized(jgitIoLock) {
+                    installJGitMemoryLimits()
+                    openGit(path).use { git ->
+                        val remoteUrl = git.repository.config.getString("remote", remoteName, "url") ?: ""
+                        if (remoteUrl.isBlank()) {
+                            return@use GitOpResult.Error("No URL configured for remote '$remoteName'")
+                        }
+                        maybeUploadLfs(path, remoteUrl)?.let { AppLog.i(TAG, it) }
+
+                        if (forceWithLease || force) {
+                            onProgress("Force pushing…")
+                            pushForced(git, remoteUrl, withLease = forceWithLease)
+                        } else {
+                            onProgress("Pushing…")
+                            val cmd = git.push()
+                                .setRemote(remoteName)
+                                .setProgressMonitor(TextProgress(onProgress))
+                            // Always push a single branch — never all local branches. Local-only
+                            // branches stay local until the user explicitly pushes them.
+                            val current = try { git.repository.branch } catch (_: Exception) { null }
+                            val lb = localBranch?.takeIf { it.isNotBlank() } ?: current
+                            val rb = remoteBranch?.takeIf { it.isNotBlank() } ?: lb
+                            if (lb.isNullOrBlank()) {
+                                return@use GitOpResult.Error("Detached HEAD — check out a branch before push")
+                            }
+                            cmd.setRefSpecs(org.eclipse.jgit.transport.RefSpec("refs/heads/$lb:refs/heads/$rb"))
+                            applyTransportConfig(cmd, remoteUrl)
+                            val results = cmd.call()
+                            val rejected = results.flatMap { it.remoteUpdates }
+                                .filter { it.status.name.contains("REJECTED") || it.status.name.contains("NON_EXISTING") }
+                            if (rejected.isNotEmpty()) {
+                                val details = rejected.joinToString("; ") { upd ->
+                                    val msg = upd.message?.takeIf { it.isNotBlank() }
+                                    val status = upd.status?.name ?: "REJECTED"
+                                    when {
+                                        status.contains("NONFASTFORWARD") ->
+                                            "non-fast-forward (pull/rebase first)" + (msg?.let { ": $it" } ?: "")
+                                        status.contains("OTHER") || status.contains("REMOTE_CHANGED") ->
+                                            msg ?: status
+                                        else -> msg ?: status
+                                    }
+                                }
+                                AppLog.w(TAG, "push rejected: $details")
+                                // GitHub rejects workflow-file updates without the `workflow` scope with a
+                                // clear message in RemoteRefUpdate.message; surface it instead of always
+                                // blaming a missing pull.
+                                val hint = when {
+                                    details.contains("workflow", ignoreCase = true) ||
+                                        details.contains("refusing to allow", ignoreCase = true) ->
+                                        "Push rejected (token may lack the workflow scope): $details"
+                                    details.contains("non-fast-forward", ignoreCase = true) ->
+                                        "Push rejected — pull first: $details"
+                                    else -> "Push rejected: $details"
+                                }
+                                GitOpResult.Error(hint)
+                            } else {
+                                AppLog.i(TAG, "push succeeded")
+                                GitOpResult.Success
                             }
                         }
-                        AppLog.w(TAG, "push rejected: $details")
-                        // GitHub rejects workflow-file updates without the `workflow` scope with a
-                        // clear message in RemoteRefUpdate.message; surface it instead of always
-                        // blaming a missing pull.
-                        val hint = when {
-                            details.contains("workflow", ignoreCase = true) ||
-                                details.contains("refusing to allow", ignoreCase = true) ->
-                                "Push rejected (token may lack the workflow scope): $details"
-                            details.contains("non-fast-forward", ignoreCase = true) ->
-                                "Push rejected — pull first: $details"
-                            else -> "Push rejected: $details"
-                        }
-                        GitOpResult.Error(hint)
-                    } else {
-                        AppLog.i(TAG, "push succeeded")
-                        GitOpResult.Success
                     }
                 }
+            } catch (e: org.eclipse.jgit.api.errors.TransportException) {
+                lastError = e
+                if (isAuthFailure(e)) {
+                    AppLog.e(TAG, "push failed (auth)", e)
+                    val url = runCatching {
+                        openGit(path).use { it.repository.config.getString("remote", "origin", "url") }
+                    }.getOrNull() ?: ""
+                    return GitOpResult.AuthRequired(url)
+                }
+                if (isInflaterRace(e) && attempt < maxAttempts) {
+                    AppLog.w(TAG, "push Inflater race (attempt $attempt/$maxAttempts): ${e.message}")
+                    continue
+                }
+                AppLog.e(TAG, "push failed (transport)", e)
+                return GitOpResult.Error(e.message ?: "Push failed", e)
+            } catch (e: Exception) {
+                lastError = e
+                if (isInflaterRace(e) && attempt < maxAttempts) {
+                    AppLog.w(TAG, "push Inflater race (attempt $attempt/$maxAttempts): ${e.message}")
+                    continue
+                }
+                AppLog.e(TAG, "push failed", e)
+                return GitOpResult.Error(e.message ?: "Push failed", e)
             }
-        } catch (e: org.eclipse.jgit.api.errors.TransportException) {
-            AppLog.e(TAG, "push failed (transport)", e)
-            if (isAuthFailure(e)) {
-                val url = openGit(path).use { it.repository.config.getString("remote", "origin", "url") } ?: ""
-                GitOpResult.AuthRequired(url)
-            } else GitOpResult.Error(e.message ?: "Push failed", e)
-        } catch (e: Exception) {
-            AppLog.e(TAG, "push failed", e)
-            GitOpResult.Error(e.message ?: "Push failed", e)
         }
+        AppLog.e(TAG, "push failed after $maxAttempts attempts", lastError)
+        return GitOpResult.Error(
+            lastError?.message ?: "Push failed after $maxAttempts attempts (Inflater race)",
+            lastError
+        )
     }
 
     /**
@@ -1676,50 +1713,83 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     ): GitOpResult {
         val remoteName = remote.ifBlank { "origin" }
         AppLog.i(TAG, "pushForReview: $path remote=$remoteName")
-        return try {
-            openGit(path).use { git ->
-                val remoteUrl = git.repository.config.getString("remote", remoteName, "url") ?: ""
-                if (remoteUrl.isBlank()) {
-                    return@use GitOpResult.Error("No URL configured for remote '$remoteName'")
+
+        // Same Android Inflater SoftRef race as regular push when packing large loose objects.
+        val maxAttempts = 5
+        var lastError: Exception? = null
+        for (attempt in 1..maxAttempts) {
+            try {
+                if (attempt > 1) {
+                    onProgress("Retrying push for review (attempt $attempt/$maxAttempts)…")
+                    releaseJGitSoftRefs()
+                    try { Thread.sleep(200L * attempt) } catch (_: InterruptedException) {}
                 }
-                onProgress("Pushing for review…")
-                val current = try { git.repository.branch } catch (_: Exception) { null }
-                val lb = localBranch?.takeIf { it.isNotBlank() } ?: current
-                val tb = targetBranch?.takeIf { it.isNotBlank() } ?: lb
-                if (lb.isNullOrBlank() || tb.isNullOrBlank()) {
-                    return@use GitOpResult.Error("Detached HEAD — check out a branch before push for review")
-                }
-                val cmd = git.push()
-                    .setRemote(remoteName)
-                    .setProgressMonitor(TextProgress(onProgress))
-                    .setRefSpecs(
-                        org.eclipse.jgit.transport.RefSpec("refs/heads/$lb:refs/for/$tb")
-                    )
-                applyTransportConfig(cmd, remoteUrl)
-                val results = cmd.call()
-                val rejected = results.flatMap { it.remoteUpdates }
-                    .filter { it.status.name.contains("REJECTED") || it.status.name.contains("NON_EXISTING") }
-                if (rejected.isNotEmpty()) {
-                    val details = rejected.joinToString("; ") { upd ->
-                        upd.message?.takeIf { it.isNotBlank() } ?: (upd.status?.name ?: "REJECTED")
+                return synchronized(jgitIoLock) {
+                    installJGitMemoryLimits()
+                    openGit(path).use { git ->
+                        val remoteUrl = git.repository.config.getString("remote", remoteName, "url") ?: ""
+                        if (remoteUrl.isBlank()) {
+                            return@use GitOpResult.Error("No URL configured for remote '$remoteName'")
+                        }
+                        onProgress("Pushing for review…")
+                        val current = try { git.repository.branch } catch (_: Exception) { null }
+                        val lb = localBranch?.takeIf { it.isNotBlank() } ?: current
+                        val tb = targetBranch?.takeIf { it.isNotBlank() } ?: lb
+                        if (lb.isNullOrBlank() || tb.isNullOrBlank()) {
+                            return@use GitOpResult.Error("Detached HEAD — check out a branch before push for review")
+                        }
+                        val cmd = git.push()
+                            .setRemote(remoteName)
+                            .setProgressMonitor(TextProgress(onProgress))
+                            .setRefSpecs(
+                                org.eclipse.jgit.transport.RefSpec("refs/heads/$lb:refs/for/$tb")
+                            )
+                        applyTransportConfig(cmd, remoteUrl)
+                        val results = cmd.call()
+                        val rejected = results.flatMap { it.remoteUpdates }
+                            .filter { it.status.name.contains("REJECTED") || it.status.name.contains("NON_EXISTING") }
+                        if (rejected.isNotEmpty()) {
+                            val details = rejected.joinToString("; ") { upd ->
+                                upd.message?.takeIf { it.isNotBlank() } ?: (upd.status?.name ?: "REJECTED")
+                            }
+                            AppLog.w(TAG, "pushForReview rejected: $details")
+                            GitOpResult.Error("Push for review rejected: $details")
+                        } else {
+                            AppLog.i(TAG, "pushForReview succeeded → refs/for/$tb")
+                            GitOpResult.Success
+                        }
                     }
-                    AppLog.w(TAG, "pushForReview rejected: $details")
-                    GitOpResult.Error("Push for review rejected: $details")
-                } else {
-                    AppLog.i(TAG, "pushForReview succeeded → refs/for/$tb")
-                    GitOpResult.Success
                 }
+            } catch (e: org.eclipse.jgit.api.errors.TransportException) {
+                lastError = e
+                if (isAuthFailure(e)) {
+                    AppLog.e(TAG, "pushForReview failed (auth)", e)
+                    val url = runCatching {
+                        openGit(path).use { it.repository.config.getString("remote", "origin", "url") }
+                    }.getOrNull() ?: ""
+                    return GitOpResult.AuthRequired(url)
+                }
+                if (isInflaterRace(e) && attempt < maxAttempts) {
+                    AppLog.w(TAG, "pushForReview Inflater race (attempt $attempt/$maxAttempts): ${e.message}")
+                    continue
+                }
+                AppLog.e(TAG, "pushForReview failed (transport)", e)
+                return GitOpResult.Error(e.message ?: "Push for review failed", e)
+            } catch (e: Exception) {
+                lastError = e
+                if (isInflaterRace(e) && attempt < maxAttempts) {
+                    AppLog.w(TAG, "pushForReview Inflater race (attempt $attempt/$maxAttempts): ${e.message}")
+                    continue
+                }
+                AppLog.e(TAG, "pushForReview failed", e)
+                return GitOpResult.Error(e.message ?: "Push for review failed", e)
             }
-        } catch (e: org.eclipse.jgit.api.errors.TransportException) {
-            AppLog.e(TAG, "pushForReview failed (transport)", e)
-            if (isAuthFailure(e)) {
-                val url = openGit(path).use { it.repository.config.getString("remote", "origin", "url") } ?: ""
-                GitOpResult.AuthRequired(url)
-            } else GitOpResult.Error(e.message ?: "Push for review failed", e)
-        } catch (e: Exception) {
-            AppLog.e(TAG, "pushForReview failed", e)
-            GitOpResult.Error(e.message ?: "Push for review failed", e)
         }
+        AppLog.e(TAG, "pushForReview failed after $maxAttempts attempts", lastError)
+        return GitOpResult.Error(
+            lastError?.message ?: "Push for review failed after $maxAttempts attempts (Inflater race)",
+            lastError
+        )
     }
 
     /**
