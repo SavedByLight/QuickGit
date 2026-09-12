@@ -1576,6 +1576,30 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
      * - [force]: unconditional overwrite (`--force`). Prefer lease unless you know you need this.
      * If both force flags are true, lease wins.
      */
+    /**
+     * Pack loose objects into pack files before push.
+     *
+     * PackWriter streams large loose objects via UnpackedObject.LargeObject, which on
+     * Android reliably hits "Inflater has been closed" (SoftRef GC of InflaterCache).
+     * After gc packs them, push reads from packs instead and avoids that path.
+     */
+    private fun packLooseObjectsForPush(git: Git, onProgress: (String) -> Unit) {
+        try {
+            onProgress("Packing local objects…")
+            AppLog.i(TAG, "packLooseObjectsForPush: running gc to pack loose objects")
+            installJGitMemoryLimits()
+            git.gc()
+                .setProgressMonitor(TextProgress(onProgress))
+                .call()
+            // Close any readers the GC left holding SoftRefs, then reinstall limits.
+            releaseJGitSoftRefs()
+            AppLog.i(TAG, "packLooseObjectsForPush: gc finished")
+        } catch (e: Exception) {
+            // Non-fatal: still attempt the push; worst case we hit the Inflater race again.
+            AppLog.w(TAG, "packLooseObjectsForPush failed (continuing with push): ${e.message}")
+        }
+    }
+
     fun push(
         path: String,
         force: Boolean = false,
@@ -1593,17 +1617,18 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         val remoteName = remote.ifBlank { "origin" }
         AppLog.i(TAG, "push: $path remote=$remoteName mode=$mode")
 
-        // Android SoftRef GC can close Inflater mid-pack while streaming large loose
-        // objects (common after importDirectory of prebuilts / binaries). Retry with a
-        // full WindowCache SoftRef release between attempts — same pattern as clone/checkout.
+        // Android SoftRef GC closes Inflater while PackWriter streams large loose objects
+        // (common after importDirectory of prebuilts). Primary fix: pack loose objects via
+        // gc before push. Secondary: retry with SoftRef release if Inflater race still hits.
         val maxAttempts = 5
         var lastError: Exception? = null
+        var packedThisSession = false
         for (attempt in 1..maxAttempts) {
             try {
                 if (attempt > 1) {
                     onProgress("Retrying push (attempt $attempt/$maxAttempts)…")
                     releaseJGitSoftRefs()
-                    try { Thread.sleep(200L * attempt) } catch (_: InterruptedException) {}
+                    try { Thread.sleep(300L * attempt) } catch (_: InterruptedException) {}
                 }
                 return synchronized(jgitIoLock) {
                     installJGitMemoryLimits()
@@ -1613,6 +1638,14 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                             return@use GitOpResult.Error("No URL configured for remote '$remoteName'")
                         }
                         maybeUploadLfs(path, remoteUrl)?.let { AppLog.i(TAG, it) }
+
+                        // Pack once before the first attempt (and again after an Inflater
+                        // failure so any newly-written loose objects from a partial failure
+                        // are packed). Avoids UnpackedObject.LargeObject streaming on push.
+                        if (!packedThisSession || attempt > 1) {
+                            packLooseObjectsForPush(git, onProgress)
+                            packedThisSession = true
+                        }
 
                         if (forceWithLease || force) {
                             onProgress("Force pushing…")
@@ -1678,6 +1711,8 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                 }
                 if (isInflaterRace(e) && attempt < maxAttempts) {
                     AppLog.w(TAG, "push Inflater race (attempt $attempt/$maxAttempts): ${e.message}")
+                    // Force re-pack on next attempt — objects may still be loose.
+                    packedThisSession = false
                     continue
                 }
                 AppLog.e(TAG, "push failed (transport)", e)
@@ -1686,6 +1721,7 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                 lastError = e
                 if (isInflaterRace(e) && attempt < maxAttempts) {
                     AppLog.w(TAG, "push Inflater race (attempt $attempt/$maxAttempts): ${e.message}")
+                    packedThisSession = false
                     continue
                 }
                 AppLog.e(TAG, "push failed", e)
@@ -1717,12 +1753,13 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         // Same Android Inflater SoftRef race as regular push when packing large loose objects.
         val maxAttempts = 5
         var lastError: Exception? = null
+        var packedThisSession = false
         for (attempt in 1..maxAttempts) {
             try {
                 if (attempt > 1) {
                     onProgress("Retrying push for review (attempt $attempt/$maxAttempts)…")
                     releaseJGitSoftRefs()
-                    try { Thread.sleep(200L * attempt) } catch (_: InterruptedException) {}
+                    try { Thread.sleep(300L * attempt) } catch (_: InterruptedException) {}
                 }
                 return synchronized(jgitIoLock) {
                     installJGitMemoryLimits()
@@ -1730,6 +1767,10 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                         val remoteUrl = git.repository.config.getString("remote", remoteName, "url") ?: ""
                         if (remoteUrl.isBlank()) {
                             return@use GitOpResult.Error("No URL configured for remote '$remoteName'")
+                        }
+                        if (!packedThisSession || attempt > 1) {
+                            packLooseObjectsForPush(git, onProgress)
+                            packedThisSession = true
                         }
                         onProgress("Pushing for review…")
                         val current = try { git.repository.branch } catch (_: Exception) { null }
@@ -1771,6 +1812,7 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                 }
                 if (isInflaterRace(e) && attempt < maxAttempts) {
                     AppLog.w(TAG, "pushForReview Inflater race (attempt $attempt/$maxAttempts): ${e.message}")
+                    packedThisSession = false
                     continue
                 }
                 AppLog.e(TAG, "pushForReview failed (transport)", e)
@@ -1779,6 +1821,7 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                 lastError = e
                 if (isInflaterRace(e) && attempt < maxAttempts) {
                     AppLog.w(TAG, "pushForReview Inflater race (attempt $attempt/$maxAttempts): ${e.message}")
+                    packedThisSession = false
                     continue
                 }
                 AppLog.e(TAG, "pushForReview failed", e)
