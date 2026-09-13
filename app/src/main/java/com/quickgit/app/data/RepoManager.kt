@@ -129,17 +129,76 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     }
 
     /**
+     * Drain JGit's static InflaterCache pool.
+     *
+     * On Android, WindowCursor.close → InflaterCache.release often calls reset() on an
+     * Inflater that was already ended (double-close / SoftRef race), producing
+     * "Inflater has been closed". Clearing the pool between retries avoids reusing a
+     * poisoned Inflater. See Eclipse bug 462746 / MGit #714.
+     */
+    private fun clearInflaterCache() {
+        try {
+            val clazz = Class.forName("org.eclipse.jgit.lib.InflaterCache")
+            val cacheField = clazz.getDeclaredField("inflaterCache")
+            cacheField.isAccessible = true
+            val countField = clazz.getDeclaredField("openInflaterCount")
+            countField.isAccessible = true
+            synchronized(clazz) {
+                @Suppress("UNCHECKED_CAST")
+                val arr = cacheField.get(null) as Array<Any?>
+                for (i in arr.indices) {
+                    val inf = arr[i]
+                    if (inf is java.util.zip.Inflater) {
+                        try { inf.end() } catch (_: Exception) {}
+                    }
+                    arr[i] = null
+                }
+                countField.setInt(null, 0)
+            }
+        } catch (e: Exception) {
+            AppLog.w(TAG, "clearInflaterCache: ${e.message}")
+        }
+    }
+
+    /**
      * Full SoftRef release between major phases (clone attempts, materialize fallback entry).
      * Reinstalls WindowCache only after GC has had a chance to clear dead SoftRefs.
      */
     private fun releaseJGitSoftRefs() {
         try {
+            clearInflaterCache()
             System.gc()
             System.runFinalization()
             System.gc()
             try { Thread.sleep(150) } catch (_: InterruptedException) {}
+            clearInflaterCache()
             installJGitMemoryLimits()
         } catch (_: Exception) {
+        }
+    }
+
+    /**
+     * WindowCache for fetch/pull of large Android trees (delta resolution against existing
+     * packs). Higher stream threshold reduces LargeObject streaming during getCachedBytes.
+     */
+    private fun installJGitFetchMemoryLimits() {
+        try {
+            val cfg = WindowCacheConfig()
+            cfg.packedGitLimit = 128L * 1024 * 1024
+            cfg.packedGitWindowSize = 16 * 1024
+            cfg.deltaBaseCacheLimit = 32 * 1024 * 1024
+            cfg.streamFileThreshold = 64 * 1024 * 1024
+            cfg.setPackedGitMMAP(false)
+            try {
+                cfg.javaClass.getMethod("setPackedGitOpenFiles", Int::class.javaPrimitiveType)
+                    .invoke(cfg, 4)
+            } catch (_: Exception) {
+            }
+            cfg.install()
+            AppLog.i(TAG, "JGit WindowCache limits installed for fetch (streamThreshold=64MiB)")
+        } catch (e: Exception) {
+            AppLog.w(TAG, "Could not install fetch WindowCache config: ${e.message}")
+            installJGitMemoryLimits()
         }
     }
 
@@ -1986,7 +2045,8 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                     try { Thread.sleep(400L * attempt) } catch (_: InterruptedException) {}
                 }
                 return synchronized(jgitIoLock) {
-                    installJGitMemoryLimits()
+                    clearInflaterCache()
+                    installJGitFetchMemoryLimits()
                     openGit(path).use { git ->
                         val repoState = git.repository.repositoryState
                         if (repoState != RepositoryState.SAFE) {
@@ -2196,20 +2256,21 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     /** Fetches all refs from the named remote, updating its remote-tracking branches. */
     fun fetchRemote(path: String, remoteName: String, onProgress: (String) -> Unit = {}): GitOpResult {
         AppLog.i(TAG, "fetchRemote: $remoteName")
-        // PackParser.resolveDeltasWithExternalBases → getCachedBytes can hit the same
-        // Android "Inflater has been closed" SoftRef race as push/clone. Retry with
-        // WindowCache SoftRef release between attempts.
-        val maxAttempts = 5
+        // PackParser.resolveDeltasWithExternalBases → getCachedBytes hits Android
+        // "Inflater has been closed" when WindowCursor double-releases pooled Inflaters.
+        // Clear InflaterCache + use fetch-tuned WindowCache; retry with SoftRef release.
+        val maxAttempts = 6
         var lastError: Exception? = null
         for (attempt in 1..maxAttempts) {
             try {
                 if (attempt > 1) {
                     onProgress("Retrying fetch (attempt $attempt/$maxAttempts)…")
                     releaseJGitSoftRefs()
-                    try { Thread.sleep(400L * attempt) } catch (_: InterruptedException) {}
+                    try { Thread.sleep(500L * attempt) } catch (_: InterruptedException) {}
                 }
                 synchronized(jgitIoLock) {
-                    installJGitMemoryLimits()
+                    clearInflaterCache()
+                    installJGitFetchMemoryLimits()
                     openGit(path).use { git ->
                         val remoteUrl = git.repository.config.getString("remote", remoteName, "url") ?: ""
                         onProgress("Fetching $remoteName…")
@@ -2231,6 +2292,20 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                     }.getOrNull() ?: ""
                     return GitOpResult.AuthRequired(url)
                 }
+                // Network/DNS failures are not Inflater races — surface immediately.
+                val msg = e.message.orEmpty()
+                if (msg.contains("UnknownHost", ignoreCase = true) ||
+                    msg.contains("Unable to resolve host", ignoreCase = true) ||
+                    msg.contains("No address associated", ignoreCase = true) ||
+                    msg.contains("cannot open git-upload-pack", ignoreCase = true) &&
+                    e.cause is java.net.UnknownHostException
+                ) {
+                    AppLog.e(TAG, "fetchRemote failed (network): $remoteName", e)
+                    return GitOpResult.Error(
+                        "Network error — check connection and try again (${e.message})",
+                        e
+                    )
+                }
                 if (isInflaterRace(e) && attempt < maxAttempts) {
                     AppLog.w(TAG, "fetchRemote Inflater race (attempt $attempt/$maxAttempts): ${e.message}")
                     continue
@@ -2245,6 +2320,8 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                 }
                 AppLog.e(TAG, "fetchRemote failed: $remoteName", e)
                 return GitOpResult.Error(e.message ?: "Fetch failed", e)
+            } finally {
+                try { installJGitMemoryLimits() } catch (_: Exception) {}
             }
         }
         AppLog.e(TAG, "fetchRemote failed after $maxAttempts attempts: $remoteName", lastError)
