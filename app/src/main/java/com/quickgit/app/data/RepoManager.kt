@@ -1975,80 +1975,112 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         rebase: Boolean = false
     ): GitOpResult {
         AppLog.i(TAG, "pull: $path rebase=$rebase")
-        return try {
-            openGit(path).use { git ->
-                val repoState = git.repository.repositoryState
-                if (repoState != RepositoryState.SAFE) {
-                    // JGit's PullCommand throws WrongRepositoryStateException for any state
-                    // other than SAFE (mid-merge, mid-revert, mid-cherry-pick...) — most often
-                    // MERGING_RESOLVED, where conflicts were resolved but the merge commit was
-                    // never made. Route to the merge screen instead of surfacing the raw
-                    // exception; "Complete merge" there is already enabled once conflicts are
-                    // resolved, so this is a one-tap fix for the user.
-                    AppLog.w(TAG, "pull blocked: repository state is $repoState")
-                    val unresolved = git.status().call().conflicting.toList().sorted()
-                    GitOpResult.Conflict(unresolved)
-                } else {
-                    val remoteUrl = git.repository.config.getString("remote", "origin", "url") ?: ""
-                    onProgress(if (rebase) "Pulling with rebase…" else "Pulling…")
-                    val cmd = git.pull()
-                        .setProgressMonitor(TextProgress(onProgress))
-                        .setRebase(rebase)
-                    applyTransportConfig(cmd, remoteUrl)
-                    val result = cmd.call()
-                    when {
-                        !result.isSuccessful && result.mergeResult?.mergeStatus == MergeResult.MergeStatus.CONFLICTING -> {
-                            val paths = result.mergeResult.conflicts?.keys?.toList() ?: emptyList()
-                            AppLog.w(TAG, "pull conflict: ${paths.size} path(s)")
-                            GitOpResult.Conflict(paths)
-                        }
-                        // Rebase path reports conflicts via rebaseResult rather than mergeResult
-                        rebase && result.rebaseResult != null &&
-                            result.rebaseResult.status?.name?.contains("CONFLICT", ignoreCase = true) == true -> {
-                            val paths = try {
-                                git.status().call().conflicting.toList().sorted()
-                            } catch (_: Exception) {
-                                emptyList()
+        // Pull embeds a fetch; PackParser can hit the same Android Inflater SoftRef race.
+        val maxAttempts = 5
+        var lastError: Exception? = null
+        for (attempt in 1..maxAttempts) {
+            try {
+                if (attempt > 1) {
+                    onProgress("Retrying pull (attempt $attempt/$maxAttempts)…")
+                    releaseJGitSoftRefs()
+                    try { Thread.sleep(400L * attempt) } catch (_: InterruptedException) {}
+                }
+                return synchronized(jgitIoLock) {
+                    installJGitMemoryLimits()
+                    openGit(path).use { git ->
+                        val repoState = git.repository.repositoryState
+                        if (repoState != RepositoryState.SAFE) {
+                            // JGit's PullCommand throws WrongRepositoryStateException for any state
+                            // other than SAFE (mid-merge, mid-revert, mid-cherry-pick...) — most often
+                            // MERGING_RESOLVED, where conflicts were resolved but the merge commit was
+                            // never made. Route to the merge screen instead of surfacing the raw
+                            // exception; "Complete merge" there is already enabled once conflicts are
+                            // resolved, so this is a one-tap fix for the user.
+                            AppLog.w(TAG, "pull blocked: repository state is $repoState")
+                            val unresolved = git.status().call().conflicting.toList().sorted()
+                            GitOpResult.Conflict(unresolved)
+                        } else {
+                            val remoteUrl = git.repository.config.getString("remote", "origin", "url") ?: ""
+                            onProgress(if (rebase) "Pulling with rebase…" else "Pulling…")
+                            val cmd = git.pull()
+                                .setProgressMonitor(TextProgress(onProgress))
+                                .setRebase(rebase)
+                            applyTransportConfig(cmd, remoteUrl)
+                            val result = cmd.call()
+                            when {
+                                !result.isSuccessful && result.mergeResult?.mergeStatus == MergeResult.MergeStatus.CONFLICTING -> {
+                                    val paths = result.mergeResult.conflicts?.keys?.toList() ?: emptyList()
+                                    AppLog.w(TAG, "pull conflict: ${paths.size} path(s)")
+                                    GitOpResult.Conflict(paths)
+                                }
+                                // Rebase path reports conflicts via rebaseResult rather than mergeResult
+                                rebase && result.rebaseResult != null &&
+                                    result.rebaseResult.status?.name?.contains("CONFLICT", ignoreCase = true) == true -> {
+                                    val paths = try {
+                                        git.status().call().conflicting.toList().sorted()
+                                    } catch (_: Exception) {
+                                        emptyList()
+                                    }
+                                    AppLog.w(TAG, "pull --rebase conflict: ${paths.size} path(s)")
+                                    GitOpResult.Conflict(paths)
+                                }
+                                result.mergeResult?.mergeStatus == MergeResult.MergeStatus.ALREADY_UP_TO_DATE -> {
+                                    AppLog.i(TAG, "pull: already up to date")
+                                    maybeFetchLfs(path, remoteUrl) {}
+                                    GitOpResult.UpToDate()
+                                }
+                                result.isSuccessful -> {
+                                    maybeFetchLfs(path, remoteUrl) {}?.let { AppLog.i(TAG, it) }
+                                    AppLog.i(TAG, "pull succeeded (rebase=$rebase)")
+                                    GitOpResult.Success
+                                }
+                                else -> {
+                                    val detail = result.mergeResult?.mergeStatus?.toString()
+                                        ?: result.rebaseResult?.status?.toString()
+                                        ?: "unknown"
+                                    AppLog.w(TAG, "pull incomplete: $detail")
+                                    GitOpResult.Error("Pull did not complete: $detail")
+                                }
                             }
-                            AppLog.w(TAG, "pull --rebase conflict: ${paths.size} path(s)")
-                            GitOpResult.Conflict(paths)
-                        }
-                        result.mergeResult?.mergeStatus == MergeResult.MergeStatus.ALREADY_UP_TO_DATE -> {
-                            AppLog.i(TAG, "pull: already up to date")
-                            maybeFetchLfs(path, remoteUrl) {}
-                            GitOpResult.UpToDate()
-                        }
-                        result.isSuccessful -> {
-                            maybeFetchLfs(path, remoteUrl) {}?.let { AppLog.i(TAG, it) }
-                            AppLog.i(TAG, "pull succeeded (rebase=$rebase)")
-                            GitOpResult.Success
-                        }
-                        else -> {
-                            val detail = result.mergeResult?.mergeStatus?.toString()
-                                ?: result.rebaseResult?.status?.toString()
-                                ?: "unknown"
-                            AppLog.w(TAG, "pull incomplete: $detail")
-                            GitOpResult.Error("Pull did not complete: $detail")
                         }
                     }
                 }
+            } catch (e: org.eclipse.jgit.api.errors.TransportException) {
+                lastError = e
+                if (isAuthFailure(e)) {
+                    AppLog.e(TAG, "pull failed (auth)", e)
+                    val url = runCatching {
+                        openGit(path).use { it.repository.config.getString("remote", "origin", "url") }
+                    }.getOrNull() ?: ""
+                    return GitOpResult.AuthRequired(url)
+                }
+                if (isInflaterRace(e) && attempt < maxAttempts) {
+                    AppLog.w(TAG, "pull Inflater race (attempt $attempt/$maxAttempts): ${e.message}")
+                    continue
+                }
+                AppLog.e(TAG, "pull failed (transport)", e)
+                return if (allowBranchRecovery) {
+                    recoverPullMissingRemoteBranch(path, e, onProgress)
+                        ?: GitOpResult.Error(e.message ?: "Pull failed", e)
+                } else GitOpResult.Error(e.message ?: "Pull failed", e)
+            } catch (e: Exception) {
+                lastError = e
+                if (isInflaterRace(e) && attempt < maxAttempts) {
+                    AppLog.w(TAG, "pull Inflater race (attempt $attempt/$maxAttempts): ${e.message}")
+                    continue
+                }
+                AppLog.e(TAG, "pull failed", e)
+                return if (allowBranchRecovery) {
+                    recoverPullMissingRemoteBranch(path, e, onProgress)
+                        ?: GitOpResult.Error(e.message ?: "Pull failed", e)
+                } else GitOpResult.Error(e.message ?: "Pull failed", e)
             }
-        } catch (e: org.eclipse.jgit.api.errors.TransportException) {
-            AppLog.e(TAG, "pull failed (transport)", e)
-            if (isAuthFailure(e)) {
-                val url = openGit(path).use { it.repository.config.getString("remote", "origin", "url") } ?: ""
-                GitOpResult.AuthRequired(url)
-            } else if (allowBranchRecovery) {
-                recoverPullMissingRemoteBranch(path, e, onProgress)
-                    ?: GitOpResult.Error(e.message ?: "Pull failed", e)
-            } else GitOpResult.Error(e.message ?: "Pull failed", e)
-        } catch (e: Exception) {
-            AppLog.e(TAG, "pull failed", e)
-            if (allowBranchRecovery) {
-                recoverPullMissingRemoteBranch(path, e, onProgress)
-                    ?: GitOpResult.Error(e.message ?: "Pull failed", e)
-            } else GitOpResult.Error(e.message ?: "Pull failed", e)
         }
+        AppLog.e(TAG, "pull failed after $maxAttempts attempts", lastError)
+        return GitOpResult.Error(
+            lastError?.message ?: "Pull failed after $maxAttempts attempts (Inflater race)",
+            lastError
+        )
     }
 
     /**
@@ -2164,28 +2196,62 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     /** Fetches all refs from the named remote, updating its remote-tracking branches. */
     fun fetchRemote(path: String, remoteName: String, onProgress: (String) -> Unit = {}): GitOpResult {
         AppLog.i(TAG, "fetchRemote: $remoteName")
-        return try {
-            openGit(path).use { git ->
-                val remoteUrl = git.repository.config.getString("remote", remoteName, "url") ?: ""
-                onProgress("Fetching $remoteName…")
-                val fetchCmd = git.fetch()
-                    .setRemote(remoteName)
-                    .setProgressMonitor(TextProgress(onProgress))
-                applyTransportConfig(fetchCmd, remoteUrl)
-                fetchCmd.call()
+        // PackParser.resolveDeltasWithExternalBases → getCachedBytes can hit the same
+        // Android "Inflater has been closed" SoftRef race as push/clone. Retry with
+        // WindowCache SoftRef release between attempts.
+        val maxAttempts = 5
+        var lastError: Exception? = null
+        for (attempt in 1..maxAttempts) {
+            try {
+                if (attempt > 1) {
+                    onProgress("Retrying fetch (attempt $attempt/$maxAttempts)…")
+                    releaseJGitSoftRefs()
+                    try { Thread.sleep(400L * attempt) } catch (_: InterruptedException) {}
+                }
+                synchronized(jgitIoLock) {
+                    installJGitMemoryLimits()
+                    openGit(path).use { git ->
+                        val remoteUrl = git.repository.config.getString("remote", remoteName, "url") ?: ""
+                        onProgress("Fetching $remoteName…")
+                        val fetchCmd = git.fetch()
+                            .setRemote(remoteName)
+                            .setProgressMonitor(TextProgress(onProgress))
+                        applyTransportConfig(fetchCmd, remoteUrl)
+                        fetchCmd.call()
+                    }
+                }
+                AppLog.i(TAG, "fetchRemote succeeded: $remoteName")
+                return GitOpResult.Success
+            } catch (e: org.eclipse.jgit.api.errors.TransportException) {
+                lastError = e
+                if (isAuthFailure(e)) {
+                    AppLog.e(TAG, "fetchRemote failed (auth): $remoteName", e)
+                    val url = runCatching {
+                        openGit(path).use { it.repository.config.getString("remote", remoteName, "url") }
+                    }.getOrNull() ?: ""
+                    return GitOpResult.AuthRequired(url)
+                }
+                if (isInflaterRace(e) && attempt < maxAttempts) {
+                    AppLog.w(TAG, "fetchRemote Inflater race (attempt $attempt/$maxAttempts): ${e.message}")
+                    continue
+                }
+                AppLog.e(TAG, "fetchRemote failed (transport): $remoteName", e)
+                return GitOpResult.Error(e.message ?: "Fetch failed", e)
+            } catch (e: Exception) {
+                lastError = e
+                if (isInflaterRace(e) && attempt < maxAttempts) {
+                    AppLog.w(TAG, "fetchRemote Inflater race (attempt $attempt/$maxAttempts): ${e.message}")
+                    continue
+                }
+                AppLog.e(TAG, "fetchRemote failed: $remoteName", e)
+                return GitOpResult.Error(e.message ?: "Fetch failed", e)
             }
-            AppLog.i(TAG, "fetchRemote succeeded: $remoteName")
-            GitOpResult.Success
-        } catch (e: org.eclipse.jgit.api.errors.TransportException) {
-            AppLog.e(TAG, "fetchRemote failed (transport): $remoteName", e)
-            if (isAuthFailure(e)) {
-                val url = openGit(path).use { it.repository.config.getString("remote", remoteName, "url") } ?: ""
-                GitOpResult.AuthRequired(url)
-            } else GitOpResult.Error(e.message ?: "Fetch failed", e)
-        } catch (e: Exception) {
-            AppLog.e(TAG, "fetchRemote failed: $remoteName", e)
-            GitOpResult.Error(e.message ?: "Fetch failed", e)
         }
+        AppLog.e(TAG, "fetchRemote failed after $maxAttempts attempts: $remoteName", lastError)
+        return GitOpResult.Error(
+            lastError?.message ?: "Fetch failed after $maxAttempts attempts (Inflater race)",
+            lastError
+        )
     }
 
     // ---------------- Branches ----------------
