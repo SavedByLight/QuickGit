@@ -2901,9 +2901,19 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
 
     // ---------------- History ----------------
 
-    fun getLog(path: String, maxCount: Int = 100, startRef: String? = null): List<CommitInfo> {
+    /**
+     * Commit history for [startRef] (or HEAD). [skip] + [maxCount] support paging
+     * (e.g. 100 at a time with a Load more control).
+     */
+    fun getLog(
+        path: String,
+        maxCount: Int = 100,
+        skip: Int = 0,
+        startRef: String? = null
+    ): List<CommitInfo> {
         openGit(path).use { git ->
             val log = git.log().setMaxCount(maxCount)
+            if (skip > 0) log.setSkip(skip)
             if (startRef != null) {
                 val start = git.repository.resolve(startRef)
                     ?: throw IllegalArgumentException("Ref not found: $startRef")

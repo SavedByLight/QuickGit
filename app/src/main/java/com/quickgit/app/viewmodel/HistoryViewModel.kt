@@ -21,6 +21,10 @@ data class HistoryUiState(
     /** Remote-tracking branches available for viewing (for cherry-pick from forks). */
     val remoteBranches: List<String> = emptyList(),
     val loading: Boolean = false,
+    /** True while appending the next page of commits. */
+    val loadingMore: Boolean = false,
+    /** False when the last page returned fewer than [HISTORY_PAGE_SIZE] commits. */
+    val hasMore: Boolean = false,
     val errorMessage: String? = null,
     val statusMessage: String? = null,
     val lastResult: GitOpResult? = null,
@@ -32,6 +36,9 @@ data class HistoryUiState(
     /** Commit ids marked for multi cherry-pick (from another branch/remote). */
     val cherryPickSelection: Set<String> = emptySet()
 )
+
+/** Page size for history lists (current branch and remote-tracking refs). */
+const val HISTORY_PAGE_SIZE = 100
 
 class HistoryViewModel(private val repoManager: RepoManager) : ViewModel() {
 
@@ -48,11 +55,21 @@ class HistoryViewModel(private val repoManager: RepoManager) : ViewModel() {
     fun refreshHistory() {
         if (!::repoPath.isInitialized) return
         viewModelScope.launch {
-            _state.value = _state.value.copy(loading = true, errorMessage = null, statusMessage = null)
+            _state.value = _state.value.copy(
+                loading = true,
+                loadingMore = false,
+                errorMessage = null,
+                statusMessage = null
+            )
             try {
                 val ref = _state.value.logRef
                 val commits = withContext(Dispatchers.IO) {
-                    repoManager.getLog(repoPath, startRef = ref)
+                    repoManager.getLog(
+                        repoPath,
+                        maxCount = HISTORY_PAGE_SIZE,
+                        skip = 0,
+                        startRef = ref
+                    )
                 }
                 val allBranches = withContext(Dispatchers.IO) {
                     repoManager.listBranches(repoPath)
@@ -69,6 +86,7 @@ class HistoryViewModel(private val repoManager: RepoManager) : ViewModel() {
                     commits = commits,
                     localBranches = localBranches,
                     remoteBranches = remoteBranches,
+                    hasMore = commits.size >= HISTORY_PAGE_SIZE,
                     loading = false
                 )
             } catch (e: Exception) {
@@ -80,11 +98,48 @@ class HistoryViewModel(private val repoManager: RepoManager) : ViewModel() {
         }
     }
 
+    /** Append the next page of commits for the current [HistoryUiState.logRef]. */
+    fun loadMore() {
+        if (!::repoPath.isInitialized) return
+        val s = _state.value
+        if (s.loading || s.loadingMore || !s.hasMore) return
+        viewModelScope.launch {
+            _state.value = s.copy(loadingMore = true, errorMessage = null)
+            try {
+                val ref = s.logRef
+                val skip = s.commits.size
+                val page = withContext(Dispatchers.IO) {
+                    repoManager.getLog(
+                        repoPath,
+                        maxCount = HISTORY_PAGE_SIZE,
+                        skip = skip,
+                        startRef = ref
+                    )
+                }
+                // De-dupe in case skip is slightly off across concurrent refreshes
+                val existing = s.commits.map { it.id }.toHashSet()
+                val appended = page.filter { it.id !in existing }
+                _state.value = _state.value.copy(
+                    commits = s.commits + appended,
+                    hasMore = page.size >= HISTORY_PAGE_SIZE,
+                    loadingMore = false
+                )
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(
+                    loadingMore = false,
+                    errorMessage = e.message ?: "Failed to load more commits"
+                )
+            }
+        }
+    }
+
     /** Show commits reachable from [ref] (e.g. "fork/feature") or HEAD if null. */
     fun setLogRef(ref: String?) {
         _state.value = _state.value.copy(
             logRef = ref?.takeIf { it.isNotBlank() },
-            cherryPickSelection = emptySet()
+            cherryPickSelection = emptySet(),
+            commits = emptyList(),
+            hasMore = false
         )
         refreshHistory()
     }
@@ -122,7 +177,12 @@ class HistoryViewModel(private val repoManager: RepoManager) : ViewModel() {
                 is GitOpResult.Success -> {
                     // After cherry-pick, show current branch history so the new commits are visible
                     val commits = withContext(Dispatchers.IO) {
-                        repoManager.getLog(repoPath, startRef = null)
+                        repoManager.getLog(
+                            repoPath,
+                            maxCount = HISTORY_PAGE_SIZE,
+                            skip = 0,
+                            startRef = null
+                        )
                     }
                     val label = if (commitHashes.size == 1) {
                         "Cherry-picked ${commitHashes.first().take(7)} onto current branch"
@@ -133,6 +193,7 @@ class HistoryViewModel(private val repoManager: RepoManager) : ViewModel() {
                         commits = commits,
                         logRef = null,
                         cherryPickSelection = emptySet(),
+                        hasMore = commits.size >= HISTORY_PAGE_SIZE,
                         loading = false,
                         statusMessage = label,
                         lastResult = result
@@ -168,8 +229,13 @@ class HistoryViewModel(private val repoManager: RepoManager) : ViewModel() {
             _state.value = _state.value.copy(loading = true, errorMessage = null, statusMessage = null)
             val result = withContext(Dispatchers.IO) { repoManager.revertCommit(repoPath, commitHash, message) }
             if (result is GitOpResult.Success) {
-                val commits = withContext(Dispatchers.IO) { repoManager.getLog(repoPath) }
-                _state.value = _state.value.copy(commits = commits)
+                val commits = withContext(Dispatchers.IO) {
+                    repoManager.getLog(repoPath, maxCount = HISTORY_PAGE_SIZE, skip = 0)
+                }
+                _state.value = _state.value.copy(
+                    commits = commits,
+                    hasMore = commits.size >= HISTORY_PAGE_SIZE
+                )
             }
             _state.value = when (result) {
                 is GitOpResult.Success -> _state.value.copy(
@@ -209,7 +275,12 @@ class HistoryViewModel(private val repoManager: RepoManager) : ViewModel() {
                 is GitOpResult.Success -> {
                     // After hard reset, always show current branch history at the new tip
                     val commits = withContext(Dispatchers.IO) {
-                        repoManager.getLog(repoPath, startRef = null)
+                        repoManager.getLog(
+                            repoPath,
+                            maxCount = HISTORY_PAGE_SIZE,
+                            skip = 0,
+                            startRef = null
+                        )
                     }
                     _state.value = _state.value.copy(
                         commits = commits,
@@ -217,6 +288,7 @@ class HistoryViewModel(private val repoManager: RepoManager) : ViewModel() {
                         selectedCommitId = null,
                         selectedChanges = emptyList(),
                         parentCommitId = null,
+                        hasMore = commits.size >= HISTORY_PAGE_SIZE,
                         loading = false,
                         statusMessage = "Hard reset to ${commitHash.take(7)}",
                         lastResult = result
