@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -224,58 +223,47 @@ fun HistoryScreen(
                                     }
                                 ) {
                                     Column(Modifier.padding(16.dp)) {
-                                        // Hash + checkbox on their own row so action buttons
-                                        // are not squeezed sideways (Reset --hard was wrapping
-                                        // vertically on phone widths when packed into one Row).
                                         Row(
                                             Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
                                             verticalAlignment = Alignment.CenterVertically
                                         ) {
-                                            Checkbox(
-                                                checked = multiSelected,
-                                                onCheckedChange = {
-                                                    vm.toggleCherryPickSelection(commit.id)
-                                                }
-                                            )
-                                            Text(
-                                                commit.shortId,
-                                                style = MaterialTheme.typography.labelMedium,
-                                                fontWeight = FontWeight.Bold,
-                                                color = MaterialTheme.colorScheme.primary
-                                            )
-                                        }
-                                        Spacer(Modifier.height(8.dp))
-                                        Row(
-                                            Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                        ) {
-                                            OutlinedButton(
-                                                onClick = {
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Checkbox(
+                                                    checked = multiSelected,
+                                                    onCheckedChange = {
+                                                        vm.toggleCherryPickSelection(commit.id)
+                                                    }
+                                                )
+                                                Text(
+                                                    commit.shortId,
+                                                    style = MaterialTheme.typography.labelMedium,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = MaterialTheme.colorScheme.primary
+                                                )
+                                            }
+                                            Row {
+                                                OutlinedButton(onClick = {
                                                     cherryTarget = commit.id
                                                     showCherryDialog = true
-                                                },
-                                                modifier = Modifier.weight(1f)
-                                            ) {
-                                                Text("Cherry-pick", maxLines = 1)
-                                            }
-                                            Button(
-                                                onClick = {
+                                                }) {
+                                                    Text("Cherry-pick")
+                                                }
+                                                Spacer(Modifier.width(8.dp))
+                                                Button(onClick = {
                                                     revertTarget = commit.id
                                                     revertMessage = "Revert \"${commit.message}\""
                                                     showRevertDialog = true
-                                                },
-                                                modifier = Modifier.weight(1f)
-                                            ) {
-                                                Text("Revert", maxLines = 1)
-                                            }
-                                            OutlinedButton(
-                                                onClick = {
+                                                }) {
+                                                    Text("Revert")
+                                                }
+                                                Spacer(Modifier.width(8.dp))
+                                                OutlinedButton(onClick = {
                                                     resetTarget = commit.id
                                                     showResetDialog = true
-                                                },
-                                                modifier = Modifier.weight(1f)
-                                            ) {
-                                                Text("Reset --hard", maxLines = 1)
+                                                }) {
+                                                    Text("Reset --hard")
+                                                }
                                             }
                                         }
                                         Spacer(Modifier.padding(top = 6.dp))
