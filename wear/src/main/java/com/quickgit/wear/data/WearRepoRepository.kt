@@ -2,35 +2,33 @@ package com.quickgit.wear.data
 
 import android.content.Context
 import android.util.Log
-import com.google.android.gms.wearable.DataClient
-import com.google.android.gms.wearable.DataEvent
-import com.google.android.gms.wearable.DataEventBuffer
-import com.google.android.gms.wearable.DataMapItem
 import com.google.android.gms.wearable.MessageClient
+import com.google.android.gms.wearable.MessageEvent
 import com.google.android.gms.wearable.NodeClient
 import com.google.android.gms.wearable.Wearable
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
+import org.json.JSONObject
 
 /**
- * Receives the phone's local repo list over the Wearable Data Layer and
- * exposes it as reactive state for the Wear UI.
+ * Receives the phone's local repo list over the Wearable MessageClient.
  *
- * Protocol (must match phone WearSyncManager):
- *   Data path:    /quickgit/repos
- *   Message path: /quickgit/request_sync
- *   Capability:   quickgit_phone
+ * Phone and wear use different applicationIds (com.quickgit.app vs
+ * com.quickgit.app.wear), so DataItems are NOT shared. The phone replies to
+ * /quickgit/request_sync with a Message on /quickgit/repos_payload containing
+ * UTF-8 JSON.
  */
 class WearRepoRepository(private val context: Context) {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val dataClient: DataClient = Wearable.getDataClient(context)
     private val messageClient: MessageClient = Wearable.getMessageClient(context)
     private val nodeClient: NodeClient = Wearable.getNodeClient(context)
 
@@ -43,39 +41,40 @@ class WearRepoRepository(private val context: Context) {
     private val _updatedAt = MutableStateFlow(0L)
     val updatedAt: StateFlow<Long> = _updatedAt.asStateFlow()
 
-    private val dataListener = DataClient.OnDataChangedListener { buffer: DataEventBuffer ->
-        try {
-            for (event in buffer) {
-                if (event.type != DataEvent.TYPE_CHANGED) continue
-                val uri = event.dataItem.uri
-                if (uri.path != PATH_REPOS) continue
-                applyDataItem(DataMapItem.fromDataItem(event.dataItem).dataMap)
-            }
-        } finally {
-            buffer.release()
+    private var timeoutJob: Job? = null
+
+    private val messageListener = MessageClient.OnMessageReceivedListener { event: MessageEvent ->
+        if (event.path != PATH_REPOS_PAYLOAD) return@OnMessageReceivedListener
+        runCatching {
+            applyPayload(event.data)
+        }.onFailure {
+            Log.w(TAG, "Failed to parse repos payload: ${it.message}")
+            _connection.value = WearConnectionState.Error(it.message ?: "Bad payload")
         }
     }
 
     fun start() {
-        dataClient.addListener(dataListener)
-        refreshFromDataLayer()
+        messageClient.addListener(messageListener)
         requestSyncFromPhone()
     }
 
     fun stop() {
-        dataClient.removeListener(dataListener)
+        timeoutJob?.cancel()
+        messageClient.removeListener(messageListener)
     }
 
     fun getRepo(path: String): WearRepoSummary? =
         _repos.value.firstOrNull { it.path == path }
 
     fun requestSyncFromPhone() {
+        timeoutJob?.cancel()
+        _connection.value = WearConnectionState.Loading
         scope.launch {
             try {
                 val nodes = nodeClient.connectedNodes.await()
                 if (nodes.isEmpty()) {
                     _connection.value = WearConnectionState.Disconnected
-                    Log.i(TAG, "No connected nodes — phone app not reachable")
+                    Log.i(TAG, "No connected nodes — open QuickGit on the phone")
                     return@launch
                 }
                 var sent = false
@@ -92,69 +91,59 @@ class WearRepoRepository(private val context: Context) {
                         Log.w(TAG, "sendMessage to ${node.id} failed: ${it.message}")
                     }
                 }
-                if (!sent && _repos.value.isEmpty()) {
+                if (!sent) {
                     _connection.value = WearConnectionState.Disconnected
+                    return@launch
+                }
+                // If the phone never replies, leave Loading only briefly.
+                timeoutJob = scope.launch {
+                    delay(SYNC_TIMEOUT_MS)
+                    if (_connection.value is WearConnectionState.Loading) {
+                        _connection.value = WearConnectionState.Disconnected
+                        Log.w(TAG, "Sync timed out waiting for phone reply")
+                    }
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "requestSyncFromPhone failed: ${e.message}")
-                if (_repos.value.isEmpty()) {
-                    _connection.value = WearConnectionState.Error(e.message ?: "Unknown error")
-                }
+                _connection.value = WearConnectionState.Error(e.message ?: "Unknown error")
             }
         }
     }
 
-    private fun refreshFromDataLayer() {
-        dataClient.dataItems
-            .addOnSuccessListener { buffer ->
-                try {
-                    var found = false
-                    for (item in buffer) {
-                        if (item.uri.path == PATH_REPOS) {
-                            applyDataItem(DataMapItem.fromDataItem(item).dataMap)
-                            found = true
-                        }
-                    }
-                    if (!found && _repos.value.isEmpty()) {
-                        _connection.value = WearConnectionState.Loading
-                    }
-                } finally {
-                    buffer.release()
-                }
+    private fun applyPayload(bytes: ByteArray) {
+        val text = bytes.toString(Charsets.UTF_8)
+        val root = JSONObject(text)
+        val arr = root.optJSONArray(KEY_REPOS)
+        val summaries = mutableListOf<WearRepoSummary>()
+        if (arr != null) {
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                val name = o.optString(KEY_NAME)
+                val path = o.optString(KEY_PATH)
+                if (name.isBlank() || path.isBlank()) continue
+                summaries += WearRepoSummary(
+                    name = name,
+                    path = path,
+                    branch = o.optString(KEY_BRANCH, "(unknown)"),
+                    remoteUrl = o.optString(KEY_REMOTE).takeIf { it.isNotBlank() },
+                    hasUncommittedChanges = o.optBoolean(KEY_DIRTY, false)
+                )
             }
-            .addOnFailureListener { e ->
-                Log.w(TAG, "dataItems query failed: ${e.message}")
-                if (_repos.value.isEmpty()) {
-                    _connection.value = WearConnectionState.Error(e.message ?: "Data Layer error")
-                }
-            }
-    }
-
-    private fun applyDataItem(map: com.google.android.gms.wearable.DataMap) {
-        val list = map.getDataMapArrayList(KEY_REPOS) ?: emptyList()
-        val summaries = list.mapNotNull { m ->
-            val name = m.getString(KEY_NAME) ?: return@mapNotNull null
-            val path = m.getString(KEY_PATH) ?: return@mapNotNull null
-            WearRepoSummary(
-                name = name,
-                path = path,
-                branch = m.getString(KEY_BRANCH) ?: "(unknown)",
-                remoteUrl = m.getString(KEY_REMOTE)?.takeIf { it.isNotBlank() },
-                hasUncommittedChanges = m.getBoolean(KEY_DIRTY, false)
-            )
-        }.sortedBy { it.name.lowercase() }
-
+        }
+        summaries.sortBy { it.name.lowercase() }
+        timeoutJob?.cancel()
         _repos.value = summaries
-        _updatedAt.value = map.getLong(KEY_UPDATED_AT, System.currentTimeMillis())
+        _updatedAt.value = root.optLong(KEY_UPDATED_AT, System.currentTimeMillis())
         _connection.value = WearConnectionState.Connected
-        Log.i(TAG, "Received ${summaries.size} repos from phone")
+        Log.i(TAG, "Received ${summaries.size} repos from phone via message")
     }
 
     companion object {
         private const val TAG = "WearRepoRepository"
+        private const val SYNC_TIMEOUT_MS = 12_000L
 
-        const val PATH_REPOS = "/quickgit/repos"
         const val PATH_REQUEST_SYNC = "/quickgit/request_sync"
+        const val PATH_REPOS_PAYLOAD = "/quickgit/repos_payload"
 
         const val KEY_UPDATED_AT = "updatedAt"
         const val KEY_REPOS = "repos"

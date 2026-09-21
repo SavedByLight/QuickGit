@@ -66,7 +66,7 @@ fun RepoListScreen(
             connection is WearConnectionState.Disconnected && repos.isEmpty() -> {
                 item {
                     Text(
-                        "Phone not connected.\nInstall & open QuickGit on your phone, then tap Refresh.",
+                        "Can't reach the phone app.\nOpen QuickGit on your phone (keep it unlocked), then tap Refresh.",
                         style = MaterialTheme.typography.body2,
                         textAlign = TextAlign.Center,
                         modifier = Modifier
