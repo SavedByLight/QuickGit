@@ -64,9 +64,10 @@ fun RepoListScreen(
                 }
             }
             connection is WearConnectionState.Disconnected && repos.isEmpty() -> {
+                val reason = (connection as WearConnectionState.Disconnected).reason
                 item {
                     Text(
-                        "Can't reach the phone app.\nOpen QuickGit on your phone (keep it unlocked), then tap Refresh.",
+                        reason,
                         style = MaterialTheme.typography.body2,
                         textAlign = TextAlign.Center,
                         modifier = Modifier

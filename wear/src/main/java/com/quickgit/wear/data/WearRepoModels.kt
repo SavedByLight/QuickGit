@@ -2,8 +2,7 @@ package com.quickgit.wear.data
 
 /**
  * Snapshot of a repository that lives on the phone and is mirrored to the watch
- * over the Wearable Data Layer. Full git operations remain on the phone app;
- * the wear surface focuses on glanceable status.
+ * over the Wearable Data Layer / MessageClient.
  */
 data class WearRepoSummary(
     val name: String,
@@ -16,7 +15,8 @@ data class WearRepoSummary(
 sealed class WearConnectionState {
     data object Loading : WearConnectionState()
     data object Connected : WearConnectionState()
-    data object Disconnected : WearConnectionState()
+    /** [reason] is a short user-facing explanation. */
+    data class Disconnected(val reason: String = "Phone offline") : WearConnectionState()
     data class Error(val message: String) : WearConnectionState()
 }
 

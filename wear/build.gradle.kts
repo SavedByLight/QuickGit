@@ -11,7 +11,7 @@ android {
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.quickgit.app.wear"
+        applicationId = "com.quickgit.app"
         minSdk = 30
         targetSdk = 34
         versionCode = 1
