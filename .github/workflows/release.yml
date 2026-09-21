@@ -137,18 +137,24 @@ jobs:
           # GitHub-hosted runners have no /dev/fuse for unprivileged appimagetool.
           # APPIMAGE_EXTRACT_AND_RUN lets appimagetool run without mounting itself.
           echo "APPIMAGE_EXTRACT_AND_RUN=1" >> "$GITHUB_ENV"
-          # Also install a known-good appimagetool for the manual fallback step.
-          curl -fsSL -o /tmp/appimagetool \
-            "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
-          chmod +x /tmp/appimagetool
-          # Extract so we can invoke without FUSE even if env is ignored by nested tools
-          cd /tmp && ./appimagetool --appimage-extract >/dev/null 2>&1 || true
-          if [ -x /tmp/squashfs-root/AppRun ]; then
-            sudo ln -sfn /tmp/squashfs-root/AppRun /usr/local/bin/appimagetool
+          # Download appimagetool (optional for phone/wear APKs). Prefer a pinned
+          # continuous build; retry on transient 5xx. Do not fail the job if the
+          # download is unavailable — Deb/Rpm/APK steps can still succeed.
+          APPIMAGE_URL="https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
+          if curl -fL --retry 5 --retry-delay 3 --retry-all-errors \
+               -o /tmp/appimagetool "$APPIMAGE_URL"; then
+            chmod +x /tmp/appimagetool
+            # Extract so we can invoke without FUSE even if env is ignored by nested tools
+            (cd /tmp && ./appimagetool --appimage-extract >/dev/null 2>&1) || true
+            if [ -x /tmp/squashfs-root/AppRun ]; then
+              sudo ln -sfn /tmp/squashfs-root/AppRun /usr/local/bin/appimagetool
+            else
+              sudo ln -sfn /tmp/appimagetool /usr/local/bin/appimagetool
+            fi
+            appimagetool --version || true
           else
-            sudo ln -sfn /tmp/appimagetool /usr/local/bin/appimagetool
+            echo "::warning::appimagetool download failed; AppImage packaging may be skipped"
           fi
-          appimagetool --version || true
           rpm --version || true
           which rpmbuild || true
 
