@@ -86,6 +86,10 @@ dependencies {
     implementation("androidx.documentfile:documentfile:1.0.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.4")
     implementation("androidx.activity:activity-compose:1.9.1")
+    // Required for registerForActivityResult lint (InvalidFragmentVersionForActivityResult).
+    // ComponentActivity does not use FragmentActivity, but the lint still checks the
+    // resolved Fragment version on the classpath.
+    implementation("androidx.fragment:fragment-ktx:1.8.2")
     implementation(platform("androidx.compose:compose-bom:2024.06.00"))
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")
