@@ -85,4 +85,8 @@ dependencies {
     implementation("androidx.wear.compose:compose-navigation:1.3.1")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+    // Wearable Data Layer (phone ↔ watch)
+    implementation("com.google.android.gms:play-services-wearable:18.2.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.8.1")
 }
+

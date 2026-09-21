@@ -24,7 +24,8 @@ fun AboutScreen(onBack: () -> Unit) {
         }
         item {
             Text(
-                "QuickGit on Wear shows local repository status. " +
+                "QuickGit on Wear shows repositories from your phone via the Wearable Data Layer.\n\n" +
+                    "Open the phone app once so it can push the list. Tap Refresh on the watch if the list is stale.\n\n" +
                     "Clone, edit, commit, and sync from the phone app.",
                 style = MaterialTheme.typography.body2,
                 textAlign = TextAlign.Center,

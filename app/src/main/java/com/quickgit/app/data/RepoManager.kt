@@ -55,8 +55,19 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     @Volatile
     private var localReposDirty: Boolean = false
 
+    /** Optional listeners notified when the on-disk repo set changes (clone/import/delete). */
+    private val localReposChangeListeners = mutableListOf<() -> Unit>()
+
+    fun addLocalReposChangeListener(listener: () -> Unit) {
+        synchronized(localReposChangeListeners) {
+            localReposChangeListeners.add(listener)
+        }
+    }
+
     fun markLocalReposChanged() {
         localReposDirty = true
+        val copy = synchronized(localReposChangeListeners) { localReposChangeListeners.toList() }
+        copy.forEach { runCatching { it() } }
     }
 
     /** Returns true once if the list should be re-scanned, then clears the flag. */

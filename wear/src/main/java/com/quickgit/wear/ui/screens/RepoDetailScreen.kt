@@ -39,35 +39,63 @@ fun RepoDetailScreen(
         if (repo == null) {
             item {
                 Text(
-                    "Repository not found on this device.",
+                    "Repo not found. Pull to refresh from the list.",
                     style = MaterialTheme.typography.body2,
                     textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth().padding(8.dp)
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(8.dp)
                 )
             }
         } else {
             item {
                 Text(
-                    "Branch: ${repo.branch}",
-                    style = MaterialTheme.typography.body1,
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp)
+                    "Branch",
+                    style = MaterialTheme.typography.caption2,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp)
                 )
             }
             item {
                 Text(
-                    if (repo.dirty) "Status: local changes" else "Status: clean",
-                    style = MaterialTheme.typography.body2,
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp)
+                    repo.branch,
+                    style = MaterialTheme.typography.body1,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp)
                 )
             }
-            repo.remoteUrl?.let { url ->
+            item {
+                Text(
+                    if (repo.hasUncommittedChanges) "Uncommitted changes" else "Clean working tree",
+                    style = MaterialTheme.typography.body2,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                )
+            }
+            if (!repo.remoteUrl.isNullOrBlank()) {
                 item {
                     Text(
-                        url,
+                        "Remote",
                         style = MaterialTheme.typography.caption2,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp)
+                    )
+                }
+                item {
+                    Text(
+                        repo.remoteUrl,
+                        style = MaterialTheme.typography.caption1,
                         maxLines = 3,
                         overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp)
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp)
                     )
                 }
             }
@@ -76,7 +104,9 @@ fun RepoDetailScreen(
                     "Push, pull, and commit on the phone app.",
                     style = MaterialTheme.typography.caption2,
                     textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth().padding(8.dp)
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(8.dp)
                 )
             }
         }

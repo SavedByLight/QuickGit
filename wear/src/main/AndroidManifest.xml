@@ -18,9 +18,10 @@
             android:name="com.google.android.wearable"
             android:required="false" />
 
+        <!-- Companion app: expects phone QuickGit for the repo list -->
         <meta-data
             android:name="com.google.android.wearable.standalone"
-            android:value="true" />
+            android:value="false" />
 
         <activity
             android:name=".presentation.MainActivity"

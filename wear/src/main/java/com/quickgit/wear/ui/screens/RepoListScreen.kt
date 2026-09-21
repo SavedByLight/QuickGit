@@ -4,11 +4,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -20,6 +17,7 @@ import androidx.wear.compose.material.ChipDefaults
 import androidx.wear.compose.material.ListHeader
 import androidx.wear.compose.material.MaterialTheme
 import androidx.wear.compose.material.Text
+import com.quickgit.wear.data.WearConnectionState
 import com.quickgit.wear.data.WearRepoRepository
 import com.quickgit.wear.data.WearRepoSummary
 
@@ -29,11 +27,8 @@ fun RepoListScreen(
     onOpenRepo: (String) -> Unit,
     onAbout: () -> Unit
 ) {
-    var repos by remember { mutableStateOf<List<WearRepoSummary>>(emptyList()) }
-
-    LaunchedEffect(Unit) {
-        repos = repository.listRepos()
-    }
+    val repos by repository.repos.collectAsState()
+    val connection by repository.connection.collectAsState()
 
     ScalingLazyColumn(
         modifier = Modifier.fillMaxSize()
@@ -43,42 +38,81 @@ fun RepoListScreen(
                 Text("QuickGit", style = MaterialTheme.typography.title2)
             }
         }
-        if (repos.isEmpty()) {
-            item {
-                Text(
-                    "No local repos on this watch.\nClone on your phone, or sync a QuickGit folder here.",
-                    style = MaterialTheme.typography.body2,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 8.dp, vertical = 4.dp)
-                )
+
+        item {
+            Text(
+                connectionLabel(connection),
+                style = MaterialTheme.typography.caption2,
+                textAlign = TextAlign.Center,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 2.dp)
+            )
+        }
+
+        when {
+            connection is WearConnectionState.Loading && repos.isEmpty() -> {
+                item {
+                    Text(
+                        "Connecting to phone…\nOpen QuickGit on your phone.",
+                        style = MaterialTheme.typography.body2,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                }
             }
-        } else {
-            items(repos, key = { it.path }) { repo ->
-                Chip(
-                    modifier = Modifier.fillMaxWidth(),
-                    onClick = { onOpenRepo(repo.path) },
-                    label = {
-                        Text(
-                            repo.name,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    },
-                    secondaryLabel = {
-                        Text(
-                            buildString {
-                                append(repo.branch)
-                                if (repo.dirty) append(" · dirty")
-                            },
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    },
-                    colors = ChipDefaults.primaryChipColors()
-                )
+            connection is WearConnectionState.Disconnected && repos.isEmpty() -> {
+                item {
+                    Text(
+                        "Phone not connected.\nInstall & open QuickGit on your phone, then tap Refresh.",
+                        style = MaterialTheme.typography.body2,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                }
             }
+            connection is WearConnectionState.Error && repos.isEmpty() -> {
+                item {
+                    Text(
+                        "Error: ${(connection as WearConnectionState.Error).message}",
+                        style = MaterialTheme.typography.body2,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                }
+            }
+            repos.isEmpty() -> {
+                item {
+                    Text(
+                        "No repos on phone yet.\nClone a repository in the phone app.",
+                        style = MaterialTheme.typography.body2,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                }
+            }
+            else -> {
+                items(repos, key = { it.path }) { repo ->
+                    RepoChip(repo = repo, onClick = { onOpenRepo(repo.path) })
+                }
+            }
+        }
+
+        item {
+            Chip(
+                modifier = Modifier.fillMaxWidth(),
+                onClick = { repository.requestSyncFromPhone() },
+                label = { Text("Refresh") },
+                colors = ChipDefaults.secondaryChipColors()
+            )
         }
         item {
             Chip(
@@ -89,4 +123,35 @@ fun RepoListScreen(
             )
         }
     }
+}
+
+@Composable
+private fun RepoChip(repo: WearRepoSummary, onClick: () -> Unit) {
+    Chip(
+        modifier = Modifier.fillMaxWidth(),
+        onClick = onClick,
+        label = {
+            Text(
+                repo.name,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        },
+        secondaryLabel = {
+            val dirty = if (repo.hasUncommittedChanges) " · dirty" else ""
+            Text(
+                "${repo.branch}$dirty",
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        },
+        colors = ChipDefaults.primaryChipColors()
+    )
+}
+
+private fun connectionLabel(state: WearConnectionState): String = when (state) {
+    is WearConnectionState.Loading -> "Syncing…"
+    is WearConnectionState.Connected -> "Synced from phone"
+    is WearConnectionState.Disconnected -> "Phone offline"
+    is WearConnectionState.Error -> "Sync error"
 }
