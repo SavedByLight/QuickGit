@@ -3,6 +3,7 @@ package com.quickgit.app.wear
 import android.content.Context
 import android.util.Log
 import com.google.android.gms.wearable.MessageClient
+import com.google.android.gms.wearable.MessageEvent
 import com.google.android.gms.wearable.NodeClient
 import com.google.android.gms.wearable.PutDataMapRequest
 import com.google.android.gms.wearable.Wearable
@@ -17,16 +18,11 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * Pushes the phone's local repo list to paired Wear OS devices.
+ * Phone ↔ watch bridge.
  *
- * Important: DataItems are partitioned by applicationId. The phone
- * (com.quickgit.app) and wear (com.quickgit.app.wear) packages differ, so
- * DataItems written here are invisible to the watch. We therefore send the
- * list as a Message payload to the requesting node (works across packages).
- * DataItems are still written for same-package / future unified installs.
- *
- * Message request:  /quickgit/request_sync
- * Message response: /quickgit/repos_payload  (UTF-8 JSON body)
+ * Watch asks with Message path [PATH_REQUEST_SYNC]; phone replies to that node
+ * with [PATH_REPOS_PAYLOAD] (UTF-8 JSON). Also writes a DataItem on [PATH_REPOS]
+ * (works when both APKs share applicationId com.quickgit.app).
  */
 class WearSyncManager(
     private val context: Context,
@@ -37,38 +33,59 @@ class WearSyncManager(
     private val nodeClient: NodeClient = Wearable.getNodeClient(context)
     private val dataClient = Wearable.getDataClient(context)
 
+    /** Foreground listener so we still answer while MainActivity is open. */
+    private val messageListener = MessageClient.OnMessageReceivedListener { event ->
+        handleIncomingMessage(event)
+    }
+
     fun start() {
+        messageClient.addListener(messageListener)
         scope.launch {
             runCatching {
                 Wearable.getCapabilityClient(context)
                     .addLocalCapability(CAPABILITY_PHONE)
                     .await()
-            }.onFailure { Log.w(TAG, "addLocalCapability failed: ${it.message}") }
+                Log.i(TAG, "Advertised capability $CAPABILITY_PHONE")
+            }.onFailure { Log.w(TAG, "addLocalCapability: ${it.message}") }
+
+            runCatching {
+                val nodes = nodeClient.connectedNodes.await()
+                Log.i(TAG, "Connected wear nodes at start: ${nodes.map { it.displayName }}")
+            }
         }
         repoManager.addLocalReposChangeListener { syncReposToWear() }
-        // Best-effort push to any connected nodes (covers already-open watch).
         syncReposToWear()
     }
 
-    /** Broadcast current list to every connected node + optional DataItem cache. */
+    fun stop() {
+        messageClient.removeListener(messageListener)
+    }
+
+    fun handleIncomingMessage(event: MessageEvent) {
+        Log.i(TAG, "Incoming message path=${event.path} from=${event.sourceNodeId}")
+        if (event.path == PATH_REQUEST_SYNC) {
+            replyReposToNode(event.sourceNodeId)
+        }
+    }
+
     fun syncReposToWear() {
         scope.launch {
             runCatching {
                 val repos = repoManager.listLocalRepos()
                 val payload = encodeRepos(repos)
-                // Same-package cache (no-op for the current wear applicationId).
                 putReposDataItem(repos)
                 val nodes = nodeClient.connectedNodes.await()
+                Log.i(TAG, "Pushing ${repos.size} repos to ${nodes.size} node(s)")
                 if (nodes.isEmpty()) {
-                    Log.i(TAG, "No connected Wear nodes to push ${repos.size} repos to")
+                    Log.w(TAG, "No connected Wear nodes — open the watch app after pairing")
                     return@launch
                 }
                 for (node in nodes) {
                     runCatching {
                         messageClient.sendMessage(node.id, PATH_REPOS_PAYLOAD, payload).await()
-                        Log.i(TAG, "Sent ${repos.size} repos to node ${node.displayName}")
+                        Log.i(TAG, "Sent payload to ${node.displayName}")
                     }.onFailure {
-                        Log.w(TAG, "sendMessage to ${node.id} failed: ${it.message}")
+                        Log.w(TAG, "send to ${node.id} failed: ${it.message}")
                     }
                 }
             }.onFailure { e ->
@@ -77,16 +94,16 @@ class WearSyncManager(
         }
     }
 
-    /** Reply only to the watch that requested a sync. */
     fun replyReposToNode(nodeId: String) {
         scope.launch {
             runCatching {
                 val repos = repoManager.listLocalRepos()
                 val payload = encodeRepos(repos)
+                putReposDataItem(repos)
                 messageClient.sendMessage(nodeId, PATH_REPOS_PAYLOAD, payload).await()
-                Log.i(TAG, "Replied ${repos.size} repos to requesting node $nodeId")
+                Log.i(TAG, "Replied ${repos.size} repos to $nodeId (${payload.size} bytes)")
             }.onFailure { e ->
-                Log.w(TAG, "replyReposToNode failed: ${e.message}")
+                Log.e(TAG, "replyReposToNode($nodeId) failed: ${e.message}", e)
             }
         }
     }
@@ -94,6 +111,7 @@ class WearSyncManager(
     private suspend fun putReposDataItem(repos: List<RepoInfo>) {
         runCatching {
             val request = PutDataMapRequest.create(PATH_REPOS).apply {
+                // Always change a field so putDataItem is not deduped away.
                 dataMap.putLong(KEY_UPDATED_AT, System.currentTimeMillis())
                 val list = ArrayList<com.google.android.gms.wearable.DataMap>(repos.size)
                 for (r in repos) {
@@ -109,7 +127,7 @@ class WearSyncManager(
             }.asPutDataRequest().setUrgent()
             dataClient.putDataItem(request).await()
         }.onFailure {
-            Log.d(TAG, "putDataItem skipped/failed (expected across different package names): ${it.message}")
+            Log.d(TAG, "putDataItem: ${it.message}")
         }
     }
 
@@ -125,10 +143,11 @@ class WearSyncManager(
                     .put(KEY_DIRTY, r.hasUncommittedChanges)
             )
         }
-        val root = JSONObject()
+        return JSONObject()
             .put(KEY_UPDATED_AT, System.currentTimeMillis())
             .put(KEY_REPOS, arr)
-        return root.toString().toByteArray(Charsets.UTF_8)
+            .toString()
+            .toByteArray(Charsets.UTF_8)
     }
 
     companion object {

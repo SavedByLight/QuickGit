@@ -6,28 +6,21 @@ import com.google.android.gms.wearable.WearableListenerService
 import com.quickgit.app.QuickGitApp
 
 /**
- * Receives /quickgit/request_sync from the watch and replies with the repo list.
+ * Background entry-point when the phone process is not already running.
  */
 class WearMessageListenerService : WearableListenerService() {
 
     override fun onMessageReceived(messageEvent: MessageEvent) {
-        Log.i(TAG, "Message path=${messageEvent.path} from=${messageEvent.sourceNodeId}")
-        when (messageEvent.path) {
-            WearSyncManager.PATH_REQUEST_SYNC -> {
-                val app = applicationContext as? QuickGitApp
-                if (app == null) {
-                    Log.e(TAG, "Application is not QuickGitApp — cannot reply")
-                    return
-                }
-                // Application.onCreate always builds wearSyncManager before services run.
-                runCatching {
-                    app.wearSyncManager.replyReposToNode(messageEvent.sourceNodeId)
-                }.onFailure {
-                    Log.e(TAG, "reply failed: ${it.message}")
-                }
-            }
-            else -> Log.d(TAG, "Ignored path=${messageEvent.path}")
+        Log.i(TAG, "Service message path=${messageEvent.path} from=${messageEvent.sourceNodeId}")
+        val app = applicationContext as? QuickGitApp
+        if (app == null) {
+            Log.e(TAG, "Not QuickGitApp")
+            return
         }
+        // Prefer the shared manager (also has a foreground listener).
+        runCatching {
+            app.wearSyncManager.handleIncomingMessage(messageEvent)
+        }.onFailure { Log.e(TAG, "handle failed: ${it.message}", it) }
     }
 
     companion object {

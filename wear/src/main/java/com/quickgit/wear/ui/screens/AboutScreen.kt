@@ -24,9 +24,9 @@ fun AboutScreen(onBack: () -> Unit) {
         }
         item {
             Text(
-                "QuickGit on Wear shows repositories from your phone via the Wearable Data Layer.\n\n" +
-                    "Open the phone app once so it can push the list. Tap Refresh on the watch if the list is stale.\n\n" +
-                    "Clone, edit, commit, and sync from the phone app.",
+                "QuickGit on Wear lists repositories from your phone over the Wearable API.\n\n" +
+                    "Open QuickGit on the phone once, then tap Refresh on the watch.\n\n" +
+                    "Clone, commit, push, and pull on the phone.",
                 style = MaterialTheme.typography.body2,
                 textAlign = TextAlign.Center,
                 modifier = Modifier

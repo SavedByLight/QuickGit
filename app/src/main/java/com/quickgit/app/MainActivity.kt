@@ -58,6 +58,15 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        // Re-push repo list whenever the phone app is foregrounded so the watch
+        // can receive data even if it missed the cold-start broadcast.
+        runCatching {
+            (application as QuickGitApp).wearSyncManager.syncReposToWear()
+        }
+    }
+
     private fun requestPermissionsIfNeeded() {
         val needed = mutableListOf<String>()
 

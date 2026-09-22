@@ -29,6 +29,7 @@ fun RepoListScreen(
 ) {
     val repos by repository.repos.collectAsState()
     val connection by repository.connection.collectAsState()
+    val diagnostics by repository.diagnostics.collectAsState()
 
     ScalingLazyColumn(
         modifier = Modifier.fillMaxSize()
@@ -50,11 +51,24 @@ fun RepoListScreen(
             )
         }
 
+        if (diagnostics.isNotBlank() && connection !is WearConnectionState.Connected) {
+            item {
+                Text(
+                    diagnostics,
+                    style = MaterialTheme.typography.caption2,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp)
+                )
+            }
+        }
+
         when {
             connection is WearConnectionState.Loading && repos.isEmpty() -> {
                 item {
                     Text(
-                        "Connecting to phone…\nOpen QuickGit on your phone.",
+                        "Connecting to phone…\nKeep QuickGit open on the phone.",
                         style = MaterialTheme.typography.body2,
                         textAlign = TextAlign.Center,
                         modifier = Modifier
