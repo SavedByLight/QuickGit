@@ -1130,6 +1130,57 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
     }
 
     /**
+     * After cherry-pick / revert, rewrite HEAD's committer to [ident] only when it differs.
+     *
+     * Amending an identical commit makes JGit's RefUpdate return NO_CHANGE and throw
+     * (user logs: "ReturnCode from RefUpdate.update() was NO_CHANGE"). That happens when
+     * [ensureMobileRepoConfig] already set user.name/email and CherryPick/Revert used them
+     * — the post-pick amend is then a pure no-op. Skip the amend when identity matches;
+     * if amend still reports NO_CHANGE, treat it as success.
+     */
+    private fun rewriteCommitterIfNeeded(git: Git, ident: PersonIdent) {
+        val head = git.repository.resolve("HEAD") ?: return
+        RevWalk(git.repository).use { walk ->
+            val newCommit = walk.parseCommit(head)
+            val c = newCommit.committerIdent
+            val same =
+                c != null &&
+                    c.name.trim() == ident.name.trim() &&
+                    c.emailAddress.trim().equals(ident.emailAddress.trim(), ignoreCase = true)
+            if (same) {
+                AppLog.i(
+                    TAG,
+                    "rewriteCommitterIfNeeded: committer already ${ident.name} <${ident.emailAddress}> — skip amend"
+                )
+                return
+            }
+            AppLog.i(
+                TAG,
+                "rewriteCommitterIfNeeded: ${c?.name} <${c?.emailAddress}> → ${ident.name} <${ident.emailAddress}>"
+            )
+            try {
+                git.commit()
+                    .setAmend(true)
+                    .setMessage(newCommit.fullMessage)
+                    .setAuthor(newCommit.authorIdent)
+                    .setCommitter(ident)
+                    .call()
+            } catch (e: Exception) {
+                val msg = e.message.orEmpty()
+                // JGitInternalException wraps RefUpdate NO_CHANGE — never fail the cherry-pick
+                // for a no-op identity rewrite.
+                if (msg.contains("NO_CHANGE", ignoreCase = true) ||
+                    e.cause?.message.orEmpty().contains("NO_CHANGE", ignoreCase = true)
+                ) {
+                    AppLog.i(TAG, "rewriteCommitterIfNeeded: HEAD already at target (NO_CHANGE) — ok")
+                } else {
+                    throw e
+                }
+            }
+        }
+    }
+
+    /**
      * After LFS smudge, the working tree has real blobs while the index still points at
      * pointer files — native git-lfs hides that via filters; JGit does not. Mark those
      * paths assume-valid so status stays clean until the user really edits them.
@@ -3007,22 +3058,25 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                 if (reverted != null) {
                     // RevertCommand always generates its own "Revert \"...\"" message and has
                     // no setter for a custom one, so honor a user-edited message by amending.
-                    // Re-apply author/committer so amend cannot reintroduce system identity.
-                    if (!message.isNullOrBlank() && message != reverted.fullMessage.trim()) {
-                        git.commit()
-                            .setAmend(true)
-                            .setMessage(message)
-                            .setAuthor(ident)
-                            .setCommitter(ident)
-                            .call()
+                    val customMessage =
+                        !message.isNullOrBlank() && message != reverted.fullMessage.trim()
+                    if (customMessage) {
+                        try {
+                            git.commit()
+                                .setAmend(true)
+                                .setMessage(message)
+                                .setAuthor(ident)
+                                .setCommitter(ident)
+                                .call()
+                        } catch (e: Exception) {
+                            val msg = e.message.orEmpty()
+                            if (!msg.contains("NO_CHANGE", ignoreCase = true)) throw e
+                            AppLog.i(TAG, "revert amend: NO_CHANGE — ok")
+                        }
                     } else {
-                        // Force committer to app identity even when message is left as default.
-                        git.commit()
-                            .setAmend(true)
-                            .setMessage(reverted.fullMessage)
-                            .setAuthor(ident)
-                            .setCommitter(ident)
-                            .call()
+                        // Only rewrite committer when it still does not match app identity
+                        // (avoids NO_CHANGE when user.name/email were already synced).
+                        rewriteCommitterIfNeeded(git, ident)
                     }
                     AppLog.i(TAG, "revert succeeded: $commitHash")
                     GitOpResult.Success
@@ -3084,20 +3138,11 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                     val result = git.cherryPick().include(commit).call()
                     when (result.status) {
                         org.eclipse.jgit.api.CherryPickResult.CherryPickStatus.OK -> {
-                            // CherryPick keeps original author but committer comes from git
-                            // config / system user — rewrite committer to app identity.
-                            val head = repository.resolve("HEAD")
-                            if (head != null) {
-                                RevWalk(repository).use { walk ->
-                                    val newCommit = walk.parseCommit(head)
-                                    git.commit()
-                                        .setAmend(true)
-                                        .setMessage(newCommit.fullMessage)
-                                        .setAuthor(newCommit.authorIdent)
-                                        .setCommitter(ident)
-                                        .call()
-                                }
-                            }
+                            // CherryPick keeps original author; committer comes from git
+                            // config. Only amend when committer still differs (e.g. "root").
+                            // Amending an identical commit makes RefUpdate return NO_CHANGE
+                            // and JGit throws — that is the failure in the user logs.
+                            rewriteCommitterIfNeeded(git, ident)
                             AppLog.i(TAG, "cherryPick succeeded: ${commit.name.take(7)}")
                         }
                         org.eclipse.jgit.api.CherryPickResult.CherryPickStatus.CONFLICTING -> {
