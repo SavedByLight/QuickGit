@@ -1057,6 +1057,9 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
      * - filemode=false: storage often cannot preserve +x bits
      * - autocrlf=false: avoid rewriting line endings on checkout
      * - symlinks=false: Android usually cannot create real symlinks in app storage
+     * - user.name / user.email: from Settings → Commit identity so JGit never falls
+     *   back to the Android process user (often "root") for committer on cherry-pick,
+     *   revert, merge, or any path that does not pass an explicit PersonIdent
      */
     private fun applyMobileRepoConfig(git: Git) {
         try {
@@ -1087,14 +1090,43 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
             } catch (e: Exception) {
                 AppLog.w(TAG, "set core.symlinks failed: ${e.message}")
             }
+            // Keep local user.* in sync with app commit identity. Without this, JGit
+            // uses System.getProperty("user.name") which is frequently "root" on Android,
+            // so org pushes show commits as author=username / committer=root.
+            try {
+                val wantName = getCommitAuthorName()
+                val wantEmail = getCommitAuthorEmail()
+                val curName = cfg.getString("user", null, "name")
+                val curEmail = cfg.getString("user", null, "email")
+                if (curName != wantName) {
+                    cfg.setString("user", null, "name", wantName)
+                    changed = true
+                }
+                if (curEmail != wantEmail) {
+                    cfg.setString("user", null, "email", wantEmail)
+                    changed = true
+                }
+            } catch (e: Exception) {
+                AppLog.w(TAG, "set user.name/email failed: ${e.message}")
+            }
             // Do not set core.checkstat — JGit rejects "minimum" with Invalid value.
             if (changed) {
                 cfg.save()
-                AppLog.i(TAG, "mobile git config: filemode=false autocrlf=false symlinks=false")
+                AppLog.i(TAG, "mobile git config: filemode=false autocrlf=false symlinks=false user.name/email synced")
             }
         } catch (e: Exception) {
             AppLog.w(TAG, "applyMobileRepoConfig failed: ${e.message}")
         }
+    }
+
+    /** PersonIdent for the app-configured commit identity (never the system "root" user). */
+    private fun commitPersonIdent(
+        name: String = getCommitAuthorName(),
+        email: String = getCommitAuthorEmail()
+    ): PersonIdent {
+        val n = name.trim().ifBlank { getCommitAuthorName() }
+        val e = email.trim().ifBlank { getCommitAuthorEmail() }
+        return PersonIdent(n, e)
     }
 
     /**
@@ -1487,6 +1519,8 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         amend: Boolean = false
     ): GitOpResult =
         withRepoLock(path) {
+            // Keep local user.name/email aligned so any nested JGit path cannot use "root".
+            ensureMobileRepoConfig(path)
             val shouldSign = isGpgSigningEnabled() && credentialStore.hasGpgKey()
             val gpgKey = if (shouldSign) credentialStore.getGpgPrivateKey() else null
             val gpgPass = if (shouldSign) credentialStore.getGpgPassphrase() else null
@@ -1499,10 +1533,13 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                     }
                 }
                 val doCommit = {
+                    // Always set both author and committer from app identity — never let
+                    // JGit fall back to the Android process user ("root").
+                    val ident = commitPersonIdent(authorName, authorEmail)
                     val cmd = git.commit()
                         .setMessage(fullMessage)
-                        .setAuthor(PersonIdent(authorName, authorEmail))
-                        .setCommitter(PersonIdent(authorName, authorEmail))
+                        .setAuthor(ident)
+                        .setCommitter(ident)
                         .setAmend(amend)
                     if (shouldSign && gpgKey != null) {
                         cmd.setSign(true)
@@ -2950,20 +2987,42 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
      */
     fun revertCommit(path: String, commitHash: String, message: String? = null): GitOpResult = try {
         AppLog.i(TAG, "revert: $commitHash")
+        // Ensure user.name/email are set before RevertCommand creates its committer ident.
+        ensureMobileRepoConfig(path)
         openGit(path).use { git ->
             val repository = git.repository
             val objectId = repository.resolve(commitHash)
                 ?: return GitOpResult.Error("Commit not found: $commitHash")
+            val ident = commitPersonIdent()
 
             RevWalk(repository).use { walk ->
                 val commit = walk.parseCommit(objectId)
-                val reverted = git.revert().include(commit).call()
+                // OurCommitter sets the committer on the revert commit; author stays
+                // the revert default message author path, but committer must not be "root".
+                val reverted = git.revert()
+                    .include(commit)
+                    .setOurCommitName("${ident.name} <${ident.emailAddress}>")
+                    .call()
 
                 if (reverted != null) {
                     // RevertCommand always generates its own "Revert \"...\"" message and has
                     // no setter for a custom one, so honor a user-edited message by amending.
+                    // Re-apply author/committer so amend cannot reintroduce system identity.
                     if (!message.isNullOrBlank() && message != reverted.fullMessage.trim()) {
-                        git.commit().setAmend(true).setMessage(message).call()
+                        git.commit()
+                            .setAmend(true)
+                            .setMessage(message)
+                            .setAuthor(ident)
+                            .setCommitter(ident)
+                            .call()
+                    } else {
+                        // Force committer to app identity even when message is left as default.
+                        git.commit()
+                            .setAmend(true)
+                            .setMessage(reverted.fullMessage)
+                            .setAuthor(ident)
+                            .setCommitter(ident)
+                            .call()
                     }
                     AppLog.i(TAG, "revert succeeded: $commitHash")
                     GitOpResult.Success
@@ -3003,8 +3062,11 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
         if (unique.isEmpty()) return GitOpResult.Error("No commits selected to cherry-pick")
         AppLog.i(TAG, "cherryPick: ${unique.size} commit(s)")
         return try {
+            // Sync user.name/email so the cherry-pick committer is not Android "root".
+            ensureMobileRepoConfig(path)
             openGit(path).use { git ->
                 val repository = git.repository
+                val ident = commitPersonIdent()
                 // Resolve + order oldest → newest so multi-pick from a history list is correct
                 val ordered = RevWalk(repository).use { walk ->
                     unique.mapNotNull { hash ->
@@ -3022,6 +3084,20 @@ class RepoManager(private val context: Context, private val credentialStore: Cre
                     val result = git.cherryPick().include(commit).call()
                     when (result.status) {
                         org.eclipse.jgit.api.CherryPickResult.CherryPickStatus.OK -> {
+                            // CherryPick keeps original author but committer comes from git
+                            // config / system user — rewrite committer to app identity.
+                            val head = repository.resolve("HEAD")
+                            if (head != null) {
+                                RevWalk(repository).use { walk ->
+                                    val newCommit = walk.parseCommit(head)
+                                    git.commit()
+                                        .setAmend(true)
+                                        .setMessage(newCommit.fullMessage)
+                                        .setAuthor(newCommit.authorIdent)
+                                        .setCommitter(ident)
+                                        .call()
+                                }
+                            }
                             AppLog.i(TAG, "cherryPick succeeded: ${commit.name.take(7)}")
                         }
                         org.eclipse.jgit.api.CherryPickResult.CherryPickStatus.CONFLICTING -> {
