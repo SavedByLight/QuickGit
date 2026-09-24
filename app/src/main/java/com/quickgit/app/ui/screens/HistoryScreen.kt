@@ -64,6 +64,9 @@ fun HistoryScreen(
     onBrowseTreeBefore: (parentCommitId: String) -> Unit = {}
 ) {
     LaunchedEffect(repoPath) { vm.init(repoPath) }
+    // When this screen re-enters composition (e.g. desktop tab switch after a checkout),
+    // re-load commits if we are following HEAD so history matches the new current branch.
+    LaunchedEffect(Unit) { vm.refreshIfFollowingHead() }
 
     val state by vm.state.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }

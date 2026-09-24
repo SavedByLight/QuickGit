@@ -52,6 +52,33 @@ class HistoryViewModel(private val repoManager: RepoManager) : ViewModel() {
         refreshHistory()
     }
 
+    /**
+     * Call after a branch checkout (or create-and-checkout) so history follows the new HEAD.
+     * Resets the log ref picker to "Current branch" and reloads commits from the new tip.
+     */
+    fun onBranchChanged() {
+        if (!::repoPath.isInitialized) return
+        _state.value = _state.value.copy(
+            logRef = null,
+            cherryPickSelection = emptySet(),
+            commits = emptyList(),
+            selectedCommitId = null,
+            selectedChanges = emptyList(),
+            parentCommitId = null,
+            hasMore = false
+        )
+        refreshHistory()
+    }
+
+    /**
+     * Re-load history when this screen is shown again while following HEAD (logRef == null).
+     * Ensures a checkout performed on the Branches tab is reflected without a manual refresh.
+     */
+    fun refreshIfFollowingHead() {
+        if (!::repoPath.isInitialized) return
+        if (_state.value.logRef == null) refreshHistory()
+    }
+
     fun refreshHistory() {
         if (!::repoPath.isInitialized) return
         viewModelScope.launch {

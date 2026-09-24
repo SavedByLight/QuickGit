@@ -65,6 +65,15 @@ fun RepoDetailScreenDesktop(
     }
 
     val state by vm.state.collectAsState()
+    val branchesState by branchesVm.state.collectAsState()
+    // After a successful checkout on the Branches tab, reset History to the new HEAD and
+    // refresh the detail status so the branch label updates.
+    LaunchedEffect(branchesState.checkoutGeneration) {
+        if (branchesState.checkoutGeneration > 0) {
+            historyVm.onBranchChanged()
+            vm.refresh()
+        }
+    }
     val snackbarHost = remember { SnackbarHostState() }
     var pullMenuExpanded by remember { mutableStateOf(false) }
     var pushMenuExpanded by remember { mutableStateOf(false) }

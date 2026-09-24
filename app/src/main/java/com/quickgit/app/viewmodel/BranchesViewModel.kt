@@ -20,7 +20,12 @@ data class BranchesUiState(
     /** True only while a pull-to-refresh (or the initial load) is in flight — drives the refresh indicator. */
     val refreshing: Boolean = false,
     val lastResult: GitOpResult? = null,
-    val statusMessage: String? = null
+    val statusMessage: String? = null,
+    /**
+     * Incremented after a successful checkout (or create-and-checkout).
+     * Observers (e.g. desktop History tab) use this to reset history to the new HEAD.
+     */
+    val checkoutGeneration: Int = 0
 )
 
 class BranchesViewModel(private val repoManager: RepoManager) : ViewModel() {
@@ -53,7 +58,12 @@ class BranchesViewModel(private val repoManager: RepoManager) : ViewModel() {
         viewModelScope.launch {
             _state.value = _state.value.copy(busy = true)
             val result = withContext(Dispatchers.IO) { repoManager.createBranch(repoPath, name, checkout) }
-            _state.value = _state.value.copy(busy = false, lastResult = result)
+            val gen = _state.value.checkoutGeneration
+            _state.value = _state.value.copy(
+                busy = false,
+                lastResult = result,
+                checkoutGeneration = if (checkout && result is GitOpResult.Success) gen + 1 else gen
+            )
             loadBranches(showRefreshing = false)
         }
     }
@@ -62,7 +72,12 @@ class BranchesViewModel(private val repoManager: RepoManager) : ViewModel() {
         viewModelScope.launch {
             _state.value = _state.value.copy(busy = true)
             val result = withContext(Dispatchers.IO) { repoManager.checkoutBranch(repoPath, name) }
-            _state.value = _state.value.copy(busy = false, lastResult = result)
+            val gen = _state.value.checkoutGeneration
+            _state.value = _state.value.copy(
+                busy = false,
+                lastResult = result,
+                checkoutGeneration = if (result is GitOpResult.Success) gen + 1 else gen
+            )
             loadBranches(showRefreshing = false)
         }
     }
