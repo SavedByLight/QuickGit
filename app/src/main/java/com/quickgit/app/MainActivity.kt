@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.view.Display
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -40,6 +41,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        preferHighestRefreshRate()
         GitProgressNotifier.ensureChannel(this)
         requestPermissionsIfNeeded()
         setContent {
@@ -60,10 +62,55 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        // Re-apply in case the user switched displays / system refresh policy while away.
+        preferHighestRefreshRate()
         // Re-push repo list whenever the phone app is foregrounded so the watch
         // can receive data even if it missed the cold-start broadcast.
         runCatching {
             (application as QuickGitApp).wearSyncManager.syncReposToWear()
+        }
+    }
+
+    /**
+     * Request the display mode with the highest refresh rate available on this device
+     * (60 / 90 / 120 / 144 / 165 Hz, etc.). Without this, many OEMs keep the app at 60 Hz
+     * even when the panel supports higher rates.
+     *
+     * Uses [WindowManager.LayoutParams.preferredDisplayModeId] (API 23+; minSdk is 26).
+     */
+    private fun preferHighestRefreshRate() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
+        try {
+            val display: Display? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                display
+            } else {
+                @Suppress("DEPRECATION")
+                windowManager.defaultDisplay
+            }
+            if (display == null) return
+
+            val modes = display.supportedModes
+            if (modes.isEmpty()) return
+
+            // Prefer highest refresh rate; if rates tie, prefer higher resolution.
+            val best = modes.maxWithOrNull(
+                compareBy<Display.Mode> { it.refreshRate }
+                    .thenBy { it.physicalWidth.toLong() * it.physicalHeight.toLong() }
+            ) ?: return
+
+            val params = window.attributes
+            if (params.preferredDisplayModeId != best.modeId) {
+                params.preferredDisplayModeId = best.modeId
+                window.attributes = params
+                AppLog.i(
+                    "MainActivity",
+                    "preferredDisplayModeId=${best.modeId} " +
+                        "${best.physicalWidth}x${best.physicalHeight} @ ${"%.2f".format(best.refreshRate)}Hz " +
+                        "(${modes.size} modes)"
+                )
+            }
+        } catch (e: Exception) {
+            AppLog.w("MainActivity", "preferHighestRefreshRate failed: ${e.message}")
         }
     }
 
