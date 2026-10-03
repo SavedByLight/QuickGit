@@ -11,7 +11,6 @@ import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.TravelExplore
 import androidx.compose.material3.Icon
@@ -23,6 +22,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.activity.ComponentActivity
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavType
@@ -49,13 +49,17 @@ import androidx.compose.runtime.collectAsState
  * - ALWAYS — always show the left rail
  * - NEVER — phone-style navigation only
  *
- * Toggle under Settings → Layout. Credentials live under Creds (tablet rail).
+ * Toggle under Settings → Layout. Account management lives under Profiles → Manage accounts.
  */
 @Composable
 fun QuickGitNavGraph() {
     val navController = rememberNavController()
     val context = LocalContext.current
     val factory = ViewModelFactory(context.applicationContext as android.app.Application)
+    // Shared across Settings + Credentials so the first open pays init cost once and
+    // subsequent navigations are instant (no multi-second re-verify on every open).
+    val activity = context as ComponentActivity
+    val settingsVm: SettingsViewModel = viewModel(viewModelStoreOwner = activity, factory = factory)
     val wsc = LocalWindowSizeClass.current
     val app = context.applicationContext as QuickGitApp
     val desktopMode by app.appPreferences.desktopLayoutMode.collectAsState()
@@ -235,7 +239,7 @@ fun QuickGitNavGraph() {
         }
 
         composable(Dest.CREDENTIALS) {
-            val vm: SettingsViewModel = viewModel(factory = factory)
+            val vm = settingsVm
             CredentialsScreen(vm = vm, onBack = { navController.popBackStack() })
         }
 
@@ -530,13 +534,6 @@ fun QuickGitNavGraph() {
                     selected = isSelected(Dest.LOGS)
                 ) {
                     navController.navigate(Dest.LOGS) { launchSingleTop = true }
-                }
-                RailItem(
-                    icon = Icons.Default.Key,
-                    label = "Creds",
-                    selected = isSelected(Dest.CREDENTIALS)
-                ) {
-                    navController.navigate(Dest.CREDENTIALS) { launchSingleTop = true }
                 }
                 RailItem(
                     icon = Icons.Default.Settings,

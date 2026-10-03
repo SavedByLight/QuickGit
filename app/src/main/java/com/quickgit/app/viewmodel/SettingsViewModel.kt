@@ -78,17 +78,68 @@ class SettingsViewModel(
     val state: StateFlow<SettingsUiState> = _state.asStateFlow()
 
     init {
+        // Fast, local-only seed so Credentials / Settings paint immediately.
+        // Network verification (GitHub/GitLab API) runs in the background afterward.
+        refreshDesktopLayout()
+        refreshManagedAccountsFast()
         loadForHost("github.com")
         refreshSsh()
         refreshGpg()
         refreshReposRoot()
         refreshAuthor()
+        refreshAppVersion()
+        refreshGerritLocal()
+        // Network — do not block first frame
         verifyGitHubIfConnected()
         verifyGitLabIfConnected()
+    }
+
+    /** Seed managed-account list from encrypted store without network. */
+    private fun refreshManagedAccountsFast() {
+        try {
+            multiAccountManager.migrateFromLegacyCredentials()
+            val accounts = multiAccountManager.listAccounts()
+            val active = AccountManager.Provider.entries.mapNotNull { p ->
+                multiAccountManager.getActiveAccount(p)?.let { p to it.id }
+            }.toMap()
+            // Prefer active GitHub metadata for the host form without an API round-trip.
+            val gh = multiAccountManager.getActiveAccount(AccountManager.Provider.GITHUB)
+            val gl = multiAccountManager.getActiveAccount(AccountManager.Provider.GITLAB)
+            val ge = multiAccountManager.getActiveAccount(AccountManager.Provider.GERRIT)
+            _state.value = _state.value.copy(
+                managedAccounts = accounts,
+                activeAccountIds = active,
+                githubLogin = gh?.username,
+                githubName = gh?.displayName,
+                hasStoredToken = gh != null || credentialStore.hasHttpsCredential("github.com"),
+                username = gh?.username.orEmpty().ifBlank {
+                    credentialStore.getHttpsUsername("github.com").orEmpty()
+                },
+                gitlabHost = gl?.host ?: _state.value.gitlabHost,
+                gitlabUsername = gl?.username,
+                gitlabConnected = gl != null,
+                gerritHost = ge?.host.orEmpty(),
+                gerritUsername = ge?.username,
+                gerritConnected = ge != null
+            )
+        } catch (e: Exception) {
+            AppLog.w("SettingsViewModel", "refreshManagedAccountsFast: ${e.message}")
+        }
+    }
+
+    /** Local Gerrit host/username only (no API). */
+    private fun refreshGerritLocal() {
+        val active = multiAccountManager.getActiveAccount(AccountManager.Provider.GERRIT)
+        if (active != null) {
+            _state.value = _state.value.copy(
+                gerritHost = active.host,
+                gerritUsername = active.username,
+                gerritConnected = true
+            )
+            gerritAccountManager.preferHost(active.host)
+            return
+        }
         refreshGerrit()
-        refreshAppVersion()
-        refreshDesktopLayout()
-        refreshManagedAccounts()
     }
 
     fun refreshManagedAccounts() {

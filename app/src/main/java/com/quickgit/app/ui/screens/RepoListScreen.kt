@@ -219,15 +219,14 @@ fun RepoListScreen(
                             }
                         }
                     }
-                    // Logs / Creds / Settings — hidden on tablet/Chromebook layout since
+                    // Logs / Settings — hidden on tablet/Chromebook layout since
                     // the NavigationRail already provides them (matching desktop).
+                    // Account management is under Profiles → Manage accounts.
                     if (!isDesktopLayout) {
                         IconButton(onClick = onLogs) {
                             Icon(Icons.Default.Terminal, contentDescription = "Logs")
                         }
-                        IconButton(onClick = onCredentials) {
-                            Icon(Icons.Default.Key, contentDescription = "Credentials")
-                        }
+                        // Credentials / account management lives under Profiles → Manage accounts
                         IconButton(onClick = onSettings) {
                             Icon(Icons.Default.Settings, contentDescription = "Settings")
                         }
