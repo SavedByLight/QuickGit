@@ -3,6 +3,7 @@ package com.quickgit.app.viewmodel
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.quickgit.app.data.AccountManager
 import com.quickgit.app.data.AppLog
 import com.quickgit.app.data.AppPreferences
 import com.quickgit.app.data.DesktopLayoutMode
@@ -56,7 +57,10 @@ data class SettingsUiState(
     val updateNotes: String? = null,
     val updateReleasesUrl: String? = null,
     /** Left NavigationRail layout (matches Linux desktop). Auto / Always / Never. */
-    val desktopLayoutMode: DesktopLayoutMode = DesktopLayoutMode.AUTO
+    val desktopLayoutMode: DesktopLayoutMode = DesktopLayoutMode.AUTO,
+    /** All managed GitHub / GitLab / Gerrit accounts. */
+    val managedAccounts: List<AccountManager.Account> = emptyList(),
+    val activeAccountIds: Map<AccountManager.Provider, String> = emptyMap()
 )
 
 class SettingsViewModel(
@@ -66,7 +70,8 @@ class SettingsViewModel(
     private val gitLabAccountManager: GitLabAccountManager,
     private val gerritAccountManager: com.quickgit.app.data.GerritAccountManager,
     private val appUpdateManager: com.quickgit.app.data.AppUpdateManager,
-    private val appPreferences: AppPreferences
+    private val appPreferences: AppPreferences,
+    private val multiAccountManager: AccountManager
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(SettingsUiState())
@@ -83,6 +88,44 @@ class SettingsViewModel(
         refreshGerrit()
         refreshAppVersion()
         refreshDesktopLayout()
+        refreshManagedAccounts()
+    }
+
+    fun refreshManagedAccounts() {
+        multiAccountManager.migrateFromLegacyCredentials()
+        val accounts = multiAccountManager.listAccounts()
+        val active = AccountManager.Provider.entries.mapNotNull { p ->
+            multiAccountManager.getActiveAccount(p)?.let { p to it.id }
+        }.toMap()
+        _state.value = _state.value.copy(
+            managedAccounts = accounts,
+            activeAccountIds = active
+        )
+    }
+
+    fun setActiveManagedAccount(accountId: String) {
+        multiAccountManager.setActiveAccount(accountId)
+        refreshManagedAccounts()
+        // Re-verify the provider for the newly active account
+        val acct = multiAccountManager.getAccount(accountId) ?: return
+        when (acct.provider) {
+            AccountManager.Provider.GITHUB -> verifyGitHubIfConnected()
+            AccountManager.Provider.GITLAB -> verifyGitLabIfConnected()
+            AccountManager.Provider.GERRIT -> refreshGerrit()
+        }
+    }
+
+    fun removeManagedAccount(accountId: String) {
+        val acct = multiAccountManager.getAccount(accountId)
+        multiAccountManager.removeAccount(accountId)
+        when (acct?.provider) {
+            AccountManager.Provider.GITHUB -> gitHubAccountManager.invalidateRepoCache()
+            else -> {}
+        }
+        refreshManagedAccounts()
+        verifyGitHubIfConnected()
+        verifyGitLabIfConnected()
+        refreshGerrit()
     }
 
     private fun refreshDesktopLayout() {
@@ -324,6 +367,7 @@ class SettingsViewModel(
                             statusMessage = "Connected as @${account.login}",
                             isError = false
                         )
+                        refreshManagedAccounts()
                     }
                     result is PrOpResult.AuthRequired -> {
                         _state.value = _state.value.copy(
@@ -366,6 +410,7 @@ class SettingsViewModel(
                 statusMessage = "Saved token for $host",
                 isError = false
             )
+            refreshManagedAccounts()
         } catch (e: Exception) {
             _state.value = s.copy(
                 statusMessage = "Save failed: ${e.message ?: e.javaClass.simpleName}",
@@ -393,6 +438,7 @@ class SettingsViewModel(
                 statusMessage = "Disconnected from $host",
                 isError = false
             )
+            refreshManagedAccounts()
         } catch (e: Exception) {
             _state.value = _state.value.copy(
                 statusMessage = "Clear failed: ${e.message}",
@@ -626,6 +672,7 @@ class SettingsViewModel(
                         statusMessage = "GitLab connected as @${account.username} on ${account.host}",
                         isError = false
                     )
+                    refreshManagedAccounts()
                     // Also ensure the general HTTPS credential slot for this host is consistent
                     // (username + token already written by GitLabAccountManager.connect)
                 }
@@ -664,6 +711,7 @@ class SettingsViewModel(
             statusMessage = "Disconnected from GitLab ($h)",
             isError = false
         )
+        refreshManagedAccounts()
     }
 
     private fun refreshGerrit() {
@@ -695,6 +743,7 @@ class SettingsViewModel(
                         statusMessage = "Connected to Gerrit as ${account.username} on ${account.host}",
                         isError = false
                     )
+                    refreshManagedAccounts()
                 }
                 result is PrOpResult.Error -> {
                     _state.value = _state.value.copy(
@@ -731,6 +780,7 @@ class SettingsViewModel(
             statusMessage = "Disconnected Gerrit",
             isError = false
         )
+        refreshManagedAccounts()
     }
 
 }

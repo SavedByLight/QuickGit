@@ -13,12 +13,20 @@ import java.util.concurrent.ConcurrentHashMap
  * True OAuth would need a registered OAuth App + redirect URI; this app uses the same
  * encrypted PAT flow as git push/pull, then verifies the token with GET /user.
  */
-class GitHubAccountManager(private val credentialStore: CredentialStore) {
+class GitHubAccountManager(
+    private val credentialStore: CredentialStore,
+    private val accountManager: AccountManager? = null
+) {
 
     private val TAG = "GitHubAccountManager"
     private val host = "github.com"
 
-    private val api: GitHubApi get() = GitHubApi(credentialStore.getHttpsToken(host))
+    private val api: GitHubApi
+        get() {
+            val token = accountManager?.getTokenForActive(AccountManager.Provider.GITHUB)
+                ?: credentialStore.getHttpsToken(host)
+            return GitHubApi(token)
+        }
 
     /** Short-lived in-memory cache so Profile/Browse re-entry is instant. */
     private data class RepoCacheEntry(val repos: List<GitHubRemoteRepo>, val expiresAtMs: Long)
@@ -52,30 +60,52 @@ class GitHubAccountManager(private val credentialStore: CredentialStore) {
         val htmlUrl: String
     )
 
-    fun isConnected(): Boolean = credentialStore.hasHttpsCredential(host)
+    fun isConnected(): Boolean {
+        accountManager?.let {
+            if (it.listAccounts(AccountManager.Provider.GITHUB).isNotEmpty()) return true
+        }
+        return credentialStore.hasHttpsCredential(host)
+    }
 
-    fun storedUsername(): String? = credentialStore.getHttpsUsername(host)
+    fun storedUsername(): String? =
+        accountManager?.getActiveAccount(AccountManager.Provider.GITHUB)?.username
+            ?: credentialStore.getHttpsUsername(host)
 
     /**
-     * Saves the token, then calls GitHub to verify it and return the authenticated user.
-     * On success, updates the stored username to the real GitHub login.
+     * Saves the token, verifies it with GitHub, registers a managed account, and
+     * makes it the active GitHub account. Multiple GitHub accounts are supported.
      */
     fun connect(token: String, preferredUsername: String? = null): Pair<ConnectedAccount?, PrOpResult> {
         val trimmed = token.trim()
         if (trimmed.isBlank()) return null to PrOpResult.Error("Token is required")
         AppLog.i(TAG, "connect: verifying token with GitHub")
         val provisionalUser = preferredUsername?.trim()?.ifBlank { null } ?: "x-access-token"
+        // Temporarily store so api can use it for verification
         try {
             credentialStore.saveHttpsToken(host, provisionalUser, trimmed)
         } catch (e: Exception) {
             return null to PrOpResult.Error(e.message ?: "Failed to save token", e)
         }
-        val result = api.getAuthenticatedUser()
+        val result = GitHubApi(trimmed).getAuthenticatedUser()
         val user = result.getOrNull()
         return if (user != null) {
             try {
                 credentialStore.saveHttpsToken(host, user.login, trimmed)
             } catch (_: Exception) { /* already saved */ }
+            accountManager?.addOrUpdateAccount(
+                provider = AccountManager.Provider.GITHUB,
+                host = host,
+                username = user.login,
+                token = trimmed,
+                displayName = user.name,
+                email = user.email,
+                avatarUrl = user.avatarUrl,
+                profileUrl = user.htmlUrl
+            )
+            // Ensure this new account is active
+            accountManager?.listAccounts(AccountManager.Provider.GITHUB)
+                ?.find { it.username.equals(user.login, true) }
+                ?.let { accountManager.setActiveAccount(it.id) }
             AppLog.i(TAG, "connect succeeded: ${user.login}")
             ConnectedAccount(user.login, user.name, user.email, user.avatarUrl, user.htmlUrl) to PrOpResult.Success
         } else {
@@ -87,9 +117,21 @@ class GitHubAccountManager(private val credentialStore: CredentialStore) {
         }
     }
 
-    fun disconnect() {
-        AppLog.i(TAG, "disconnect")
-        credentialStore.clearHttpsToken(host)
+    fun disconnect(accountId: String? = null) {
+        AppLog.i(TAG, "disconnect accountId=$accountId")
+        val am = accountManager
+        if (am != null) {
+            if (accountId != null) {
+                am.removeAccount(accountId)
+            } else {
+                // Disconnect active (or all if only one)
+                val active = am.getActiveAccount(AccountManager.Provider.GITHUB)
+                if (active != null) am.removeAccount(active.id)
+                else am.listAccounts(AccountManager.Provider.GITHUB).forEach { am.removeAccount(it.id) }
+            }
+        } else {
+            credentialStore.clearHttpsToken(host)
+        }
         invalidateRepoCache()
     }
 
@@ -99,6 +141,23 @@ class GitHubAccountManager(private val credentialStore: CredentialStore) {
         val result = api.getAuthenticatedUser()
         val user = result.getOrNull()
         return if (user != null) {
+            // Refresh metadata on managed account
+            accountManager?.getActiveAccount(AccountManager.Provider.GITHUB)?.let { acct ->
+                val token = accountManager.getToken(acct.id) ?: credentialStore.getHttpsToken(host)
+                if (token != null) {
+                    accountManager.addOrUpdateAccount(
+                        provider = AccountManager.Provider.GITHUB,
+                        host = host,
+                        username = user.login,
+                        token = token,
+                        displayName = user.name,
+                        email = user.email,
+                        avatarUrl = user.avatarUrl,
+                        profileUrl = user.htmlUrl,
+                        existingId = acct.id
+                    )
+                }
+            }
             ConnectedAccount(user.login, user.name, user.email, user.avatarUrl, user.htmlUrl) to PrOpResult.Success
         } else {
             null to result.toPrOpResult(host)

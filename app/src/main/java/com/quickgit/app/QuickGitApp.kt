@@ -1,6 +1,7 @@
 package com.quickgit.app
 
 import android.app.Application
+import com.quickgit.app.data.AccountManager
 import com.quickgit.app.data.AppPreferences
 import com.quickgit.app.data.AppUpdateManager
 import com.quickgit.app.data.CredentialStore
@@ -17,6 +18,8 @@ import com.quickgit.app.wear.WearSyncManager
 
 class QuickGitApp : Application() {
     lateinit var credentialStore: CredentialStore
+        private set
+    lateinit var accountManager: AccountManager
         private set
     lateinit var repoManager: RepoManager
         private set
@@ -45,11 +48,13 @@ class QuickGitApp : Application() {
         // Progress notifications need the channel before any clone/push starts.
         GitProgressNotifier.ensureChannel(this)
         credentialStore = CredentialStore(this)
+        accountManager = AccountManager(credentialStore)
+        accountManager.migrateFromLegacyCredentials()
         repoManager = RepoManager(this, credentialStore)
         pullRequestManager = PullRequestManager(repoManager, credentialStore)
-        gitHubAccountManager = GitHubAccountManager(credentialStore)
-        gitLabAccountManager = GitLabAccountManager(credentialStore)
-        gerritAccountManager = GerritAccountManager(credentialStore)
+        gitHubAccountManager = GitHubAccountManager(credentialStore, accountManager)
+        gitLabAccountManager = GitLabAccountManager(credentialStore, accountManager)
+        gerritAccountManager = GerritAccountManager(credentialStore, accountManager)
         issueManager = IssueManager(repoManager, credentialStore)
         workflowManager = WorkflowManager(repoManager, credentialStore)
         releaseManager = ReleaseManager(repoManager, credentialStore)

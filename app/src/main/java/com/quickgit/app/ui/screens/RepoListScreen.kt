@@ -14,6 +14,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Create
 import androidx.compose.material.icons.filled.CloudDownload
@@ -61,6 +62,8 @@ fun RepoListScreen(
     val repos by vm.repos.collectAsState()
     val loading by vm.loading.collectAsState()
     val account by vm.account.collectAsState()
+    val managedAccounts by vm.managedAccounts.collectAsState()
+    val activeAccountId by vm.activeAccountId.collectAsState()
     var repoToDelete by remember { mutableStateOf<RepoInfo?>(null) }
     var accountMenuExpanded by remember { mutableStateOf(false) }
     var fabExpanded by remember { mutableStateOf(false) }
@@ -129,6 +132,58 @@ fun RepoListScreen(
                                 expanded = accountMenuExpanded,
                                 onDismissRequest = { accountMenuExpanded = false }
                             ) {
+                                if (managedAccounts.isNotEmpty()) {
+                                    Text(
+                                        "Accounts",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                                    )
+                                    managedAccounts.forEach { acct ->
+                                        DropdownMenuItem(
+                                            text = {
+                                                Column {
+                                                    Text(
+                                                        acct.label,
+                                                        fontWeight = if (acct.id == activeAccountId)
+                                                            FontWeight.Bold else FontWeight.Normal
+                                                    )
+                                                    Text(
+                                                        acct.providerLabel(),
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                    )
+                                                }
+                                            },
+                                            onClick = {
+                                                accountMenuExpanded = false
+                                                vm.switchAccount(acct.id)
+                                                onOpenProfile()
+                                            },
+                                            leadingIcon = {
+                                                if (!acct.avatarUrl.isNullOrBlank()) {
+                                                    UserAvatar(
+                                                        avatarUrl = acct.avatarUrl,
+                                                        login = acct.username,
+                                                        size = 24.dp
+                                                    )
+                                                } else {
+                                                    Icon(Icons.Default.Person, contentDescription = null)
+                                                }
+                                            },
+                                            trailingIcon = {
+                                                if (acct.id == activeAccountId) {
+                                                    Icon(
+                                                        Icons.Default.Check,
+                                                        contentDescription = "Active",
+                                                        tint = MaterialTheme.colorScheme.primary
+                                                    )
+                                                }
+                                            }
+                                        )
+                                    }
+                                    HorizontalDivider()
+                                }
                                 DropdownMenuItem(
                                     text = {
                                         Text(
@@ -141,6 +196,14 @@ fun RepoListScreen(
                                         onOpenProfile()
                                     },
                                     leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Manage accounts") },
+                                    onClick = {
+                                        accountMenuExpanded = false
+                                        onCredentials()
+                                    },
+                                    leadingIcon = { Icon(Icons.Default.Key, contentDescription = null) }
                                 )
                                 DropdownMenuItem(
                                     text = { Text("Search people") },

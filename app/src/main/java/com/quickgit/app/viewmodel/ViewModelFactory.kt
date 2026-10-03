@@ -21,7 +21,8 @@ class ViewModelFactory(private val app: Application) : ViewModelProvider.Factory
                 RepoListViewModel(
                     gitApp.repoManager,
                     gitApp.gitHubAccountManager,
-                    gitApp.gitLabAccountManager
+                    gitApp.gitLabAccountManager,
+                    gitApp.accountManager
                 )
             modelClass.isAssignableFrom(CloneViewModel::class.java) ->
                 CloneViewModel(gitApp.repoManager, gitApp.gerritAccountManager, app)
@@ -43,7 +44,8 @@ class ViewModelFactory(private val app: Application) : ViewModelProvider.Factory
                     gitApp.gitLabAccountManager,
                     gitApp.gerritAccountManager,
                     gitApp.appUpdateManager,
-                    gitApp.appPreferences
+                    gitApp.appPreferences,
+                    gitApp.accountManager
                 )
             modelClass.isAssignableFrom(FilesViewModel::class.java) ->
                 FilesViewModel(gitApp.repoManager)

@@ -3,6 +3,7 @@ package com.quickgit.app.viewmodel
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.quickgit.app.data.AccountManager
 import com.quickgit.app.data.GitHubAccountManager
 import com.quickgit.app.data.GitLabAccountManager
 import com.quickgit.app.data.RepoManager
@@ -25,7 +26,8 @@ enum class CreateRepoProvider {
 class RepoListViewModel(
     private val repoManager: RepoManager,
     private val accountManager: GitHubAccountManager,
-    private val gitLabAccountManager: GitLabAccountManager
+    private val gitLabAccountManager: GitLabAccountManager,
+    private val multiAccountManager: AccountManager
 ) : ViewModel() {
 
     private val _repos = MutableStateFlow<List<RepoInfo>>(emptyList())
@@ -36,6 +38,12 @@ class RepoListViewModel(
 
     private val _account = MutableStateFlow<GitHubAccountManager.ConnectedAccount?>(null)
     val account: StateFlow<GitHubAccountManager.ConnectedAccount?> = _account.asStateFlow()
+
+    private val _managedAccounts = MutableStateFlow<List<AccountManager.Account>>(emptyList())
+    val managedAccounts: StateFlow<List<AccountManager.Account>> = _managedAccounts.asStateFlow()
+
+    private val _activeAccountId = MutableStateFlow<String?>(null)
+    val activeAccountId: StateFlow<String?> = _activeAccountId.asStateFlow()
 
     private val _creating = MutableStateFlow(false)
     val creating: StateFlow<Boolean> = _creating.asStateFlow()
@@ -71,6 +79,11 @@ class RepoListViewModel(
     }
 
     private fun loadAccount() {
+        multiAccountManager.migrateFromLegacyCredentials()
+        _managedAccounts.value = multiAccountManager.listAccounts()
+        _activeAccountId.value = multiAccountManager.getActiveAccount(AccountManager.Provider.GITHUB)?.id
+            ?: multiAccountManager.getActiveAccount(AccountManager.Provider.GITLAB)?.id
+            ?: multiAccountManager.getActiveAccount(AccountManager.Provider.GERRIT)?.id
         if (!accountManager.isConnected()) {
             _account.value = null
             return
@@ -78,7 +91,35 @@ class RepoListViewModel(
         viewModelScope.launch {
             val (account, _) = withContext(Dispatchers.IO) { accountManager.refreshAccount() }
             _account.value = account
+            _managedAccounts.value = multiAccountManager.listAccounts()
         }
+    }
+
+    fun switchAccount(accountId: String) {
+        multiAccountManager.setActiveAccount(accountId)
+        _activeAccountId.value = accountId
+        val acct = multiAccountManager.getAccount(accountId)
+        when (acct?.provider) {
+            AccountManager.Provider.GITHUB -> {
+                viewModelScope.launch {
+                    val (account, _) = withContext(Dispatchers.IO) { accountManager.refreshAccount() }
+                    _account.value = account
+                }
+            }
+            else -> {
+                // For GitLab/Gerrit, surface username via a lightweight ConnectedAccount-like state
+                _account.value = acct?.let {
+                    GitHubAccountManager.ConnectedAccount(
+                        login = it.username,
+                        name = it.displayName,
+                        email = it.email,
+                        avatarUrl = it.avatarUrl,
+                        htmlUrl = it.profileUrl ?: ""
+                    )
+                }
+            }
+        }
+        _managedAccounts.value = multiAccountManager.listAccounts()
     }
 
     fun isGitHubConnected(): Boolean = accountManager.isConnected()

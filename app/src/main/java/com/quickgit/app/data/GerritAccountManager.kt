@@ -9,7 +9,10 @@ import com.quickgit.app.data.models.PrOpResult
  * Connects a Gerrit host via username + HTTP password (Gerrit Settings → HTTP Credentials).
  * Credentials are stored under the host in [CredentialStore] so JGit clone/fetch/push work.
  */
-class GerritAccountManager(private val credentialStore: CredentialStore) {
+class GerritAccountManager(
+    private val credentialStore: CredentialStore,
+    private val accountManager: AccountManager? = null
+) {
 
     private val TAG = "GerritAccountManager"
 
@@ -64,8 +67,17 @@ class GerritAccountManager(private val credentialStore: CredentialStore) {
             try {
                 credentialStore.saveHttpsToken(h, account.username.ifBlank { user }, pass)
             } catch (_: Exception) { /* already saved */ }
+            val uname = account.username.ifBlank { user }
+            accountManager?.addOrUpdateAccount(
+                provider = AccountManager.Provider.GERRIT,
+                host = h,
+                username = uname,
+                token = pass,
+                displayName = account.name,
+                email = account.email
+            )?.let { accountManager.setActiveAccount(it.id) }
             ConnectedAccount(
-                username = account.username.ifBlank { user },
+                username = uname,
                 name = account.name,
                 email = account.email,
                 host = h
@@ -77,13 +89,30 @@ class GerritAccountManager(private val credentialStore: CredentialStore) {
         }
     }
 
-    fun disconnect(h: String = host) {
-        if (h.isBlank()) return
-        AppLog.i(TAG, "disconnect $h")
-        credentialStore.clearHttpsToken(h)
+    fun disconnect(h: String = host, accountId: String? = null) {
+        if (h.isBlank() && accountId == null) return
+        AppLog.i(TAG, "disconnect $h accountId=$accountId")
+        val am = accountManager
+        if (am != null) {
+            if (accountId != null) {
+                am.removeAccount(accountId)
+            } else {
+                am.listAccounts(AccountManager.Provider.GERRIT)
+                    .filter { it.host.equals(h, true) }
+                    .forEach { am.removeAccount(it.id) }
+            }
+        } else {
+            credentialStore.clearHttpsToken(h)
+        }
         if (host == h || credentialStore.getPreferredGerritHost() == h) {
-            credentialStore.clearPreferredGerritHost()
-            host = ""
+            val still = am?.listAccounts(AccountManager.Provider.GERRIT).orEmpty()
+            if (still.isEmpty()) {
+                credentialStore.clearPreferredGerritHost()
+                host = ""
+            } else {
+                host = still.first().host
+                credentialStore.setPreferredGerritHost(host)
+            }
         }
     }
 

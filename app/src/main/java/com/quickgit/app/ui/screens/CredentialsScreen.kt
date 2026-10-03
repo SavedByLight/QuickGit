@@ -6,6 +6,10 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.RadioButtonChecked
+import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -43,6 +47,81 @@ fun CredentialsScreen(
                 .fillMaxWidth()
                 .verticalScroll(rememberScrollState())
         ) {
+            // ---- Managed accounts (multi-account) ----
+            Text("Connected accounts", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "Switch between multiple GitHub, GitLab, and Gerrit accounts. " +
+                    "The active account is used for API calls and git over HTTPS.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(12.dp))
+            if (state.managedAccounts.isEmpty()) {
+                Text(
+                    "No accounts yet. Connect one below.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                state.managedAccounts.forEach { acct ->
+                    val isActive = state.activeAccountIds[acct.provider] == acct.id
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (isActive)
+                                MaterialTheme.colorScheme.primaryContainer
+                            else MaterialTheme.colorScheme.surfaceVariant
+                        )
+                    ) {
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            IconButton(onClick = { vm.setActiveManagedAccount(acct.id) }) {
+                                Icon(
+                                    if (isActive) Icons.Default.RadioButtonChecked
+                                    else Icons.Default.RadioButtonUnchecked,
+                                    contentDescription = if (isActive) "Active" else "Set active",
+                                    tint = if (isActive) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Column(Modifier = Modifier.weight(1f)) {
+                                Text(acct.label, style = MaterialTheme.typography.bodyMedium)
+                                Text(
+                                    acct.providerLabel() + if (isActive) " · active" else "",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            IconButton(onClick = { vm.removeManagedAccount(acct.id) }) {
+                                Icon(
+                                    Icons.Default.Delete,
+                                    contentDescription = "Remove account",
+                                    tint = MaterialTheme.colorScheme.error
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Add another account by pasting a token below (GitHub / GitLab) or Gerrit credentials. " +
+                    "Each successful connection is added to the list above.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            Spacer(Modifier.height(28.dp))
+            HorizontalDivider()
+            Spacer(Modifier.height(28.dp))
+
             Text("Commit identity", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(4.dp))
             Text(

@@ -153,6 +153,52 @@ class CredentialStore(private val context: Context) {
         prefs.edit().remove("gerrit_preferred_host").apply()
     }
 
+    /** Hosts that currently have an HTTPS token stored (for migration / listing). */
+    fun listHttpsHosts(): List<String> {
+        val hosts = mutableListOf<String>()
+        try {
+            prefs.all.keys.forEach { key ->
+                if (key.startsWith("https_token_")) {
+                    val host = key.removePrefix("https_token_")
+                    if (host.isNotBlank() && !prefs.getString(key, null).isNullOrBlank()) {
+                        hosts.add(host)
+                    }
+                }
+            }
+        } catch (_: Exception) { /* encrypted prefs may throw on some devices */ }
+        return hosts
+    }
+
+    // ==================== Multi-account tokens (by account id) ====================
+    fun saveAccountToken(accountId: String, username: String, token: String) {
+        prefs.edit()
+            .putString("acct_user_$accountId", username)
+            .putString("acct_token_$accountId", token)
+            .apply()
+    }
+
+    fun getAccountToken(accountId: String): String? =
+        prefs.getString("acct_token_$accountId", null)
+
+    fun getAccountUsername(accountId: String): String? =
+        prefs.getString("acct_user_$accountId", null)
+
+    fun clearAccountToken(accountId: String) {
+        prefs.edit()
+            .remove("acct_user_$accountId")
+            .remove("acct_token_$accountId")
+            .apply()
+    }
+
+    // Generic string helpers used by AccountManager
+    fun getString(key: String): String? = prefs.getString(key, null)
+    fun putString(key: String, value: String) {
+        prefs.edit().putString(key, value).apply()
+    }
+    fun removeString(key: String) {
+        prefs.edit().remove(key).apply()
+    }
+
     // ==================== SSH key ====================
     fun hasSshKey(): Boolean = !prefs.getString("ssh_private_key", null).isNullOrBlank()
 

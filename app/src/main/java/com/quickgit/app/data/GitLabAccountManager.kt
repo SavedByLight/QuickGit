@@ -9,7 +9,10 @@ import com.quickgit.app.data.models.PrOpResult
  * Connects a GitLab account (gitlab.com or self-hosted) via personal access token.
  * Token is stored under the configured host in CredentialStore.
  */
-class GitLabAccountManager(private val credentialStore: CredentialStore) {
+class GitLabAccountManager(
+    private val credentialStore: CredentialStore,
+    private val accountManager: AccountManager? = null
+) {
 
     private val TAG = "GitLabAccountManager"
 
@@ -17,8 +20,16 @@ class GitLabAccountManager(private val credentialStore: CredentialStore) {
     var host: String = "gitlab.com"
         private set
 
-    private fun api(h: String = host): GitLabApi =
-        GitLabApi(h, credentialStore.getHttpsToken(h))
+    private fun api(h: String = host): GitLabApi {
+        val token = accountManager?.getActiveAccount(AccountManager.Provider.GITLAB)
+            ?.takeIf { it.host.equals(h, true) }
+            ?.let { accountManager.getToken(it.id) }
+            ?: accountManager?.listAccounts(AccountManager.Provider.GITLAB)
+                ?.find { it.host.equals(h, true) }
+                ?.let { accountManager.getToken(it.id) }
+            ?: credentialStore.getHttpsToken(h)
+        return GitLabApi(h, token)
+    }
 
     data class ConnectedAccount(
         val username: String,
@@ -62,6 +73,16 @@ class GitLabAccountManager(private val credentialStore: CredentialStore) {
             } catch (_: Exception) { /* already saved */ }
             // remember which host is the "primary" GitLab host
             savePrimaryHost(h)
+            accountManager?.addOrUpdateAccount(
+                provider = AccountManager.Provider.GITLAB,
+                host = h,
+                username = user.username,
+                token = trimmed,
+                displayName = user.name,
+                email = user.email,
+                avatarUrl = user.avatarUrl,
+                profileUrl = user.webUrl
+            )?.let { accountManager.setActiveAccount(it.id) }
             AppLog.i(TAG, "connect succeeded: ${user.username}@$h")
             ConnectedAccount(
                 user.username, user.name, user.email, user.avatarUrl, user.webUrl, h
@@ -75,9 +96,20 @@ class GitLabAccountManager(private val credentialStore: CredentialStore) {
         }
     }
 
-    fun disconnect(h: String = host) {
-        AppLog.i(TAG, "disconnect $h")
-        credentialStore.clearHttpsToken(h)
+    fun disconnect(h: String = host, accountId: String? = null) {
+        AppLog.i(TAG, "disconnect $h accountId=$accountId")
+        val am = accountManager
+        if (am != null) {
+            if (accountId != null) {
+                am.removeAccount(accountId)
+            } else {
+                am.listAccounts(AccountManager.Provider.GITLAB)
+                    .filter { it.host.equals(h, true) }
+                    .forEach { am.removeAccount(it.id) }
+            }
+        } else {
+            credentialStore.clearHttpsToken(h)
+        }
         if (h == host) host = "gitlab.com"
     }
 
