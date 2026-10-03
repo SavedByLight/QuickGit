@@ -34,6 +34,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import com.quickgit.app.BuildConfig
 import com.quickgit.app.data.AccountManager
 import com.quickgit.app.data.models.RepoInfo
 import com.quickgit.app.ui.adaptive.AdaptiveContent
@@ -223,8 +224,11 @@ fun RepoListScreen(
                     // the NavigationRail already provides them (matching desktop).
                     // Account management is under Profiles → Manage accounts.
                     if (!isDesktopLayout) {
-                        IconButton(onClick = onLogs) {
-                            Icon(Icons.Default.Terminal, contentDescription = "Logs")
+                        // Logs only in the debug channel build (BuildConfig.SHOW_LOGS_UI)
+                        if (BuildConfig.SHOW_LOGS_UI) {
+                            IconButton(onClick = onLogs) {
+                                Icon(Icons.Default.Terminal, contentDescription = "Logs")
+                            }
                         }
                         // Credentials / account management lives under Profiles → Manage accounts
                         IconButton(onClick = onSettings) {

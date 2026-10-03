@@ -4,6 +4,14 @@ name: Build and Release
 # Set "version" to the release number (e.g. 2.0.1). Artifacts and the GitHub
 # Release are published as QuickGit x.x.x with a changelog of every commit
 # since the previous tag.
+#
+# Compile jobs (separate, same release):
+#   - build-android   — phone store + debug APKs, Wear APK
+#   - build-deb       — Linux .deb
+#   - build-rpm       — Linux .rpm
+#   - build-appimage  — Linux AppImage
+#   - build-windows   — Windows MSI (best-effort)
+# publish-release attaches every successful artifact to one GitHub Release.
 on:
   workflow_dispatch:
     inputs:
@@ -12,21 +20,20 @@ on:
         required: true
         type: string
       version_code:
-        description: 'Android versionCode (integer). Leave blank to use run number.'
+        description: 'Android versionCode (integer). Leave blank to derive from version.'
         required: false
         type: string
         default: ''
 
-# Prevent two releases from racing each other if runs overlap.
 concurrency:
   group: release
   cancel-in-progress: false
 
 permissions:
-  contents: write # needed to push tags and create releases
+  contents: write
 
 jobs:
-  # ── Shared version stamp (from workflow_dispatch input) ───────────────────
+  # ── Shared version stamp ───────────────────────────────────────────────────
   version:
     runs-on: ubuntu-latest
     outputs:
@@ -44,7 +51,6 @@ jobs:
         id: version
         run: |
           set -euo pipefail
-          # Accept "2.0.1" or "v2.0.1" or "QuickGit 2.0.1"
           RAW="${{ inputs.version }}"
           RAW="${RAW#QuickGit }"
           RAW="${RAW#quickgit }"
@@ -57,7 +63,6 @@ jobs:
           if [ -n "${{ inputs.version_code }}" ]; then
             VERSION_CODE="${{ inputs.version_code }}"
           else
-            # Derive a monotonic integer from x.y.z: major*1000000 + minor*1000 + patch
             IFS=. read -r MAJ MIN PAT <<<"${VERSION_NAME%%-*}"
             PAT="${PAT%%[^0-9]*}"
             VERSION_CODE=$(( MAJ * 1000000 + MIN * 1000 + PAT ))
@@ -73,7 +78,6 @@ jobs:
         run: |
           set -euo pipefail
           TAG="${{ steps.version.outputs.tag }}"
-          # Prefer the latest previous tag by version sort; fall back to first parent range
           PREV="$(git tag -l 'v*' --sort=-v:refname | grep -v "^${TAG}$" | head -n1 || true)"
           {
             echo "changelog<<CHANGELOG_EOF"
@@ -82,7 +86,6 @@ jobs:
             if [ -n "$PREV" ]; then
               echo "Commits since \`${PREV}\`:"
               echo ""
-              # Subject + short hash; skip merge noise optionally still include merges
               git log "${PREV}..HEAD" --pretty=format:'- %s (%h)' --no-merges
               echo ""
               echo ""
@@ -98,8 +101,8 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "Previous tag: ${PREV:-none}"
 
-  # ── Android + Linux desktop ───────────────────────────────────────────────
-  build-linux-android:
+  # ── Android phone (store + debug) + Wear ─────────────────────────────────
+  build-android:
     needs: version
     runs-on: ubuntu-latest
     steps:
@@ -117,65 +120,22 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
         with:
-          # Do not request the obsolete "tools" package (removed from sdkmanager).
-          # ubuntu-latest already ships cmdline-tools; install only what we need.
           packages: >
             platform-tools
             platforms;android-34
             build-tools;34.0.0
 
-      - name: Install Linux packaging dependencies (Deb / Rpm / AppImage)
-        run: |
-          sudo apt-get update
-          # libfuse2 is required by appimagetool; on Ubuntu 24.04 the package is libfuse2t64.
-          # rpm + rpmbuild are required for Compose packageRpm; fakeroot/binutils for .deb.
-          sudo apt-get install -y \
-            libfuse2t64 libfuse2 binutils fakeroot file \
-            rpm rpm2cpio cpio || \
-            sudo apt-get install -y \
-              libfuse2 binutils fakeroot file rpm rpm2cpio cpio
-          # GitHub-hosted runners have no /dev/fuse for unprivileged appimagetool.
-          # APPIMAGE_EXTRACT_AND_RUN lets appimagetool run without mounting itself.
-          echo "APPIMAGE_EXTRACT_AND_RUN=1" >> "$GITHUB_ENV"
-          # Download appimagetool (optional for phone/wear APKs). Prefer a pinned
-          # continuous build; retry on transient 5xx. Do not fail the job if the
-          # download is unavailable — Deb/Rpm/APK steps can still succeed.
-          APPIMAGE_URL="https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
-          if curl -fL --retry 5 --retry-delay 3 --retry-all-errors \
-               -o /tmp/appimagetool "$APPIMAGE_URL"; then
-            chmod +x /tmp/appimagetool
-            # Extract so we can invoke without FUSE even if env is ignored by nested tools
-            (cd /tmp && ./appimagetool --appimage-extract >/dev/null 2>&1) || true
-            if [ -x /tmp/squashfs-root/AppRun ]; then
-              sudo ln -sfn /tmp/squashfs-root/AppRun /usr/local/bin/appimagetool
-            else
-              sudo ln -sfn /tmp/appimagetool /usr/local/bin/appimagetool
-            fi
-            appimagetool --version || true
-          else
-            echo "::warning::appimagetool download failed; AppImage packaging may be skipped"
-          fi
-          rpm --version || true
-          which rpmbuild || true
-
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
-          # No gradlew is committed (it ships a binary wrapper jar), so this
-          # action provisions Gradle itself and we invoke `gradle` directly.
 
-      - name: Stamp version into phone, Wear, and desktop build files
+      - name: Stamp version into phone and Wear build files
         run: |
           for f in app/build.gradle.kts wear/build.gradle.kts; do
             sed -i "s/versionCode = [0-9]\+/versionCode = ${{ needs.version.outputs.code }}/" "$f"
             sed -i "s/versionName = \"[^\"]*\"/versionName = \"${{ needs.version.outputs.name }}\"/" "$f"
           done
-          # Desktop packageVersion (Compose Desktop rejects 0.x for some targets)
-          sed -i "s/packageVersion = \"[^\"]*\"/packageVersion = \"${{ needs.version.outputs.name }}\"/" desktop/build.gradle.kts
-          # Embed version for in-app auto-update checks
-          sed -i "s/?: \"2\.0\.0\"/?: \"${{ needs.version.outputs.name }}\"/" \
-            desktop/src/jvmMain/kotlin/com/quickgit/desktop/data/DesktopAppUpdateManager.kt || true
 
       - name: Decode keystore
         run: |
@@ -185,24 +145,214 @@ jobs:
           echo "SIGNING_KEY_ALIAS=${{ secrets.SIGNING_KEY_ALIAS }}" >> "$GITHUB_ENV"
           echo "SIGNING_KEY_PASSWORD=${{ secrets.SIGNING_KEY_PASSWORD }}" >> "$GITHUB_ENV"
 
-      - name: Build phone + Wear release APKs
-        run: gradle :app:assembleRelease :wear:assembleRelease --no-daemon
+      - name: Build phone store + debug release APKs and Wear release APK
+        run: |
+          gradle \
+            :app:assembleStoreRelease \
+            :app:assembleDebugRelease \
+            :wear:assembleRelease \
+            --no-daemon
+
+      - name: Stage Android artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          STORE_APK=$(find app/build/outputs/apk/store/release -name '*.apk' 2>/dev/null | head -n 1 || true)
+          DEBUG_APK=$(find app/build/outputs/apk/debug/release -name '*.apk' 2>/dev/null | head -n 1 || true)
+          WEAR_APK=$(find wear/build/outputs/apk/release -name '*.apk' 2>/dev/null | head -n 1 || true)
+          if [ -z "$STORE_APK" ] || [ ! -f "$STORE_APK" ]; then
+            echo "Store release APK not found under app/build/outputs/apk/store/release" >&2
+            find app/build/outputs -type f -name '*.apk' 2>/dev/null || true
+            exit 1
+          fi
+          if [ -z "$DEBUG_APK" ] || [ ! -f "$DEBUG_APK" ]; then
+            echo "Debug release APK not found under app/build/outputs/apk/debug/release" >&2
+            find app/build/outputs -type f -name '*.apk' 2>/dev/null || true
+            exit 1
+          fi
+          if [ -z "$WEAR_APK" ] || [ ! -f "$WEAR_APK" ]; then
+            echo "Wear release APK not found under wear/build/outputs/apk/release" >&2
+            exit 1
+          fi
+          cp "$STORE_APK" "dist/quickgit-${{ needs.version.outputs.name }}.apk"
+          cp "$DEBUG_APK" "dist/quickgit-${{ needs.version.outputs.name }}-debug.apk"
+          cp "$WEAR_APK" "dist/quickgit-wear-${{ needs.version.outputs.name }}.apk"
+          ls -la dist/
+
+      - name: Upload Android artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-packages
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  # ── Linux .deb (separate compile) ────────────────────────────────────────
+  build-deb:
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Deb packaging dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y binutils fakeroot file
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Stamp desktop version
+        run: |
+          sed -i "s/packageVersion = \"[^\"]*\"/packageVersion = \"${{ needs.version.outputs.name }}\"/" desktop/build.gradle.kts
+          sed -i "s/?: \"2\.0\.0\"/?: \"${{ needs.version.outputs.name }}\"/" \
+            desktop/src/jvmMain/kotlin/com/quickgit/desktop/data/DesktopAppUpdateManager.kt || true
 
       - name: Build desktop Deb
         run: |
           gradle :desktop:packageDeb --no-daemon \
             -Pquickgit.version="${{ needs.version.outputs.name }}"
 
+      - name: Stage Deb
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          DEB=$(find desktop/build -type f -name '*.deb' 2>/dev/null | head -n 1 || true)
+          if [ -z "$DEB" ] || [ ! -f "$DEB" ]; then
+            echo "ERROR: .deb not found under desktop/build" >&2
+            find desktop/build -type f 2>/dev/null | head -80 || true
+            exit 1
+          fi
+          cp "$DEB" "dist/quickgit-${{ needs.version.outputs.name }}-linux-amd64.deb"
+          ls -la dist/
+
+      - name: Upload Deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-deb
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  # ── Linux .rpm (separate compile) ────────────────────────────────────────
+  build-rpm:
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Rpm packaging dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm rpm2cpio cpio file
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Stamp desktop version
+        run: |
+          sed -i "s/packageVersion = \"[^\"]*\"/packageVersion = \"${{ needs.version.outputs.name }}\"/" desktop/build.gradle.kts
+          sed -i "s/?: \"2\.0\.0\"/?: \"${{ needs.version.outputs.name }}\"/" \
+            desktop/src/jvmMain/kotlin/com/quickgit/desktop/data/DesktopAppUpdateManager.kt || true
+
       - name: Build desktop Rpm
         run: |
           gradle :desktop:packageRpm --no-daemon \
             -Pquickgit.version="${{ needs.version.outputs.name }}"
-          echo "=== RPM outputs ==="
           find desktop/build -type f -name '*.rpm' 2>/dev/null | head -20 || true
+
+      - name: Stage Rpm
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          RPM=$(find desktop/build -type f -name '*.rpm' 2>/dev/null | head -n 1 || true)
+          if [ -z "$RPM" ] || [ ! -f "$RPM" ]; then
+            echo "ERROR: .rpm not found under desktop/build" >&2
+            find desktop/build -type f 2>/dev/null | head -80 || true
+            exit 1
+          fi
+          cp "$RPM" "dist/quickgit-${{ needs.version.outputs.name }}-linux-x86_64.rpm"
+          ls -la dist/
+
+      - name: Upload Rpm artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-rpm
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  # ── Linux AppImage (separate compile) ────────────────────────────────────
+  build-appimage:
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install AppImage packaging dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfuse2t64 libfuse2 file || sudo apt-get install -y libfuse2 file
+          echo "APPIMAGE_EXTRACT_AND_RUN=1" >> "$GITHUB_ENV"
+          APPIMAGE_URL="https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
+          if curl -fsSL --retry 3 --retry-delay 2 \
+               -o /tmp/appimagetool "$APPIMAGE_URL"; then
+            chmod +x /tmp/appimagetool
+            (cd /tmp && ./appimagetool --appimage-extract >/dev/null 2>&1) || true
+            if [ -x /tmp/squashfs-root/AppRun ]; then
+              sudo ln -sfn /tmp/squashfs-root/AppRun /usr/local/bin/appimagetool
+            else
+              sudo ln -sfn /tmp/appimagetool /usr/local/bin/appimagetool
+            fi
+            appimagetool --version || true
+          else
+            echo "::warning::appimagetool download failed; AppImage packaging may use Compose only"
+          fi
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Stamp desktop version
+        run: |
+          sed -i "s/packageVersion = \"[^\"]*\"/packageVersion = \"${{ needs.version.outputs.name }}\"/" desktop/build.gradle.kts
+          sed -i "s/?: \"2\.0\.0\"/?: \"${{ needs.version.outputs.name }}\"/" \
+            desktop/src/jvmMain/kotlin/com/quickgit/desktop/data/DesktopAppUpdateManager.kt || true
 
       - name: Build desktop AppImage
         env:
-          # Critical on GHA: appimagetool (used by Compose) cannot FUSE-mount itself
           APPIMAGE_EXTRACT_AND_RUN: "1"
         run: |
           set +e
@@ -211,13 +361,8 @@ jobs:
           APPIMAGE_RC=$?
           set -e
           echo "packageAppImage exit code: $APPIMAGE_RC"
-          echo "=== desktop/build tree (for AppImage discovery) ==="
-          find desktop/build -type f \( -name '*.AppImage' -o -name '*.deb' -o -name 'AppRun' \) 2>/dev/null | head -50 || true
-          find desktop/build/compose -type d 2>/dev/null | head -40 || true
+          find desktop/build -type f \( -name '*.AppImage' -o -name 'AppRun' \) 2>/dev/null | head -50 || true
 
-          # Compose 1.7 on Ubuntu runners often reports success but only writes
-          # binaries/main/app (unpacked) instead of an .AppImage — no FUSE.
-          # Fall back: build AppImage ourselves from the packaged app dir.
           if ! find desktop/build -type f -name '*.AppImage' 2>/dev/null | grep -q .; then
             echo "Compose did not emit .AppImage — building one with appimagetool"
             APP_DIR=$(find desktop/build/compose/binaries -type d -path '*/app/QuickGit' 2>/dev/null | head -n 1 || true)
@@ -233,9 +378,7 @@ jobs:
             STAGE="$RUNNER_TEMP/quickgit-appimage"
             rm -rf "$STAGE"
             mkdir -p "$STAGE"
-            # AppDir layout expected by appimagetool
             cp -a "$APP_DIR" "$STAGE/QuickGit.AppDir"
-            # Entrypoint
             BIN=$(find "$STAGE/QuickGit.AppDir" -type f -path '*/bin/QuickGit' | head -n 1 || true)
             if [ -z "$BIN" ]; then
               BIN=$(find "$STAGE/QuickGit.AppDir" -type f -executable -name 'QuickGit' | head -n 1 || true)
@@ -252,108 +395,47 @@ jobs:
               echo "exec \"\$SELF/$REL_BIN\" \"\$@\""
             } > "$STAGE/QuickGit.AppDir/AppRun"
             chmod +x "$STAGE/QuickGit.AppDir/AppRun"
-            # Desktop entry
             {
-              echo '[Desktop Entry]'
-              echo 'Type=Application'
-              echo 'Name=QuickGit'
-              echo 'Comment=Git client for Linux'
-              echo 'Exec=QuickGit'
-              echo 'Icon=quickgit'
-              echo 'Categories=Development;'
-              echo 'Terminal=false'
+              echo "[Desktop Entry]"
+              echo "Name=QuickGit"
+              echo "Exec=QuickGit"
+              echo "Icon=quickgit"
+              echo "Type=Application"
+              echo "Categories=Development;"
             } > "$STAGE/QuickGit.AppDir/quickgit.desktop"
-            # Icon (Compose ships icon.png in resources when configured)
-            ICON=$(find "$APP_DIR" desktop/src -name 'icon.png' 2>/dev/null | head -n 1 || true)
-            if [ -n "$ICON" ] && [ -f "$ICON" ]; then
-              cp "$ICON" "$STAGE/QuickGit.AppDir/quickgit.png"
-            else
-              # Minimal 1x1 PNG placeholder so appimagetool accepts the dir
-              printf '\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82' \
-                > "$STAGE/QuickGit.AppDir/quickgit.png"
-            fi
-            mkdir -p desktop/build/compose/binaries/main/appimage
+            mkdir -p "desktop/build/compose/binaries/main/appimage"
             OUT_AI="desktop/build/compose/binaries/main/appimage/QuickGit-${{ needs.version.outputs.name }}-x86_64.AppImage"
-            ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 appimagetool \
-              "$STAGE/QuickGit.AppDir" "$OUT_AI"
+            APPIMAGE_EXTRACT_AND_RUN=1 appimagetool "$STAGE/QuickGit.AppDir" "$OUT_AI"
             chmod +x "$OUT_AI"
-            echo "Built fallback AppImage: $OUT_AI ($(stat -c%s "$OUT_AI") bytes)"
-            ls -la desktop/build/compose/binaries/main/appimage/ || true
+            echo "Built fallback AppImage: $OUT_AI"
           fi
 
-      - name: Locate and stage Linux/Android artifacts
+      - name: Stage AppImage
         run: |
           set -euo pipefail
           mkdir -p dist
-
-          PHONE_APK=$(find app/build/outputs/apk/release -name '*.apk' | head -n 1)
-          WEAR_APK=$(find wear/build/outputs/apk/release -name '*.apk' | head -n 1)
-          if [ -z "$PHONE_APK" ] || [ ! -f "$PHONE_APK" ]; then
-            echo "Phone release APK not found under app/build/outputs/apk/release" >&2
-            exit 1
-          fi
-          if [ -z "$WEAR_APK" ] || [ ! -f "$WEAR_APK" ]; then
-            echo "Wear release APK not found under wear/build/outputs/apk/release" >&2
-            exit 1
-          fi
-          cp "$PHONE_APK" "dist/quickgit-${{ needs.version.outputs.name }}.apk"
-          cp "$WEAR_APK" "dist/quickgit-wear-${{ needs.version.outputs.name }}.apk"
-          echo "Phone APK: dist/quickgit-${{ needs.version.outputs.name }}.apk"
-          echo "Wear APK:  dist/quickgit-wear-${{ needs.version.outputs.name }}.apk"
-
-          DEB=$(find desktop/build -type f -name '*.deb' 2>/dev/null | head -n 1 || true)
-          RPM=$(find desktop/build -type f -name '*.rpm' 2>/dev/null | head -n 1 || true)
           APPIMAGE=$(find desktop/build -type f -name '*.AppImage' 2>/dev/null | head -n 1 || true)
           if [ -z "$APPIMAGE" ]; then
             APPIMAGE=$(find desktop/build -type f -name 'QuickGit*.AppImage' 2>/dev/null | head -n 1 || true)
           fi
-          if [ -z "$APPIMAGE" ]; then
-            CAND=$(find desktop/build -path '*appimage*' -type f -executable 2>/dev/null | head -n 1 || true)
-            if [ -n "$CAND" ] && file "$CAND" | grep -qiE 'appimage|ELF'; then
-              APPIMAGE="$CAND"
-            fi
-          fi
-
-          # .deb and .rpm are required on every release (always ship both).
-          if [ -n "$DEB" ] && [ -f "$DEB" ]; then
-            cp "$DEB" "dist/quickgit-${{ needs.version.outputs.name }}-linux-amd64.deb"
-            echo "Deb: dist/quickgit-${{ needs.version.outputs.name }}-linux-amd64.deb from $DEB"
-          else
-            echo "ERROR: .deb not found under desktop/build (required every release)" >&2
-            find desktop/build -type f 2>/dev/null | head -80 || true
-            exit 1
-          fi
-
-          if [ -n "$RPM" ] && [ -f "$RPM" ]; then
-            cp "$RPM" "dist/quickgit-${{ needs.version.outputs.name }}-linux-x86_64.rpm"
-            echo "Rpm: dist/quickgit-${{ needs.version.outputs.name }}-linux-x86_64.rpm from $RPM"
-          else
-            echo "ERROR: .rpm not found under desktop/build (required every release)" >&2
-            find desktop/build -type f 2>/dev/null | head -80 || true
-            exit 1
-          fi
-
-          if [ -n "$APPIMAGE" ] && [ -f "$APPIMAGE" ]; then
-            cp "$APPIMAGE" "dist/quickgit-${{ needs.version.outputs.name }}-linux-x86_64.AppImage"
-            chmod +x "dist/quickgit-${{ needs.version.outputs.name }}-linux-x86_64.AppImage"
-            echo "AppImage: dist/quickgit-${{ needs.version.outputs.name }}-linux-x86_64.AppImage from $APPIMAGE"
-          else
-            echo "ERROR: .AppImage not found under desktop/build after package + fallback" >&2
+          if [ -z "$APPIMAGE" ] || [ ! -f "$APPIMAGE" ]; then
+            echo "ERROR: .AppImage not found" >&2
             find desktop/build -type f 2>/dev/null | head -100 || true
             exit 1
           fi
-
+          cp "$APPIMAGE" "dist/quickgit-${{ needs.version.outputs.name }}-linux-x86_64.AppImage"
+          chmod +x "dist/quickgit-${{ needs.version.outputs.name }}-linux-x86_64.AppImage"
           ls -la dist/
 
-      - name: Upload Linux/Android artifacts
+      - name: Upload AppImage artifact
         uses: actions/upload-artifact@v4
         with:
-          name: linux-android-packages
+          name: linux-appimage
           path: dist/*
           if-no-files-found: error
           retention-days: 7
 
-  # ── Windows desktop (identical feature set: Actions, Releases, etc.) ──────
+  # ── Windows desktop (best-effort) ────────────────────────────────────────
   build-windows:
     needs: version
     runs-on: windows-latest
@@ -391,7 +473,6 @@ jobs:
             Write-Host "WiX found at $wix"
           } else {
             Write-Host "WARNING: WiX bin dir not found; packageMsi may fail"
-            Get-ChildItem "${env:ProgramFiles(x86)}" -Filter "WiX*" -ErrorAction SilentlyContinue
           }
         shell: pwsh
 
@@ -404,6 +485,7 @@ jobs:
           $upd = "desktop/src/jvmMain/kotlin/com/quickgit/desktop/data/DesktopAppUpdateManager.kt"
           if (Test-Path $upd) {
             (Get-Content $upd) `
+              -replace '\?: "2\.0\.0"', "?: `"$ver`"" `
               -replace '\?: "1\.0\.0"', "?: `"$ver`"" `
               | Set-Content $upd
           }
@@ -422,12 +504,11 @@ jobs:
             Select-Object -First 1
           if (-not $msi) {
             Write-Error "No .msi found under desktop/build"
-            Get-ChildItem -Path desktop\build -Recurse -ErrorAction SilentlyContinue | Select-Object -First 80 FullName
             exit 1
           }
           $out = "dist\quickgit-${{ needs.version.outputs.name }}-windows-x64.msi"
           Copy-Item $msi.FullName $out
-          Write-Host "MSI: $out ($((Get-Item $out).Length) bytes) from $($msi.FullName)"
+          Write-Host "MSI: $out"
           Get-ChildItem dist
         shell: pwsh
 
@@ -439,16 +520,16 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # ── Tag + GitHub Release (manual version; Windows is best-effort) ─────────
-  # Publishes QuickGit x.x.x from the workflow_dispatch version input.
-  # Windows MSI is attached when the windows job succeeds; a Windows failure
-  # must not block Android/Linux releases.
+  # ── Single GitHub Release (all successful artifacts) ─────────────────────
   publish-release:
-    needs: [version, build-linux-android, build-windows]
+    needs: [version, build-android, build-deb, build-rpm, build-appimage, build-windows]
     if: |
       always() &&
       needs.version.result == 'success' &&
-      needs.build-linux-android.result == 'success'
+      needs.build-android.result == 'success' &&
+      needs.build-deb.result == 'success' &&
+      needs.build-rpm.result == 'success' &&
+      needs.build-appimage.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -456,10 +537,28 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Download Linux/Android packages
+      - name: Download Android packages
         uses: actions/download-artifact@v4
         with:
-          name: linux-android-packages
+          name: android-packages
+          path: dist
+
+      - name: Download Deb
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-deb
+          path: dist
+
+      - name: Download Rpm
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-rpm
+          path: dist
+
+      - name: Download AppImage
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-appimage
           path: dist
 
       - name: Download Windows package
@@ -474,16 +573,15 @@ jobs:
         run: |
           ls -la dist/
           test -f "dist/quickgit-${{ needs.version.outputs.name }}.apk"
+          test -f "dist/quickgit-${{ needs.version.outputs.name }}-debug.apk"
           test -f "dist/quickgit-wear-${{ needs.version.outputs.name }}.apk"
           test -f "dist/quickgit-${{ needs.version.outputs.name }}-linux-x86_64.AppImage"
-          # .deb and .rpm are required on every release
           test -f "dist/quickgit-${{ needs.version.outputs.name }}-linux-amd64.deb"
           test -f "dist/quickgit-${{ needs.version.outputs.name }}-linux-x86_64.rpm"
-          # Windows MSI is optional — do not fail the release if absent
           if [ -f "dist/quickgit-${{ needs.version.outputs.name }}-windows-x64.msi" ]; then
             echo "Windows MSI present"
           else
-            echo "WARNING: Windows MSI missing (Linux/Android release will still publish as QuickGit ${{ needs.version.outputs.name }})"
+            echo "WARNING: Windows MSI missing"
           fi
 
       - name: Tag the release commit
@@ -524,7 +622,8 @@ jobs:
             ---
 
             ### Artifacts
-            - `quickgit-${{ needs.version.outputs.name }}.apk` — phone / tablet (Android)
+            - `quickgit-${{ needs.version.outputs.name }}.apk` — phone / tablet **release** (no Logs UI)
+            - `quickgit-${{ needs.version.outputs.name }}-debug.apk` — phone / tablet **debug** (includes Logs UI; id `com.quickgit.app.debug`)
             - `quickgit-wear-${{ needs.version.outputs.name }}.apk` — Wear OS
             - `quickgit-${{ needs.version.outputs.name }}-linux-amd64.deb` — native Linux (.deb; Debian/Ubuntu)
             - `quickgit-${{ needs.version.outputs.name }}-linux-x86_64.rpm` — native Linux (.rpm; Fedora/RHEL/openSUSE)
@@ -532,4 +631,6 @@ jobs:
             - `quickgit-${{ needs.version.outputs.name }}-windows-x64.msi` — native Windows (MSI; included when the Windows job succeeds)
 
             **Desktop auto-update:** Linux (.deb / .rpm / AppImage) and Windows (.msi) builds check this Releases page for newer packages for their platform.
+
+            Android, Deb, Rpm, and AppImage are compiled in **separate** CI jobs and published together in this release.
           files: ${{ steps.files.outputs.list }}

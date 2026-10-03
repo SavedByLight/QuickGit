@@ -44,10 +44,33 @@ android {
             signingConfig = signingConfigs.getByName("release")
             isMinifyEnabled = false
         }
+        // Keep debug buildType for local install; both flavors can be signed as release in CI.
+        debug {
+            isMinifyEnabled = false
+        }
+    }
+
+    // store = production release (no in-app Logs screen)
+    // debug = same app with Logs UI + distinct applicationId so both can be installed
+    flavorDimensions += "channel"
+    productFlavors {
+        create("store") {
+            dimension = "channel"
+            isDefault = true
+            buildConfigField("boolean", "SHOW_LOGS_UI", "false")
+        }
+        create("debug") {
+            dimension = "channel"
+            applicationIdSuffix = ".debug"
+            versionNameSuffix = "-debug"
+            resValue("string", "app_name", "QuickGit Debug")
+            buildConfigField("boolean", "SHOW_LOGS_UI", "true")
+        }
     }
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

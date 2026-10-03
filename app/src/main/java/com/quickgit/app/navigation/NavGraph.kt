@@ -31,6 +31,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.quickgit.app.BuildConfig
 import com.quickgit.app.QuickGitApp
 import com.quickgit.app.data.DesktopLayoutMode
 import com.quickgit.app.data.models.RepoInfo
@@ -93,7 +94,7 @@ fun QuickGitNavGraph() {
                 onSearchPeople = { navController.navigate(Dest.USER_SEARCH) },
                 onSettings = { navController.navigate(Dest.SETTINGS) { launchSingleTop = true } },
                 onCredentials = { navController.navigate(Dest.CREDENTIALS) { launchSingleTop = true } },
-                onLogs = { navController.navigate(Dest.LOGS) },
+                onLogs = { if (BuildConfig.SHOW_LOGS_UI) navController.navigate(Dest.LOGS) },
                 isDesktopLayout = useRail
             )
         }
@@ -528,12 +529,14 @@ fun QuickGitNavGraph() {
                     navController.navigate(Dest.USER_SEARCH) { launchSingleTop = true }
                 }
                 Spacer(Modifier.weight(1f))
-                RailItem(
-                    icon = Icons.Default.Article,
-                    label = "Logs",
-                    selected = isSelected(Dest.LOGS)
-                ) {
-                    navController.navigate(Dest.LOGS) { launchSingleTop = true }
+                if (BuildConfig.SHOW_LOGS_UI) {
+                    RailItem(
+                        icon = Icons.Default.Article,
+                        label = "Logs",
+                        selected = isSelected(Dest.LOGS)
+                    ) {
+                        navController.navigate(Dest.LOGS) { launchSingleTop = true }
+                    }
                 }
                 RailItem(
                     icon = Icons.Default.Settings,
