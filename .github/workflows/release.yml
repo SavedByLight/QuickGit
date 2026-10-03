@@ -398,11 +398,25 @@ jobs:
             {
               echo "[Desktop Entry]"
               echo "Name=QuickGit"
-              echo "Exec=QuickGit"
+              echo "Exec=AppRun"
               echo "Icon=quickgit"
               echo "Type=Application"
               echo "Categories=Development;"
+              echo "Terminal=false"
             } > "$STAGE/QuickGit.AppDir/quickgit.desktop"
+            # appimagetool requires the Icon= name to exist as png/svg/xpm in AppDir
+            ICON_SRC=""
+            for c in               desktop/src/jvmMain/resources/icon.png               app/src/main/res/mipmap-xxxhdpi/ic_launcher.png               app/src/main/res/mipmap-xxhdpi/ic_launcher.png; do
+              if [ -f "$c" ]; then ICON_SRC="$c"; break; fi
+            done
+            if [ -n "$ICON_SRC" ]; then
+              cp "$ICON_SRC" "$STAGE/QuickGit.AppDir/quickgit.png"
+              echo "Using icon: $ICON_SRC"
+            else
+              # Minimal valid 1x1 PNG so packaging does not fail
+              printf '\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82'                 > "$STAGE/QuickGit.AppDir/quickgit.png" || true
+              echo "WARNING: no project icon found; wrote placeholder quickgit.png"
+            fi
             mkdir -p "desktop/build/compose/binaries/main/appimage"
             OUT_AI="desktop/build/compose/binaries/main/appimage/QuickGit-${{ needs.version.outputs.name }}-x86_64.AppImage"
             APPIMAGE_EXTRACT_AND_RUN=1 appimagetool "$STAGE/QuickGit.AppDir" "$OUT_AI"
