@@ -91,7 +91,7 @@ fun CredentialsScreen(
                                     else MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
-                            Column(Modifier = Modifier.weight(1f)) {
+                            Column(modifier = Modifier.weight(1f)) {
                                 Text(acct.label, style = MaterialTheme.typography.bodyMedium)
                                 Text(
                                     acct.providerLabel() + if (isActive) " · active" else "",
