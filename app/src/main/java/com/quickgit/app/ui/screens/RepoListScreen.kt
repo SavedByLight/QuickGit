@@ -34,6 +34,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import com.quickgit.app.data.AccountManager
 import com.quickgit.app.data.models.RepoInfo
 import com.quickgit.app.ui.adaptive.AdaptiveContent
 import com.quickgit.app.ui.components.PullToRefreshBox
@@ -64,6 +65,11 @@ fun RepoListScreen(
     val account by vm.account.collectAsState()
     val managedAccounts by vm.managedAccounts.collectAsState()
     val activeAccountId by vm.activeAccountId.collectAsState()
+    // Gerrit has no user profile UI — only show GitHub / GitLab in the profile switcher.
+    val profileAccounts = managedAccounts.filter {
+        it.provider == AccountManager.Provider.GITHUB ||
+            it.provider == AccountManager.Provider.GITLAB
+    }
     var repoToDelete by remember { mutableStateOf<RepoInfo?>(null) }
     var accountMenuExpanded by remember { mutableStateOf(false) }
     var fabExpanded by remember { mutableStateOf(false) }
@@ -132,14 +138,14 @@ fun RepoListScreen(
                                 expanded = accountMenuExpanded,
                                 onDismissRequest = { accountMenuExpanded = false }
                             ) {
-                                if (managedAccounts.isNotEmpty()) {
+                                if (profileAccounts.isNotEmpty()) {
                                     Text(
-                                        "Accounts",
+                                        "Profiles",
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
                                     )
-                                    managedAccounts.forEach { acct ->
+                                    profileAccounts.forEach { acct ->
                                         DropdownMenuItem(
                                             text = {
                                                 Column {
@@ -183,20 +189,17 @@ fun RepoListScreen(
                                         )
                                     }
                                     HorizontalDivider()
+                                } else {
+                                    // No connected profile accounts — single Profile entry
+                                    DropdownMenuItem(
+                                        text = { Text("Profile") },
+                                        onClick = {
+                                            accountMenuExpanded = false
+                                            onOpenProfile()
+                                        },
+                                        leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) }
+                                    )
                                 }
-                                DropdownMenuItem(
-                                    text = {
-                                        Text(
-                                            if (account?.login.isNullOrBlank()) "Profile"
-                                            else "Profile (${account?.login})"
-                                        )
-                                    },
-                                    onClick = {
-                                        accountMenuExpanded = false
-                                        onOpenProfile()
-                                    },
-                                    leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) }
-                                )
                                 DropdownMenuItem(
                                     text = { Text("Manage accounts") },
                                     onClick = {

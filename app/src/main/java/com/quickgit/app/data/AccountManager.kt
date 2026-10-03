@@ -53,8 +53,21 @@ class AccountManager(private val credentialStore: CredentialStore) {
 
     fun listAccounts(provider: Provider? = null): List<Account> {
         val all = loadAll()
-        return if (provider == null) all else all.filter { it.provider == provider }
+        // Deduplicate by provider + host + username (case-insensitive). Prefer the
+        // first occurrence so a legacy migration + re-connect cannot surface twice.
+        val seen = linkedSetOf<String>()
+        val deduped = all.filter { a ->
+            val key = "${a.provider}|${a.host.lowercase()}|${a.username.lowercase()}"
+            seen.add(key)
+        }
+        return if (provider == null) deduped else deduped.filter { it.provider == provider }
     }
+
+    /** Accounts that have a Profile UI (GitHub + GitLab only; Gerrit has no profile). */
+    fun listProfileAccounts(): List<Account> =
+        listAccounts().filter {
+            it.provider == Provider.GITHUB || it.provider == Provider.GITLAB
+        }
 
     fun getAccount(id: String): Account? = loadAll().find { it.id == id }
 
