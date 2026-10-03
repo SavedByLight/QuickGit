@@ -51,7 +51,8 @@ android {
     }
 
     // store = production release (no in-app Logs screen)
-    // debug = same app with Logs UI + distinct applicationId so both can be installed
+    // logging = "QuickGit Debug" with Logs UI + distinct applicationId (cannot name
+    // the flavor "debug" — that collides with the Android debug BuildType)
     flavorDimensions += "channel"
     productFlavors {
         create("store") {
@@ -59,7 +60,7 @@ android {
             isDefault = true
             buildConfigField("boolean", "SHOW_LOGS_UI", "false")
         }
-        create("debug") {
+        create("logging") {
             dimension = "channel"
             applicationIdSuffix = ".debug"
             versionNameSuffix = "-debug"

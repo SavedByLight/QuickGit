@@ -145,11 +145,11 @@ jobs:
           echo "SIGNING_KEY_ALIAS=${{ secrets.SIGNING_KEY_ALIAS }}" >> "$GITHUB_ENV"
           echo "SIGNING_KEY_PASSWORD=${{ secrets.SIGNING_KEY_PASSWORD }}" >> "$GITHUB_ENV"
 
-      - name: Build phone store + debug release APKs and Wear release APK
+      - name: Build phone store + logging (debug) release APKs and Wear release APK
         run: |
           gradle \
             :app:assembleStoreRelease \
-            :app:assembleDebugRelease \
+            :app:assembleLoggingRelease \
             :wear:assembleRelease \
             --no-daemon
 
@@ -158,7 +158,7 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           STORE_APK=$(find app/build/outputs/apk/store/release -name '*.apk' 2>/dev/null | head -n 1 || true)
-          DEBUG_APK=$(find app/build/outputs/apk/debug/release -name '*.apk' 2>/dev/null | head -n 1 || true)
+          DEBUG_APK=$(find app/build/outputs/apk/logging/release -name '*.apk' 2>/dev/null | head -n 1 || true)
           WEAR_APK=$(find wear/build/outputs/apk/release -name '*.apk' 2>/dev/null | head -n 1 || true)
           if [ -z "$STORE_APK" ] || [ ! -f "$STORE_APK" ]; then
             echo "Store release APK not found under app/build/outputs/apk/store/release" >&2
@@ -166,7 +166,7 @@ jobs:
             exit 1
           fi
           if [ -z "$DEBUG_APK" ] || [ ! -f "$DEBUG_APK" ]; then
-            echo "Debug release APK not found under app/build/outputs/apk/debug/release" >&2
+            echo "Debug release APK not found under app/build/outputs/apk/logging/release" >&2
             find app/build/outputs -type f -name '*.apk' 2>/dev/null || true
             exit 1
           fi
