@@ -191,7 +191,7 @@ class AppUpdateManager(
             )
 
             if (isNewer(latest, current)) {
-                val apk = release.assets.firstOrNull { it.name.endsWith(".apk", ignoreCase = true) }
+                val apk = pickPhoneReleaseApk(release.assets)
                 UpdateCheckResult.Available(current, latest, release, apk)
             } else {
                 AppLog.i(TAG, "Installed version is up to date relative to ${latest.versionName}")
