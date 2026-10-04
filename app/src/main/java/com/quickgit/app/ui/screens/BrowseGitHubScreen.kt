@@ -8,6 +8,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Public
@@ -26,6 +27,7 @@ import com.quickgit.app.data.models.GitOpResult
 import com.quickgit.app.ui.components.PullToRefreshBox
 import com.quickgit.app.viewmodel.BrowseGitHubViewModel
 import com.quickgit.app.viewmodel.BrowseProviderTab
+import com.quickgit.app.viewmodel.GitHubBrowseScope
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -204,6 +206,65 @@ fun BrowseGitHubScreen(
                 )
             }
 
+            // GitHub: Personal vs organization filter
+            if (state.selectedTab == BrowseProviderTab.GITHUB && state.githubConnected) {
+                var scopeMenuExpanded by remember { mutableStateOf(false) }
+                val scopeLabel = state.selectedGitHubScope.label
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 6.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = { scopeMenuExpanded = true },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            if (state.selectedGitHubScope.isPersonal) "Personal repositories"
+                            else "Organization: $scopeLabel",
+                            modifier = Modifier.weight(1f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Icon(Icons.Default.ArrowDropDown, contentDescription = "Choose scope")
+                    }
+                    DropdownMenu(
+                        expanded = scopeMenuExpanded,
+                        onDismissRequest = { scopeMenuExpanded = false }
+                    ) {
+                        state.githubScopes.forEach { scope ->
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        if (scope.isPersonal) "Personal"
+                                        else scope.label,
+                                        fontWeight = if (
+                                            scope.orgLogin == state.selectedGitHubScope.orgLogin
+                                        ) FontWeight.Bold else FontWeight.Normal
+                                    )
+                                },
+                                onClick = {
+                                    scopeMenuExpanded = false
+                                    vm.selectGitHubScope(scope)
+                                }
+                            )
+                        }
+                        if (state.githubScopes.size <= 1 && state.githubOrgsLoaded) {
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        "No organizations found",
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                },
+                                onClick = { scopeMenuExpanded = false },
+                                enabled = false
+                            )
+                        }
+                    }
+                }
+            }
+
             if (state.cloning && state.progressText.isNotBlank()) {
                 LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 16.dp))
                 Text(
@@ -222,7 +283,8 @@ fun BrowseGitHubScreen(
                     BrowseProviderTab.GITHUB -> ProviderList(
                         empty = state.githubRepos.isEmpty() && state.githubLoaded && !state.loading,
                         emptyText = if (!state.githubConnected) "Connect GitHub in Settings."
-                        else "No GitHub repositories match.",
+                        else if (state.selectedGitHubScope.isPersonal) "No personal repositories match."
+                        else "No repositories in ${state.selectedGitHubScope.label}.",
                         loadingMore = state.loadingMore,
                         hasMore = state.githubHasMore,
                         onLoadMore = vm::loadMore

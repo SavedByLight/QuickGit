@@ -26,6 +26,21 @@ import java.io.File
 
 enum class BrowseProviderTab { GITHUB, GITLAB, GERRIT }
 
+/**
+ * GitHub browse filter: personal account repos vs a specific organization.
+ * [orgLogin] is null for Personal.
+ */
+data class GitHubBrowseScope(
+    val label: String,
+    val orgLogin: String? = null
+) {
+    val isPersonal: Boolean get() = orgLogin == null
+
+    companion object {
+        val Personal = GitHubBrowseScope(label = "Personal", orgLogin = null)
+    }
+}
+
 data class BrowseGitHubUiState(
     val selectedTab: BrowseProviderTab = BrowseProviderTab.GITHUB,
     val githubConnected: Boolean = false,
@@ -53,6 +68,10 @@ data class BrowseGitHubUiState(
     val githubLoaded: Boolean = false,
     val gitlabLoaded: Boolean = false,
     val gerritLoaded: Boolean = false,
+    /** GitHub: Personal + each org the user belongs to. */
+    val githubScopes: List<GitHubBrowseScope> = listOf(GitHubBrowseScope.Personal),
+    val selectedGitHubScope: GitHubBrowseScope = GitHubBrowseScope.Personal,
+    val githubOrgsLoaded: Boolean = false,
     val query: String = "",
     val errorMessage: String? = null,
     val statusMessage: String? = null,
@@ -147,6 +166,7 @@ class BrowseGitHubViewModel(
             }
 
             ensureTabLoaded(_state.value.selectedTab)
+            if (_state.value.githubConnected) ensureGitHubOrgsLoaded()
         }
     }
 
@@ -155,6 +175,44 @@ class BrowseGitHubViewModel(
     fun selectTab(tab: BrowseProviderTab) {
         _state.value = _state.value.copy(selectedTab = tab)
         ensureTabLoaded(tab)
+        if (tab == BrowseProviderTab.GITHUB) {
+            ensureGitHubOrgsLoaded()
+        }
+    }
+
+    /** Switch GitHub list between Personal and a specific organization. */
+    fun selectGitHubScope(scope: GitHubBrowseScope) {
+        if (scope.orgLogin == _state.value.selectedGitHubScope.orgLogin &&
+            scope.label == _state.value.selectedGitHubScope.label
+        ) return
+        _state.value = _state.value.copy(
+            selectedGitHubScope = scope,
+            githubRepos = emptyList(),
+            githubPage = 0,
+            githubHasMore = false,
+            githubLoaded = false
+        )
+        loadPage(BrowseProviderTab.GITHUB, reset = true)
+    }
+
+    private fun ensureGitHubOrgsLoaded() {
+        if (!_state.value.githubConnected || _state.value.githubOrgsLoaded) return
+        viewModelScope.launch {
+            val (orgs, _) = withContext(Dispatchers.IO) { accountManager.listOrganizations() }
+            val scopes = buildList {
+                add(GitHubBrowseScope.Personal)
+                orgs.distinct().sorted().forEach { login ->
+                    add(GitHubBrowseScope(label = login, orgLogin = login))
+                }
+            }
+            val current = _state.value.selectedGitHubScope
+            val selected = scopes.find { it.orgLogin == current.orgLogin } ?: GitHubBrowseScope.Personal
+            _state.value = _state.value.copy(
+                githubScopes = scopes,
+                selectedGitHubScope = selected,
+                githubOrgsLoaded = true
+            )
+        }
     }
 
     fun onQueryChange(query: String) {
@@ -220,10 +278,36 @@ class BrowseGitHubViewModel(
             _state.value = _state.value.copy(loading = false, loadingMore = false, githubLoaded = true)
             return
         }
+        ensureGitHubOrgsLoaded()
         val nextPage = if (reset) 1 else _state.value.githubPage + 1
+        val scope = _state.value.selectedGitHubScope
+        val orgLogin = scope.orgLogin
         val (batch, hasMore, result) = withContext(Dispatchers.IO) {
-            if (query.isBlank()) accountManager.listReposPage(page = nextPage, perPage = PAGE_SIZE)
-            else accountManager.searchReposPage(query, page = nextPage, perPage = PAGE_SIZE)
+            when {
+                orgLogin != null && query.isBlank() ->
+                    accountManager.listOrgReposPage(orgLogin, page = nextPage, perPage = PAGE_SIZE)
+                orgLogin != null && query.isNotBlank() -> {
+                    val (pageBatch, more, op) =
+                        accountManager.listOrgReposPage(orgLogin, page = nextPage, perPage = PAGE_SIZE)
+                    if (op !is PrOpResult.Success) Triple(emptyList(), false, op)
+                    else {
+                        val q = query.lowercase()
+                        val filtered = pageBatch.filter {
+                            it.name.lowercase().contains(q) ||
+                                it.fullName.lowercase().contains(q) ||
+                                (it.description?.lowercase()?.contains(q) == true)
+                        }
+                        Triple(filtered, more, PrOpResult.Success)
+                    }
+                }
+                query.isBlank() ->
+                    accountManager.listReposPage(
+                        page = nextPage,
+                        perPage = PAGE_SIZE,
+                        affiliation = "owner"
+                    )
+                else -> accountManager.searchReposPage(query, page = nextPage, perPage = PAGE_SIZE)
+            }
         }
         when (result) {
             is PrOpResult.AuthRequired -> _state.value = _state.value.copy(
@@ -234,7 +318,15 @@ class BrowseGitHubViewModel(
                 errorMessage = "GitHub: ${result.message}"
             )
             is PrOpResult.Success -> {
-                val merged = if (reset) batch else _state.value.githubRepos + batch
+                val scoped = if (scope.isPersonal && query.isNotBlank()) {
+                    val login = _state.value.githubLogin
+                    if (login.isNullOrBlank()) batch
+                    else batch.filter {
+                        it.ownerLogin.equals(login, ignoreCase = true) ||
+                            it.fullName.startsWith("$login/", ignoreCase = true)
+                    }
+                } else batch
+                val merged = if (reset) scoped else _state.value.githubRepos + scoped
                 _state.value = _state.value.copy(
                     loading = false,
                     loadingMore = false,
@@ -243,11 +335,6 @@ class BrowseGitHubViewModel(
                     githubHasMore = hasMore,
                     githubLoaded = true
                 )
-                // After first personal page (no search), merge org repos in the background
-                // so the list paints quickly and org coverage arrives without blocking.
-                if (reset && query.isBlank()) {
-                    mergeOrgReposInBackground()
-                }
             }
         }
     }

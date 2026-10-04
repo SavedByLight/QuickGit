@@ -235,6 +235,50 @@ class GitHubAccountManager(
         return list to PrOpResult.Success
     }
 
+    /** Organization logins the authenticated user belongs to (may be empty without read:org). */
+    fun listOrganizations(): Pair<List<String>, PrOpResult> {
+        if (!isConnected()) return emptyList<String>() to PrOpResult.AuthRequired(host)
+        val orgs = mutableListOf<String>()
+        var orgPage = 1
+        while (orgPage <= 5) {
+            val orgResult = api.listUserOrganizations(perPage = 100, page = orgPage)
+            val batch = orgResult.getOrNull()
+            if (batch == null) {
+                return if (orgs.isEmpty()) emptyList<String>() to orgResult.toPrOpResult(host)
+                else orgs to PrOpResult.Success
+            }
+            orgs += batch
+            if (batch.size < 100) break
+            orgPage++
+        }
+        return orgs to PrOpResult.Success
+    }
+
+    /**
+     * Single page of repositories for one organization.
+     * @return batch, hasMore, result
+     */
+    fun listOrgReposPage(
+        org: String,
+        page: Int = 1,
+        perPage: Int = 100
+    ): Triple<List<GitHubRemoteRepo>, Boolean, PrOpResult> {
+        if (!isConnected()) return Triple(emptyList(), false, PrOpResult.AuthRequired(host))
+        val o = org.trim()
+        if (o.isBlank()) return Triple(emptyList(), false, PrOpResult.Error("Organization is required"))
+        val cacheKey = "orgRepos:$o:$perPage:$page"
+        cacheGet(cacheKey)?.let { cached ->
+            return Triple(cached, cached.size >= perPage, PrOpResult.Success)
+        }
+        val result = api.listOrgRepos(o, type = "all", perPage = perPage, page = page)
+        val batch = result.getOrNull()
+        if (batch == null) {
+            return Triple(emptyList(), false, result.toPrOpResult(host))
+        }
+        cachePut(cacheKey, batch)
+        return Triple(batch, batch.size >= perPage, PrOpResult.Success)
+    }
+
     /**
      * Loads organizations for the authenticated user and merges each org's accessible
      * repositories into [into] (keyed by repo id). Best-effort: org listing failures are
