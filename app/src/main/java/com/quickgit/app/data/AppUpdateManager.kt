@@ -203,6 +203,32 @@ class AppUpdateManager(
         }
     }
 
+
+    /**
+     * Prefer the production phone APK over debug/wear builds.
+     * Release assets look like:
+     *   quickgit-x.y.z.apk          ← store / production (wanted)
+     *   quickgit-x.y.z-debug.apk    ← logging/debug channel (skip)
+     *   quickgit-wear-x.y.z.apk     ← Wear OS (skip)
+     */
+    private fun pickPhoneReleaseApk(assets: List<ReleaseAsset>): ReleaseAsset? {
+        val apks = assets.filter { it.name.endsWith(".apk", ignoreCase = true) }
+        if (apks.isEmpty()) return null
+
+        fun isDebug(name: String): Boolean {
+            val n = name.lowercase()
+            return n.contains("-debug") || n.contains("_debug") || n.contains(".debug")
+        }
+        fun isWear(name: String): Boolean {
+            val n = name.lowercase()
+            return n.contains("wear")
+        }
+
+        apks.firstOrNull { !isDebug(it.name) && !isWear(it.name) }?.let { return it }
+        apks.firstOrNull { !isDebug(it.name) }?.let { return it }
+        return apks.firstOrNull()
+    }
+
     private fun normalizeVersionName(raw: String): String {
         return raw.trim()
             .removePrefix("QuickGit")
