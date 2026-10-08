@@ -18,13 +18,9 @@ import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
-import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.autofill.ContentType
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.semantics.contentType
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -32,7 +28,7 @@ import com.quickgit.app.ui.adaptive.AdaptiveContent
 import com.quickgit.app.ui.theme.GitGreen
 import com.quickgit.app.viewmodel.SettingsViewModel
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalComposeUiApi::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CredentialsScreen(
     vm: SettingsViewModel,
@@ -89,9 +85,7 @@ fun CredentialsScreen(
                         value = importUser,
                         onValueChange = { importUser = it },
                         label = { Text("Username") },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .semantics { contentType = ContentType.Username },
+                        modifier = Modifier.fillMaxWidth(),
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email)
                     )
@@ -101,9 +95,7 @@ fun CredentialsScreen(
                         label = { Text("Password (token)") },
                         placeholder = { Text("Personal access token") },
                         visualTransformation = PasswordVisualTransformation(),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .semantics { contentType = ContentType.Password },
+                        modifier = Modifier.fillMaxWidth(),
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
                     )
@@ -325,9 +317,7 @@ fun CredentialsScreen(
                 value = state.username,
                 onValueChange = vm::setUsername,
                 label = { Text("Username") },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .semantics { contentType = ContentType.Username },
+                modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email)
             )
@@ -342,9 +332,7 @@ fun CredentialsScreen(
                     )
                 },
                 visualTransformation = PasswordVisualTransformation(),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .semantics { contentType = ContentType.Password },
+                modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
             )
@@ -437,9 +425,7 @@ fun CredentialsScreen(
                 onValueChange = { gitlabUser = it },
                 label = { Text("Username") },
                 placeholder = { Text("Optional — filled from token if left blank") },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .semantics { contentType = ContentType.Username },
+                modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email)
             )
@@ -449,9 +435,7 @@ fun CredentialsScreen(
                 onValueChange = { gitlabToken = it },
                 label = { Text("Personal access token (password field)") },
                 visualTransformation = PasswordVisualTransformation(),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .semantics { contentType = ContentType.Password },
+                modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
             )
@@ -536,9 +520,7 @@ fun CredentialsScreen(
                 value = gerritUser,
                 onValueChange = { gerritUser = it },
                 label = { Text("Username") },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .semantics { contentType = ContentType.Username },
+                modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email)
             )
@@ -547,9 +529,7 @@ fun CredentialsScreen(
                 value = gerritPassword,
                 onValueChange = { gerritPassword = it },
                 label = { Text("HTTP password (token)") },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .semantics { contentType = ContentType.Password },
+                modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
                 visualTransformation = PasswordVisualTransformation(),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
