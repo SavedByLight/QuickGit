@@ -1,27 +1,38 @@
 package com.quickgit.app.ui.screens
 
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.FileOpen
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.RadioButtonChecked
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.autofill.ContentType
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentType
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.quickgit.app.ui.adaptive.AdaptiveContent
 import com.quickgit.app.ui.theme.GitGreen
 import com.quickgit.app.viewmodel.SettingsViewModel
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalComposeUiApi::class)
 @Composable
 fun CredentialsScreen(
     vm: SettingsViewModel,
@@ -29,9 +40,89 @@ fun CredentialsScreen(
     onBack: () -> Unit
 ) {
     val state by vm.state.collectAsState()
+    val context = LocalContext.current
+    var showImportDialog by remember { mutableStateOf(false) }
+    var importHost by remember { mutableStateOf("") }
+    var importUser by remember { mutableStateOf("") }
+    var importPassword by remember { mutableStateOf("") }
+
+    val csvPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        try {
+            val textCsv = context.contentResolver.openInputStream(uri)?.use { input ->
+                input.bufferedReader().readText()
+            }.orEmpty()
+            if (textCsv.isNotBlank()) vm.importPasswordManagerCsv(textCsv)
+        } catch (e: Exception) {
+            // Surface via status if possible — ViewModel status is the usual channel
+        }
+    }
 
     LaunchedEffect(initialHost) {
         if (!initialHost.isNullOrBlank()) vm.loadForHost(initialHost)
+    }
+
+    if (showImportDialog) {
+        AlertDialog(
+            onDismissRequest = { showImportDialog = false },
+            title = { Text("Import from password manager") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "Store the personal access token (or Gerrit HTTP password) in the " +
+                            "password field of your password manager. Host/URL and username " +
+                            "map as usual.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(
+                        value = importHost,
+                        onValueChange = { importHost = it },
+                        label = { Text("Host or URL") },
+                        placeholder = { Text("github.com or https://gitlab.com") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                    OutlinedTextField(
+                        value = importUser,
+                        onValueChange = { importUser = it },
+                        label = { Text("Username") },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .semantics { contentType = ContentType.Username },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email)
+                    )
+                    OutlinedTextField(
+                        value = importPassword,
+                        onValueChange = { importPassword = it },
+                        label = { Text("Password (token)") },
+                        placeholder = { Text("Personal access token") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .semantics { contentType = ContentType.Password },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        vm.importFromPasswordManager(importHost, importUser, importPassword)
+                        showImportDialog = false
+                        importPassword = ""
+                    },
+                    enabled = importHost.isNotBlank() && importPassword.isNotBlank()
+                ) { Text("Import") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showImportDialog = false }) { Text("Cancel") }
+            }
+        )
     }
 
     Scaffold(topBar = {
@@ -113,10 +204,24 @@ fun CredentialsScreen(
             Spacer(Modifier.height(8.dp))
             Text(
                 "Add another account by pasting a token below (GitHub / GitLab) or Gerrit credentials. " +
-                    "Each successful connection is added to the list above.",
+                    "Each successful connection is added to the list above. " +
+                    "Password managers: put the token in the password field.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            Spacer(Modifier.height(12.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { showImportDialog = true }) {
+                    Text("Import account")
+                }
+                OutlinedButton(onClick = {
+                    csvPicker.launch(arrayOf("text/*", "text/csv", "application/csv", "*/*"))
+                }) {
+                    Icon(Icons.Default.FileOpen, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Import CSV")
+                }
+            }
 
             Spacer(Modifier.height(28.dp))
             HorizontalDivider()
@@ -220,8 +325,11 @@ fun CredentialsScreen(
                 value = state.username,
                 onValueChange = vm::setUsername,
                 label = { Text("Username") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .semantics { contentType = ContentType.Username },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email)
             )
             Spacer(Modifier.height(8.dp))
             OutlinedTextField(
@@ -230,12 +338,15 @@ fun CredentialsScreen(
                 label = {
                     Text(
                         if (state.hasStoredToken) "New personal access token (leave blank to keep)"
-                        else "Personal access token"
+                        else "Personal access token (password field)"
                     )
                 },
                 visualTransformation = PasswordVisualTransformation(),
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .semantics { contentType = ContentType.Password },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
             )
             Spacer(Modifier.height(12.dp))
             Row {
@@ -326,17 +437,23 @@ fun CredentialsScreen(
                 onValueChange = { gitlabUser = it },
                 label = { Text("Username") },
                 placeholder = { Text("Optional — filled from token if left blank") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .semantics { contentType = ContentType.Username },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email)
             )
             Spacer(Modifier.height(8.dp))
             OutlinedTextField(
                 value = gitlabToken,
                 onValueChange = { gitlabToken = it },
-                label = { Text("Personal access token") },
+                label = { Text("Personal access token (password field)") },
                 visualTransformation = PasswordVisualTransformation(),
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .semantics { contentType = ContentType.Password },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
             )
             Spacer(Modifier.height(12.dp))
             Row {
@@ -419,17 +536,23 @@ fun CredentialsScreen(
                 value = gerritUser,
                 onValueChange = { gerritUser = it },
                 label = { Text("Username") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .semantics { contentType = ContentType.Username },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email)
             )
             Spacer(Modifier.height(8.dp))
             OutlinedTextField(
                 value = gerritPassword,
                 onValueChange = { gerritPassword = it },
-                label = { Text("HTTP password") },
-                modifier = Modifier.fillMaxWidth(),
+                label = { Text("HTTP password (token)") },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .semantics { contentType = ContentType.Password },
                 singleLine = true,
-                visualTransformation = PasswordVisualTransformation()
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
             )
             Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

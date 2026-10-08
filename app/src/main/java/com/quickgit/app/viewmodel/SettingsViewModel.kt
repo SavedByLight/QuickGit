@@ -373,6 +373,170 @@ class SettingsViewModel(
 
     fun setUsername(v: String) { _state.value = _state.value.copy(username = v) }
     fun setToken(v: String) { _state.value = _state.value.copy(token = v) }
+
+    /**
+     * Import a password-manager style login: [password] is treated as the API token
+     * (or Gerrit HTTP password). [hostOrUrl] may be a bare host or full https URL.
+     */
+    fun importFromPasswordManager(hostOrUrl: String, username: String, password: String) {
+        val host = normalizeHostFromPasswordManager(hostOrUrl)
+        val user = username.trim()
+        val token = password.trim()
+        if (host.isBlank()) {
+            _state.value = _state.value.copy(
+                statusMessage = "Import failed: host or URL is required",
+                isError = true
+            )
+            return
+        }
+        if (token.isBlank()) {
+            _state.value = _state.value.copy(
+                statusMessage = "Import failed: password field (token) is empty",
+                isError = true
+            )
+            return
+        }
+        when {
+            host.equals("github.com", ignoreCase = true) ||
+                host.endsWith(".github.com", ignoreCase = true) -> {
+                _state.value = _state.value.copy(host = "github.com", username = user, token = token)
+                saveHttpsToken()
+            }
+            host.contains("gitlab", ignoreCase = true) -> {
+                connectGitLab(host, token, user.ifBlank { null })
+            }
+            else -> {
+                // Self-hosted Git or Gerrit-style: save as HTTPS token; if username set
+                // and host does not look like a forge, also try Gerrit connect path.
+                _state.value = _state.value.copy(host = host, username = user, token = token)
+                if (user.isNotBlank() && !host.contains("git", ignoreCase = true)) {
+                    connectGerrit(host, user, token)
+                } else {
+                    saveHttpsToken()
+                }
+            }
+        }
+    }
+
+    /**
+     * Parse a password-manager CSV export (Bitwarden / Chrome / generic url,username,password).
+     * The password column is treated as the token. Returns how many accounts were imported.
+     */
+    fun importPasswordManagerCsv(csvText: String): Int {
+        val lines = csvText.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.toList()
+        if (lines.isEmpty()) {
+            _state.value = _state.value.copy(statusMessage = "CSV is empty", isError = true)
+            return 0
+        }
+        val headerCells = parseCsvLine(lines.first()).map { it.lowercase() }
+        val hasHeader = headerCells.any {
+            it.contains("password") || it.contains("username") || it.contains("uri") || it == "url"
+        }
+        val dataLines = if (hasHeader) lines.drop(1) else lines
+
+        fun col(names: List<String>): Int {
+            for (n in names) {
+                val i = headerCells.indexOfFirst { it == n || it.endsWith(n) }
+                if (i >= 0) return i
+            }
+            return -1
+        }
+
+        val urlIdx = if (hasHeader) col(listOf("login_uri", "uri", "url", "login uri", "website")) else 0
+        val userIdx = if (hasHeader) col(listOf("login_username", "username", "login username", "user")) else 1
+        val passIdx = if (hasHeader) col(listOf("login_password", "password", "login password", "pass")) else 2
+
+        if (passIdx < 0) {
+            _state.value = _state.value.copy(
+                statusMessage = "CSV has no password column (token lives in the password field)",
+                isError = true
+            )
+            return 0
+        }
+
+        var imported = 0
+        for (line in dataLines) {
+            val cells = parseCsvLine(line)
+            if (cells.isEmpty()) continue
+            val pass = cells.getOrNull(passIdx).orEmpty().trim()
+            if (pass.isBlank()) continue
+            val url = if (urlIdx >= 0) cells.getOrNull(urlIdx).orEmpty() else ""
+            val user = if (userIdx >= 0) cells.getOrNull(userIdx).orEmpty() else ""
+            val host = normalizeHostFromPasswordManager(url)
+            if (host.isBlank()) continue
+            // Only import forge-related entries to avoid random website passwords
+            val forge = host.equals("github.com", true) ||
+                host.contains("gitlab", true) ||
+                host.contains("gerrit", true) ||
+                host.contains("git", true)
+            if (!forge && urlIdx >= 0) continue
+            try {
+                importFromPasswordManager(host.ifBlank { url }, user, pass)
+                imported++
+            } catch (_: Exception) {
+                // continue remaining rows
+            }
+        }
+        _state.value = _state.value.copy(
+            statusMessage = if (imported > 0)
+                "Imported $imported account(s) from password manager (token = password field)"
+            else
+                "No matching Git accounts found in CSV",
+            isError = imported == 0
+        )
+        return imported
+    }
+
+    private fun normalizeHostFromPasswordManager(hostOrUrl: String): String {
+        var s = hostOrUrl.trim()
+        if (s.isBlank()) return ""
+        // git@github.com:org/repo.git
+        if (s.startsWith("git@")) {
+            val after = s.removePrefix("git@")
+            val hostPart = after.substringBefore(":").substringBefore("/")
+            return hostPart.lowercase()
+        }
+        // strip scheme
+        s = s.removePrefix("https://").removePrefix("http://").removePrefix("ssh://")
+        // strip credentials user:pass@host
+        if ("@" in s.substringBefore("/")) {
+            s = s.substringAfter("@")
+        }
+        // host only
+        s = s.substringBefore("/").substringBefore("?").substringBefore("#").trim()
+        // drop default ports
+        s = s.substringBefore(":")
+        return s.lowercase()
+    }
+
+    /** Minimal CSV line split supporting quoted fields. */
+    private fun parseCsvLine(line: String): List<String> {
+        val out = mutableListOf<String>()
+        val sb = StringBuilder()
+        var inQuotes = false
+        var i = 0
+        while (i < line.length) {
+            val c = line[i]
+            when {
+                c == '"' -> {
+                    if (inQuotes && i + 1 < line.length && line[i + 1] == '"') {
+                        sb.append('"'); i++
+                    } else {
+                        inQuotes = !inQuotes
+                    }
+                }
+                c == ',' && !inQuotes -> {
+                    out += sb.toString()
+                    sb.clear()
+                }
+                else -> sb.append(c)
+            }
+            i++
+        }
+        out += sb.toString()
+        return out
+    }
+
     fun setSshKey(v: String) { _state.value = _state.value.copy(sshKey = v) }
     fun setSshPassphrase(v: String) { _state.value = _state.value.copy(sshPassphrase = v) }
 
