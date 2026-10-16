@@ -134,15 +134,16 @@ fun CredentialsScreen(
             Text("Connected accounts", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(4.dp))
             Text(
-                "Switch between multiple GitHub, GitLab, and Gerrit accounts. " +
-                    "The active account is used for API calls and git over HTTPS.",
+                "You can keep multiple accounts of each type (e.g. two GitHub, two GitLab, two Gerrit). " +
+                    "Switch the active one per provider below — that account is used for API calls and git over HTTPS. " +
+                    "Remove an account with the trash icon; adding more is done in the forms further down.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Spacer(Modifier.height(12.dp))
             if (state.managedAccounts.isEmpty()) {
                 Text(
-                    "No accounts yet. Connect one below.",
+                    "No accounts yet. Add one below.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -195,8 +196,8 @@ fun CredentialsScreen(
             }
             Spacer(Modifier.height(8.dp))
             Text(
-                "Add another account by pasting a token below (GitHub / GitLab) or Gerrit credentials. " +
-                    "Each successful connection is added to the list above. " +
+                "To add another account of any type, fill the matching form below and connect. " +
+                    "Each successful connection is added to the list above (you do not need to disconnect first). " +
                     "Password managers: put the token in the password field.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -256,8 +257,8 @@ fun CredentialsScreen(
             Spacer(Modifier.height(28.dp))
 
             Text(
-                if (state.host.equals("github.com", ignoreCase = true)) "GitHub account"
-                else "HTTPS personal access token",
+                if (state.host.equals("github.com", ignoreCase = true)) "Add GitHub account"
+                else "Add HTTPS personal access token",
                 style = MaterialTheme.typography.titleMedium
             )
             Spacer(Modifier.height(4.dp))
@@ -265,10 +266,11 @@ fun CredentialsScreen(
                 if (state.host.equals("github.com", ignoreCase = true))
                     "Paste a personal access token (classic or fine-grained) with repo access. " +
                         "For organization repos, classic tokens also need read:org; fine-grained tokens must " +
-                        "grant access to each organization. QuickGit verifies it with GitHub and uses it for " +
-                        "clone, push, pull, pull requests, and listing org repositories."
+                        "grant access to each organization. Each successful connect adds (or updates) that " +
+                        "account in the list above — you can keep several GitHub accounts at once."
                 else
-                    "Used for https:// remotes. Generate a token with repo scope from your host (GitHub, GitLab, etc.).",
+                    "Used for https:// remotes. Generate a token with repo scope from your host. " +
+                        "Each successful save is tracked as a managed account when the host is a known forge.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -278,19 +280,9 @@ fun CredentialsScreen(
                     Icon(Icons.Default.CheckCircle, null, tint = GitGreen, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
                     Text(
-                        "Connected as @${state.githubLogin}" +
-                            (state.githubName?.let { " ($it)" } ?: ""),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = GitGreen
-                    )
-                }
-            } else if (state.hasStoredToken) {
-                Spacer(Modifier.height(8.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.CheckCircle, null, tint = GitGreen, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text(
-                        "A token is saved for ${state.host}",
+                        "Active GitHub: @${state.githubLogin}" +
+                            (state.githubName?.let { " ($it)" } ?: "") +
+                            " — add another with a different token below",
                         style = MaterialTheme.typography.bodySmall,
                         color = GitGreen
                     )
@@ -307,7 +299,6 @@ fun CredentialsScreen(
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true
             )
-            // Reload stored username when host field loses focus-ish: button below
             Spacer(Modifier.height(8.dp))
             OutlinedButton(onClick = { vm.loadForHost(state.host) }, modifier = Modifier.fillMaxWidth()) {
                 Text("Load saved credentials for host")
@@ -316,7 +307,7 @@ fun CredentialsScreen(
             OutlinedTextField(
                 value = state.username,
                 onValueChange = vm::setUsername,
-                label = { Text("Username") },
+                label = { Text("Username (optional for GitHub)") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email)
@@ -325,47 +316,29 @@ fun CredentialsScreen(
             OutlinedTextField(
                 value = state.token,
                 onValueChange = vm::setToken,
-                label = {
-                    Text(
-                        if (state.hasStoredToken) "New personal access token (leave blank to keep)"
-                        else "Personal access token (password field)"
-                    )
-                },
+                label = { Text("Personal access token (password field)") },
                 visualTransformation = PasswordVisualTransformation(),
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
             )
             Spacer(Modifier.height(12.dp))
-            Row {
-                Button(
-                    onClick = { vm.saveHttpsToken() },
-                    enabled = state.host.isNotBlank() && state.token.isNotBlank() && !state.connecting
-                ) {
-                    if (state.connecting) {
-                        CircularProgressIndicator(
-                            Modifier.size(18.dp),
-                            strokeWidth = 2.dp,
-                            color = MaterialTheme.colorScheme.onPrimary
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text("Connecting…")
-                    } else {
-                        Text(
-                            if (state.host.equals("github.com", ignoreCase = true)) "Connect"
-                            else "Save"
-                        )
-                    }
-                }
-                Spacer(Modifier.width(8.dp))
-                OutlinedButton(
-                    onClick = { vm.clearHttpsToken() },
-                    enabled = !state.connecting
-                ) {
+            Button(
+                onClick = { vm.saveHttpsToken() },
+                enabled = state.host.isNotBlank() && state.token.isNotBlank() && !state.connecting
+            ) {
+                if (state.connecting) {
+                    CircularProgressIndicator(
+                        Modifier.size(18.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.onPrimary
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text("Connecting…")
+                } else {
                     Text(
-                        if (state.host.equals("github.com", ignoreCase = true) && state.hasStoredToken)
-                            "Disconnect"
-                        else "Clear"
+                        if (state.host.equals("github.com", ignoreCase = true)) "Add GitHub account"
+                        else "Save token"
                     )
                 }
             }
@@ -375,12 +348,13 @@ fun CredentialsScreen(
             HorizontalDivider()
             Spacer(Modifier.height(28.dp))
 
-            Text("GitLab account", style = MaterialTheme.typography.titleMedium)
+            Text("Add GitLab account", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(4.dp))
             Text(
                 "Connect gitlab.com or a self-hosted instance. Paste a personal access token with " +
                     "api + read_repository scopes (add write_repository for push). Username is optional — " +
-                    "it will be filled from the token when you connect. Enables MRs, issues, and remote browsing.",
+                    "it will be filled from the token when you connect. Each successful connect adds that " +
+                    "account to the list above; you can keep several GitLab accounts at once.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -390,7 +364,7 @@ fun CredentialsScreen(
                     Icon(Icons.Default.CheckCircle, null, tint = GitGreen, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
                     Text(
-                        "Connected as @${state.gitlabUsername} on ${state.gitlabHost}",
+                        "Active GitLab: @${state.gitlabUsername} on ${state.gitlabHost} — add another below",
                         style = MaterialTheme.typography.bodySmall,
                         color = GitGreen
                     )
@@ -398,17 +372,13 @@ fun CredentialsScreen(
             }
             Spacer(Modifier.height(12.dp))
             var gitlabHost by remember { mutableStateOf(state.gitlabHost.ifBlank { "gitlab.com" }) }
-            var gitlabUser by remember { mutableStateOf(state.gitlabUsername.orEmpty()) }
+            var gitlabUser by remember { mutableStateOf("") }
             var gitlabToken by remember { mutableStateOf("") }
-            // Keep fields in sync when verifyGitLabIfConnected restores values from disk.
+            // Keep host in sync when verify restores the active host from disk; do not overwrite
+            // username/token so the form stays ready for adding another account.
             LaunchedEffect(state.gitlabHost) {
                 if (state.gitlabHost.isNotBlank() && gitlabHost != state.gitlabHost) {
                     gitlabHost = state.gitlabHost
-                }
-            }
-            LaunchedEffect(state.gitlabUsername) {
-                if (!state.gitlabUsername.isNullOrBlank() && gitlabUser.isBlank()) {
-                    gitlabUser = state.gitlabUsername.orEmpty()
                 }
             }
             OutlinedTextField(
@@ -440,40 +410,36 @@ fun CredentialsScreen(
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
             )
             Spacer(Modifier.height(12.dp))
-            Row {
-                Button(
-                    onClick = {
-                        vm.connectGitLab(
-                            gitlabHost,
-                            gitlabToken,
-                            gitlabUser.takeIf { it.isNotBlank() }
-                        )
-                    },
-                    enabled = gitlabToken.isNotBlank() && !state.connecting
-                ) {
-                    if (state.connecting) {
-                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)
-                        Spacer(Modifier.width(8.dp))
-                        Text("Connecting…")
-                    } else {
-                        Text("Connect GitLab")
-                    }
+            Button(
+                onClick = {
+                    vm.connectGitLab(
+                        gitlabHost,
+                        gitlabToken,
+                        gitlabUser.takeIf { it.isNotBlank() }
+                    )
+                    gitlabToken = ""
+                    gitlabUser = ""
+                },
+                enabled = gitlabToken.isNotBlank() && !state.connecting
+            ) {
+                if (state.connecting) {
+                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Connecting…")
+                } else {
+                    Text("Add GitLab account")
                 }
-                Spacer(Modifier.width(8.dp))
-                OutlinedButton(
-                    onClick = { vm.disconnectGitLab() },
-                    enabled = state.gitlabConnected && !state.connecting
-                ) { Text("Disconnect") }
             }
 
             Spacer(Modifier.height(28.dp))
             
             HorizontalDivider(Modifier.padding(vertical = 20.dp))
-            Text("Gerrit account", style = MaterialTheme.typography.titleMedium)
+            Text("Add Gerrit account", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(4.dp))
             Text(
                 "Connect a Gerrit host to clone repositories. Use your Gerrit username and an " +
-                    "HTTP password from Gerrit → Settings → HTTP Credentials (not necessarily your web login password).",
+                    "HTTP password from Gerrit → Settings → HTTP Credentials (not necessarily your web login password). " +
+                    "Each successful connect adds that account to the list above; you can keep several Gerrit accounts at once.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -488,23 +454,20 @@ fun CredentialsScreen(
                     )
                     Spacer(Modifier.width(8.dp))
                     Text(
-                        "Connected as ${state.gerritUsername} on ${state.gerritHost}",
+                        "Active Gerrit: ${state.gerritUsername} on ${state.gerritHost} — add another below",
                         style = MaterialTheme.typography.bodyMedium
                     )
                 }
                 Spacer(Modifier.height(8.dp))
             }
             var gerritHost by remember { mutableStateOf(state.gerritHost.ifBlank { "" }) }
-            var gerritUser by remember { mutableStateOf(state.gerritUsername.orEmpty()) }
+            var gerritUser by remember { mutableStateOf("") }
             var gerritPassword by remember { mutableStateOf("") }
+            // Keep host in sync with active account; leave username/password empty so the form
+            // is ready for adding another account without overwriting.
             LaunchedEffect(state.gerritHost) {
                 if (state.gerritHost.isNotBlank() && gerritHost != state.gerritHost) {
                     gerritHost = state.gerritHost
-                }
-            }
-            LaunchedEffect(state.gerritUsername) {
-                if (!state.gerritUsername.isNullOrBlank() && gerritUser.isBlank()) {
-                    gerritUser = state.gerritUsername.orEmpty()
                 }
             }
             OutlinedTextField(
@@ -535,26 +498,20 @@ fun CredentialsScreen(
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
             )
             Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(
-                    onClick = {
-                        vm.connectGerrit(gerritHost, gerritUser, gerritPassword)
-                        gerritPassword = ""
-                    },
-                    enabled = gerritHost.isNotBlank() && gerritUser.isNotBlank() &&
-                        gerritPassword.isNotBlank() && !state.connecting
-                ) {
-                    if (state.connecting) {
-                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                        Spacer(Modifier.width(8.dp))
-                    }
-                    Text(if (state.gerritConnected) "Reconnect Gerrit" else "Connect Gerrit")
+            Button(
+                onClick = {
+                    vm.connectGerrit(gerritHost, gerritUser, gerritPassword)
+                    gerritPassword = ""
+                    gerritUser = ""
+                },
+                enabled = gerritHost.isNotBlank() && gerritUser.isNotBlank() &&
+                    gerritPassword.isNotBlank() && !state.connecting
+            ) {
+                if (state.connecting) {
+                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(8.dp))
                 }
-                if (state.gerritConnected) {
-                    OutlinedButton(onClick = { vm.disconnectGerrit() }) {
-                        Text("Disconnect")
-                    }
-                }
+                Text("Add Gerrit account")
             }
 
 HorizontalDivider()

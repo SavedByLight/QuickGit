@@ -579,7 +579,7 @@ class SettingsViewModel(
                             username = account.login,
                             githubLogin = account.login,
                             githubName = account.name,
-                            statusMessage = "Connected as @${account.login}",
+                            statusMessage = "Added GitHub account @${account.login} (set as active)",
                             isError = false
                         )
                         refreshManagedAccounts()
@@ -884,7 +884,7 @@ class SettingsViewModel(
                         gitlabHost = account.host,
                         gitlabUsername = account.username,
                         gitlabConnected = true,
-                        statusMessage = "GitLab connected as @${account.username} on ${account.host}",
+                        statusMessage = "Added GitLab account @${account.username} on ${account.host} (set as active)",
                         isError = false
                     )
                     refreshManagedAccounts()
@@ -955,7 +955,7 @@ class SettingsViewModel(
                         gerritHost = account.host,
                         gerritUsername = account.username,
                         gerritConnected = true,
-                        statusMessage = "Connected to Gerrit as ${account.username} on ${account.host}",
+                        statusMessage = "Added Gerrit account ${account.username} on ${account.host} (set as active)",
                         isError = false
                     )
                     refreshManagedAccounts()
