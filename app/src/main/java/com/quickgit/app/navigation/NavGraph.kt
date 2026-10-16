@@ -9,6 +9,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Article
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
@@ -50,7 +51,9 @@ import androidx.compose.runtime.collectAsState
  * - ALWAYS — always show the left rail
  * - NEVER — phone-style navigation only
  *
- * Toggle under Settings → Layout. Account management lives under Profiles → Manage accounts.
+ * Toggle under Settings → Layout. On phone layout, account management lives under
+ * Profiles → Manage accounts. On tablet/desktop layout the rail includes a dedicated
+ * Credentials (Creds) item, matching the Linux desktop app.
  */
 @Composable
 fun QuickGitNavGraph() {
@@ -537,6 +540,13 @@ fun QuickGitNavGraph() {
                     ) {
                         navController.navigate(Dest.LOGS) { launchSingleTop = true }
                     }
+                }
+                RailItem(
+                    icon = Icons.Default.Key,
+                    label = "Creds",
+                    selected = isSelected(Dest.CREDENTIALS)
+                ) {
+                    navController.navigate(Dest.CREDENTIALS) { launchSingleTop = true }
                 }
                 RailItem(
                     icon = Icons.Default.Settings,
