@@ -272,24 +272,28 @@ private fun CodeEditor(
             coalesceJob?.cancel()
             pendingSnapshot?.let { history.push(it) }
             pendingSnapshot = null
-            val prev = history.undo(fieldValue) ?: return@undo
-            suppressHistory = true
-            fieldValue = prev
-            onTextChange(prev.text)
-            suppressHistory = false
-            historyBridge.canUndo = history.canUndo
-            historyBridge.canRedo = history.canRedo
+            val prev = history.undo(fieldValue)
+            if (prev != null) {
+                suppressHistory = true
+                fieldValue = prev
+                onTextChange(prev.text)
+                suppressHistory = false
+                historyBridge.canUndo = history.canUndo
+                historyBridge.canRedo = history.canRedo
+            }
         }
         historyBridge.redo = {
             coalesceJob?.cancel()
             pendingSnapshot = null
-            val next = history.redo(fieldValue) ?: return@redo
-            suppressHistory = true
-            fieldValue = next
-            onTextChange(next.text)
-            suppressHistory = false
-            historyBridge.canUndo = history.canUndo
-            historyBridge.canRedo = history.canRedo
+            val next = history.redo(fieldValue)
+            if (next != null) {
+                suppressHistory = true
+                fieldValue = next
+                onTextChange(next.text)
+                suppressHistory = false
+                historyBridge.canUndo = history.canUndo
+                historyBridge.canRedo = history.canRedo
+            }
         }
     }
 
