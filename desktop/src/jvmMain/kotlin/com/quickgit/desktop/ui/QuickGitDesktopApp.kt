@@ -30,10 +30,13 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.OffsetMapping
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.input.TransformedText
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.Job
 import com.quickgit.desktop.data.*
 import com.quickgit.desktop.data.github.GitHubApi
 import com.quickgit.desktop.data.gitlab.GitLabApi
@@ -950,11 +953,95 @@ fun ChangesTab(repoPath: String, repoManager: DesktopRepoManager, onMessage: (St
     var commitMessage by remember { mutableStateOf("") }
     var selected by remember { mutableStateOf(setOf<String>()) }
     var loading by remember { mutableStateOf(true) }
+    var isMerging by remember { mutableStateOf(false) }
+    var editConflictPath by remember { mutableStateOf<String?>(null) }
+    var editConflictText by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
-    fun reload() { scope.launch { loading = true; changes = withContext(Dispatchers.IO) { repoManager.getStatus(repoPath) }; loading = false } }
+    fun reload() {
+        scope.launch {
+            loading = true
+            changes = withContext(Dispatchers.IO) { repoManager.getStatus(repoPath) }
+            isMerging = withContext(Dispatchers.IO) { repoManager.isMerging(repoPath) }
+            loading = false
+        }
+    }
     LaunchedEffect(repoPath) { reload() }
 
+    val conflicts = changes.filter { it.status == DesktopRepoManager.ChangeStatus.CONFLICT }
+
     Column(Modifier.fillMaxSize().padding(16.dp)) {
+        if (isMerging || conflicts.isNotEmpty()) {
+            Surface(
+                color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.45f),
+                shape = MaterialTheme.shapes.medium,
+                modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
+            ) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "Merge conflict — ${conflicts.size} file(s). Resolve each with Ours / Theirs / Edit, then commit the merge or abort.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    conflicts.forEach { c ->
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(c.path, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            TextButton(onClick = {
+                                scope.launch {
+                                    withContext(Dispatchers.IO) { repoManager.resolveOurs(repoPath, c.path) }
+                                    reload()
+                                    onMessage("Kept ours: ${c.path}")
+                                }
+                            }) { Text("Ours") }
+                            TextButton(onClick = {
+                                scope.launch {
+                                    withContext(Dispatchers.IO) { repoManager.resolveTheirs(repoPath, c.path) }
+                                    reload()
+                                    onMessage("Kept theirs: ${c.path}")
+                                }
+                            }) { Text("Theirs") }
+                            TextButton(onClick = {
+                                scope.launch {
+                                    val text = withContext(Dispatchers.IO) {
+                                        java.io.File(repoPath, c.path).takeIf { it.isFile }?.readText().orEmpty()
+                                    }
+                                    editConflictPath = c.path
+                                    editConflictText = text
+                                }
+                            }) { Text("Edit") }
+                        }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            onClick = {
+                                scope.launch {
+                                    val msg = commitMessage.ifBlank { "Merge" }
+                                    val r = withContext(Dispatchers.IO) { repoManager.continueMerge(repoPath, msg) }
+                                    r.fold(
+                                        { commitMessage = ""; reload(); onMessage("Merge committed ${it.take(7)}") },
+                                        { onMessage("Merge commit failed: ${it.message}") }
+                                    )
+                                }
+                            },
+                            enabled = conflicts.isEmpty()
+                        ) { Text("Commit merge") }
+                        OutlinedButton(onClick = {
+                            scope.launch {
+                                val r = withContext(Dispatchers.IO) { repoManager.abortMerge(repoPath) }
+                                r.fold(
+                                    { reload(); onMessage("Merge aborted") },
+                                    { onMessage("Abort failed: ${it.message}") }
+                                )
+                            }
+                        }) { Text("Abort merge") }
+                    }
+                }
+            }
+        }
+
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onClick = { scope.launch { withContext(Dispatchers.IO) { repoManager.stageAll(repoPath) }; reload(); onMessage("Staged all") } }) { Text("Stage all") }
             OutlinedButton(onClick = { if (selected.isNotEmpty()) scope.launch { withContext(Dispatchers.IO) { repoManager.stage(repoPath, selected.toList()) }; selected = emptySet(); reload() } }, enabled = selected.isNotEmpty()) { Text("Stage") }
@@ -994,6 +1081,37 @@ fun ChangesTab(repoPath: String, repoManager: DesktopRepoManager, onMessage: (St
                 r.fold({ commitMessage = ""; reload(); onMessage("Committed ${it.take(7)}") }, { onMessage("Commit failed: ${it.message}") })
             }
         }, enabled = commitMessage.isNotBlank(), modifier = Modifier.align(Alignment.End)) { Text("Commit") }
+    }
+
+    editConflictPath?.let { path ->
+        AlertDialog(
+            onDismissRequest = { editConflictPath = null },
+            title = { Text("Edit conflict — $path") },
+            text = {
+                OutlinedTextField(
+                    value = editConflictText,
+                    onValueChange = { editConflictText = it },
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 280.dp),
+                    textStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+                )
+            },
+            confirmButton = {
+                Button(onClick = {
+                    scope.launch {
+                        withContext(Dispatchers.IO) {
+                            java.io.File(repoPath, path).writeText(editConflictText)
+                            repoManager.stage(repoPath, listOf(path))
+                        }
+                        editConflictPath = null
+                        reload()
+                        onMessage("Resolved (edited): $path")
+                    }
+                }) { Text("Save & stage") }
+            },
+            dismissButton = {
+                TextButton(onClick = { editConflictPath = null }) { Text("Cancel") }
+            }
+        )
     }
 }
 
@@ -2082,8 +2200,23 @@ fun FilesEditorTab(repoPath: String, repoManager: DesktopRepoManager, onMessage:
             } else {
                 val name = selectedFile!!.substringAfterLast('/')
                 var editing by remember(selectedFile) { mutableStateOf(false) }
+                var findOpen by remember(selectedFile) { mutableStateOf(false) }
+                var findQuery by remember(selectedFile) { mutableStateOf("") }
+                var matchIndex by remember(selectedFile) { mutableIntStateOf(0) }
+                var fieldValue by remember(selectedFile, content) {
+                    mutableStateOf(TextFieldValue(content))
+                }
+                // Keep fieldValue in sync when content is loaded externally
+                LaunchedEffect(content, selectedFile) {
+                    if (!editing || fieldValue.text != content && fieldValue.text == original) {
+                        fieldValue = TextFieldValue(content)
+                    }
+                }
+                val undoStack = remember(selectedFile) { ArrayDeque<String>() }
+                val redoStack = remember(selectedFile) { ArrayDeque<String>() }
+                var coalesceJob by remember { mutableStateOf<Job?>(null) }
+                var pendingUndoSnapshot by remember { mutableStateOf<String?>(null) }
                 val darkUi = androidx.compose.foundation.isSystemInDarkTheme()
-                // Always-on syntax colouring (view + edit), matching the Android tablet editor.
                 val codeStyle = TextStyle(
                     fontFamily = FontFamily.Monospace,
                     fontSize = 13.sp,
@@ -2098,6 +2231,30 @@ fun FilesEditorTab(repoPath: String, repoManager: DesktopRepoManager, onMessage:
                         )
                     }
                 }
+                val findMatches = remember(fieldValue.text, findQuery) {
+                    if (findQuery.isEmpty()) emptyList()
+                    else {
+                        val hay = fieldValue.text.lowercase()
+                        val needle = findQuery.lowercase()
+                        val out = ArrayList<Pair<Int, Int>>()
+                        var from = 0
+                        while (from <= hay.length - needle.length) {
+                            val idx = hay.indexOf(needle, from)
+                            if (idx < 0) break
+                            out.add(idx to (idx + needle.length))
+                            from = idx + 1
+                            if (out.size >= 10_000) break
+                        }
+                        out
+                    }
+                }
+                fun goToMatch(index: Int) {
+                    if (findMatches.isEmpty()) return
+                    val i = ((index % findMatches.size) + findMatches.size) % findMatches.size
+                    matchIndex = i
+                    val (start, end) = findMatches[i]
+                    fieldValue = fieldValue.copy(selection = TextRange(start, end))
+                }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text(selectedFile!!, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -2108,6 +2265,36 @@ fun FilesEditorTab(repoPath: String, repoManager: DesktopRepoManager, onMessage:
                         )
                     }
                     if (isProbablyTextFile(name)) {
+                        IconButton(
+                            onClick = {
+                                coalesceJob?.cancel()
+                                pendingUndoSnapshot?.let { undoStack.addLast(it); pendingUndoSnapshot = null }
+                                if (undoStack.isNotEmpty()) {
+                                    redoStack.addLast(fieldValue.text)
+                                    val prev = undoStack.removeLast()
+                                    fieldValue = TextFieldValue(prev)
+                                    content = prev
+                                }
+                            },
+                            enabled = editing && undoStack.isNotEmpty()
+                        ) { Icon(Icons.Default.Undo, contentDescription = "Undo") }
+                        IconButton(
+                            onClick = {
+                                coalesceJob?.cancel()
+                                pendingUndoSnapshot = null
+                                if (redoStack.isNotEmpty()) {
+                                    undoStack.addLast(fieldValue.text)
+                                    val next = redoStack.removeLast()
+                                    fieldValue = TextFieldValue(next)
+                                    content = next
+                                }
+                            },
+                            enabled = editing && redoStack.isNotEmpty()
+                        ) { Icon(Icons.Default.Redo, contentDescription = "Redo") }
+                        IconButton(
+                            onClick = { findOpen = !findOpen },
+                            enabled = true
+                        ) { Icon(Icons.Default.Search, contentDescription = "Find") }
                         TextButton(onClick = { editing = !editing }) {
                             Text(if (editing) "View" else "Edit")
                         }
@@ -2120,17 +2307,54 @@ fun FilesEditorTab(repoPath: String, repoManager: DesktopRepoManager, onMessage:
                                 }
                                 original = content
                                 editing = false
+                                undoStack.clear()
+                                redoStack.clear()
                                 onMessage("Saved $selectedFile")
                             }
                         },
                         enabled = content != original && isProbablyTextFile(name)
                     ) { Text("Save") }
                 }
+                if (findOpen) {
+                    Spacer(Modifier.height(6.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        OutlinedTextField(
+                            value = findQuery,
+                            onValueChange = {
+                                findQuery = it
+                                matchIndex = 0
+                                if (it.isNotEmpty() && findMatches.isNotEmpty()) goToMatch(0)
+                            },
+                            modifier = Modifier.weight(1f),
+                            singleLine = true,
+                            placeholder = { Text("Find") }
+                        )
+                        Text(
+                            when {
+                                findQuery.isEmpty() -> ""
+                                findMatches.isEmpty() -> "0/0"
+                                else -> "${matchIndex + 1}/${findMatches.size}"
+                            },
+                            style = MaterialTheme.typography.labelMedium,
+                            color = if (findQuery.isNotEmpty() && findMatches.isEmpty())
+                                MaterialTheme.colorScheme.error
+                            else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        IconButton(onClick = { goToMatch(matchIndex - 1) }, enabled = findMatches.isNotEmpty()) {
+                            Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Previous")
+                        }
+                        IconButton(onClick = { goToMatch(matchIndex + 1) }, enabled = findMatches.isNotEmpty()) {
+                            Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Next")
+                        }
+                        IconButton(onClick = { findOpen = false; findQuery = "" }) {
+                            Icon(Icons.Default.Close, contentDescription = "Close find")
+                        }
+                    }
+                }
                 Spacer(Modifier.height(8.dp))
                 if (loading) {
                     CircularProgressIndicator()
                 } else if (editing && isProbablyTextFile(name)) {
-                    // Editable body with the same syntax colouring as the Android CodeEditor
                     Box(
                         Modifier
                             .fillMaxSize()
@@ -2140,8 +2364,24 @@ fun FilesEditorTab(repoPath: String, repoManager: DesktopRepoManager, onMessage:
                             .padding(12.dp)
                     ) {
                         BasicTextField(
-                            value = content,
-                            onValueChange = { content = it },
+                            value = fieldValue,
+                            onValueChange = { newValue ->
+                                if (newValue.text != fieldValue.text) {
+                                    if (pendingUndoSnapshot == null) pendingUndoSnapshot = fieldValue.text
+                                    coalesceJob?.cancel()
+                                    coalesceJob = scope.launch {
+                                        delay(400)
+                                        pendingUndoSnapshot?.let {
+                                            undoStack.addLast(it)
+                                            while (undoStack.size > 100) undoStack.removeFirst()
+                                            redoStack.clear()
+                                        }
+                                        pendingUndoSnapshot = null
+                                    }
+                                }
+                                fieldValue = newValue
+                                content = newValue.text
+                            },
                             textStyle = codeStyle,
                             cursorBrush = SolidColor(Color(0xFF7EE787)),
                             visualTransformation = highlightTransform,
@@ -2149,7 +2389,6 @@ fun FilesEditorTab(repoPath: String, repoManager: DesktopRepoManager, onMessage:
                         )
                     }
                 } else {
-                    // Syntax-coloured code reader (identical palette to edit mode)
                     val highlighted = remember(content, name, darkUi) { highlightSourceCode(content, name, dark = darkUi) }
                     SelectionContainer(Modifier.fillMaxSize()) {
                         Box(
@@ -5618,27 +5857,30 @@ fun CredentialsScreen(
 ) {
     var authorName by remember { mutableStateOf(repoManager.getCommitAuthorName()) }
     var authorEmail by remember { mutableStateOf(repoManager.getCommitAuthorEmail()) }
-    var githubToken by remember { mutableStateOf(credentialStore.getGithubToken() ?: "") }
-    var githubUsername by remember { mutableStateOf(credentialStore.getHttpsUsername("github.com") ?: "") }
-    var httpsHost by remember { mutableStateOf("github.com") }
-    var httpsUsername by remember { mutableStateOf(credentialStore.getHttpsUsername("github.com") ?: "") }
-    var httpsToken by remember { mutableStateOf(credentialStore.getHttpsToken("github.com") ?: "") }
+    var githubToken by remember { mutableStateOf("") }
+    var githubUsername by remember { mutableStateOf("") }
     var gitlabHost by remember {
         mutableStateOf(credentialStore.getPreferredGitlabHost() ?: "gitlab.com")
     }
-    var gitlabToken by remember {
-        val h = credentialStore.getPreferredGitlabHost() ?: "gitlab.com"
-        mutableStateOf(credentialStore.getHttpsToken(h) ?: credentialStore.getGitlabToken() ?: "")
-    }
-    var gitlabUsername by remember {
-        val h = credentialStore.getPreferredGitlabHost() ?: "gitlab.com"
-        mutableStateOf(credentialStore.getHttpsUsername(h) ?: "")
-    }
+    var gitlabToken by remember { mutableStateOf("") }
+    var gitlabUsername by remember { mutableStateOf("") }
+    var gerritHost by remember { mutableStateOf(credentialStore.getPreferredGerritHost().orEmpty()) }
+    var gerritUser by remember { mutableStateOf("") }
+    var gerritPass by remember { mutableStateOf("") }
     var sshKey by remember { mutableStateOf(credentialStore.getSshPrivateKey() ?: "") }
     var sshPass by remember { mutableStateOf(credentialStore.getSshPassphrase() ?: "") }
     var gpgSign by remember { mutableStateOf(repoManager.isGpgSigningEnabled()) }
     var gpgKey by remember { mutableStateOf(credentialStore.getGpgSecretKey() ?: "") }
     var gpgPass by remember { mutableStateOf(credentialStore.getGpgPassphrase() ?: "") }
+    var managedAccounts by remember {
+        mutableStateOf(credentialStore.listManagedAccounts())
+    }
+    fun refreshAccounts() {
+        managedAccounts = credentialStore.listManagedAccounts()
+    }
+    val activeGithub = credentialStore.getActiveAccountId(DesktopCredentialStore.AccountProvider.GITHUB)
+    val activeGitlab = credentialStore.getActiveAccountId(DesktopCredentialStore.AccountProvider.GITLAB)
+    val activeGerrit = credentialStore.getActiveAccountId(DesktopCredentialStore.AccountProvider.GERRIT)
 
     Column(Modifier.fillMaxSize().padding(24.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Text("Commit identity", style = MaterialTheme.typography.titleMedium)
@@ -5706,47 +5948,126 @@ fun CredentialsScreen(
         }) { Text("Save GPG signing") }
 
         HorizontalDivider()
-        Text("GitHub account", style = MaterialTheme.typography.titleMedium)
-        OutlinedTextField(value = githubUsername, onValueChange = { githubUsername = it }, label = { Text("Username") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-        OutlinedTextField(value = githubToken, onValueChange = { githubToken = it }, label = { Text("Personal access token") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-        Button(onClick = {
-            credentialStore.setGithubToken(githubToken.ifBlank { null })
-            if (githubUsername.isNotBlank()) credentialStore.setHttpsUsername("github.com", githubUsername)
-            if (githubToken.isNotBlank()) credentialStore.setHttpsToken("github.com", githubToken)
-            onMessage("GitHub credentials saved")
-        }) { Text("Save GitHub credentials") }
+        Text("Connected accounts", style = MaterialTheme.typography.titleMedium)
+        Text(
+            "Keep multiple GitHub, GitLab, and Gerrit accounts. Switch the active one per provider — that account is used for API calls and HTTPS git.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        if (managedAccounts.isEmpty()) {
+            Text("No accounts yet. Add one below.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        } else {
+            managedAccounts.forEach { acct ->
+                val isActive = when (acct.provider) {
+                    DesktopCredentialStore.AccountProvider.GITHUB -> acct.id == activeGithub
+                    DesktopCredentialStore.AccountProvider.GITLAB -> acct.id == activeGitlab
+                    DesktopCredentialStore.AccountProvider.GERRIT -> acct.id == activeGerrit
+                } || credentialStore.getActiveAccount(acct.provider)?.id == acct.id
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (isActive) MaterialTheme.colorScheme.primaryContainer
+                        else MaterialTheme.colorScheme.surfaceVariant
+                    )
+                ) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        IconButton(onClick = {
+                            credentialStore.setActiveAccount(acct.id)
+                            refreshAccounts()
+                            onMessage("Active: ${acct.label}")
+                        }) {
+                            Icon(
+                                if (isActive) Icons.Default.RadioButtonChecked else Icons.Default.RadioButtonUnchecked,
+                                contentDescription = "Set active"
+                            )
+                        }
+                        Column(Modifier.weight(1f)) {
+                            Text(acct.label, style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                acct.providerLabel() + if (isActive) " · active" else "",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        IconButton(onClick = {
+                            credentialStore.removeManagedAccount(acct.id)
+                            refreshAccounts()
+                            onMessage("Removed ${acct.label}")
+                        }) {
+                            Icon(Icons.Default.Delete, contentDescription = "Remove", tint = MaterialTheme.colorScheme.error)
+                        }
+                    }
+                }
+            }
+        }
 
         HorizontalDivider()
-        Text("GitLab", style = MaterialTheme.typography.titleMedium)
+        Text("Add GitHub account", style = MaterialTheme.typography.titleMedium)
+        Text(
+            "Each successful add is kept in the list above. You do not need to remove an existing account first.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        OutlinedTextField(value = githubUsername, onValueChange = { githubUsername = it }, label = { Text("Username") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+        OutlinedTextField(value = githubToken, onValueChange = { githubToken = it }, label = { Text("Personal access token") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+        Button(
+            onClick = {
+                if (githubToken.isBlank() || githubUsername.isBlank()) {
+                    onMessage("Username and token are required")
+                    return@Button
+                }
+                credentialStore.addOrUpdateManagedAccount(
+                    provider = DesktopCredentialStore.AccountProvider.GITHUB,
+                    host = "github.com",
+                    username = githubUsername.trim(),
+                    token = githubToken.trim()
+                )
+                githubToken = ""
+                githubUsername = ""
+                refreshAccounts()
+                onMessage("Added GitHub account")
+            },
+            enabled = githubToken.isNotBlank() && githubUsername.isNotBlank()
+        ) { Text("Add GitHub account") }
+
+        HorizontalDivider()
+        Text("Add GitLab account", style = MaterialTheme.typography.titleMedium)
         OutlinedTextField(value = gitlabHost, onValueChange = { gitlabHost = it }, label = { Text("Host") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
         OutlinedTextField(value = gitlabUsername, onValueChange = { gitlabUsername = it }, label = { Text("Username") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
         OutlinedTextField(value = gitlabToken, onValueChange = { gitlabToken = it }, label = { Text("Personal access token") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-        Button(onClick = {
-            val host = gitlabHost.trim().removePrefix("https://").removePrefix("http://").trimEnd('/')
-                .ifBlank { "gitlab.com" }
-            credentialStore.setPreferredGitlabHost(host)
-            credentialStore.setHttpsUsername(host, gitlabUsername.ifBlank { null })
-            credentialStore.setHttpsToken(host, gitlabToken.ifBlank { null })
-            credentialStore.setGitlabToken(gitlabToken.ifBlank { null })
-            onMessage("GitLab credentials saved for $host")
-        }) { Text("Save GitLab credentials") }
+        Button(
+            onClick = {
+                if (gitlabToken.isBlank()) {
+                    onMessage("Token is required")
+                    return@Button
+                }
+                val host = gitlabHost.trim().removePrefix("https://").removePrefix("http://").trimEnd('/')
+                    .ifBlank { "gitlab.com" }
+                val user = gitlabUsername.trim().ifBlank { "oauth2" }
+                credentialStore.addOrUpdateManagedAccount(
+                    provider = DesktopCredentialStore.AccountProvider.GITLAB,
+                    host = host,
+                    username = user,
+                    token = gitlabToken.trim()
+                )
+                gitlabToken = ""
+                gitlabUsername = ""
+                refreshAccounts()
+                onMessage("Added GitLab account on $host")
+            },
+            enabled = gitlabToken.isNotBlank()
+        ) { Text("Add GitLab account") }
 
         HorizontalDivider()
-        Text("Gerrit", style = MaterialTheme.typography.titleMedium)
+        Text("Add Gerrit account", style = MaterialTheme.typography.titleMedium)
         Text(
             "Use your Gerrit username and HTTP password (Settings → HTTP Credentials on the Gerrit web UI).",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
-        var gerritHost by remember {
-            mutableStateOf(credentialStore.getPreferredGerritHost().orEmpty())
-        }
-        var gerritUser by remember {
-            mutableStateOf(
-                credentialStore.getPreferredGerritHost()?.let { credentialStore.getHttpsUsername(it) }.orEmpty()
-            )
-        }
-        var gerritPassword by remember { mutableStateOf("") }
         var gerritBusy by remember { mutableStateOf(false) }
         val gerritScope = rememberCoroutineScope()
         OutlinedTextField(
@@ -5765,58 +6086,41 @@ fun CredentialsScreen(
             singleLine = true
         )
         OutlinedTextField(
-            value = gerritPassword,
-            onValueChange = { gerritPassword = it },
+            value = gerritPass,
+            onValueChange = { gerritPass = it },
             label = { Text("HTTP password") },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(
-                onClick = {
-                    gerritScope.launch {
-                        gerritBusy = true
-                        val mgr = com.quickgit.desktop.data.GerritAccountManager(credentialStore)
-                        val r = withContext(Dispatchers.IO) {
-                            mgr.connect(gerritHost, gerritUser, gerritPassword)
-                        }
-                        gerritBusy = false
-                        r.fold(
-                            onSuccess = {
-                                gerritPassword = ""
-                                onMessage("Connected to Gerrit as ${it.username} on ${it.host}")
-                            },
-                            onFailure = { onMessage("Gerrit connect failed: ${it.message}") }
-                        )
-                    }
-                },
-                enabled = gerritHost.isNotBlank() && gerritUser.isNotBlank() &&
-                    gerritPassword.isNotBlank() && !gerritBusy
-            ) { Text(if (gerritBusy) "Connecting…" else "Connect Gerrit") }
-            OutlinedButton(
-                onClick = {
+        Button(
+            onClick = {
+                gerritScope.launch {
+                    gerritBusy = true
                     val mgr = com.quickgit.desktop.data.GerritAccountManager(credentialStore)
-                    val h = gerritHost.ifBlank { mgr.host }
-                    mgr.disconnect(h)
-                    gerritPassword = ""
-                    onMessage("Disconnected Gerrit")
+                    val r = withContext(Dispatchers.IO) {
+                        mgr.connect(gerritHost, gerritUser, gerritPass)
+                    }
+                    gerritBusy = false
+                    r.fold(
+                        onSuccess = {
+                            credentialStore.addOrUpdateManagedAccount(
+                                provider = DesktopCredentialStore.AccountProvider.GERRIT,
+                                host = it.host,
+                                username = it.username,
+                                token = gerritPass
+                            )
+                            gerritPass = ""
+                            gerritUser = ""
+                            refreshAccounts()
+                            onMessage("Added Gerrit account ${it.username} on ${it.host}")
+                        },
+                        onFailure = { onMessage("Gerrit connect failed: ${it.message}") }
+                    )
                 }
-            ) { Text("Disconnect") }
-        }
-
-        HorizontalDivider()
-        Text("Per-host HTTPS", style = MaterialTheme.typography.titleMedium)
-        OutlinedTextField(value = httpsHost, onValueChange = {
-            httpsHost = it
-            httpsUsername = credentialStore.getHttpsUsername(it) ?: ""
-            httpsToken = credentialStore.getHttpsToken(it) ?: ""
-        }, label = { Text("Host") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-        OutlinedTextField(value = httpsUsername, onValueChange = { httpsUsername = it }, label = { Text("Username") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-        OutlinedTextField(value = httpsToken, onValueChange = { httpsToken = it }, label = { Text("Token / password") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-        Button(onClick = {
-            credentialStore.saveHttpsCredential(httpsHost, httpsUsername, httpsToken)
-            onMessage("Saved credentials for $httpsHost")
-        }) { Text("Save host credentials") }
+            },
+            enabled = gerritHost.isNotBlank() && gerritUser.isNotBlank() &&
+                gerritPass.isNotBlank() && !gerritBusy
+        ) { Text(if (gerritBusy) "Connecting…" else "Add Gerrit account") }
 
         HorizontalDivider()
         Text("SSH private key", style = MaterialTheme.typography.titleMedium)
@@ -5831,9 +6135,12 @@ fun CredentialsScreen(
         HorizontalDivider()
         TextButton(onClick = {
             credentialStore.clearAll()
-            githubToken = ""; githubUsername = ""; httpsToken = ""; httpsUsername = ""
-            gitlabToken = ""; gitlabUsername = ""; sshKey = ""; sshPass = ""
+            githubToken = ""; githubUsername = ""
+            gitlabToken = ""; gitlabUsername = ""
+            gerritHost = ""; gerritUser = ""; gerritPass = ""
+            sshKey = ""; sshPass = ""
             gpgKey = ""; gpgPass = ""; gpgSign = false
+            refreshAccounts()
             onMessage("All credentials cleared")
         }) { Text("Clear all credentials") }
     }

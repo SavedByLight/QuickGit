@@ -5,6 +5,7 @@ import java.nio.charset.StandardCharsets
 import java.security.SecureRandom
 import java.util.Base64
 import java.util.Properties
+import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import javax.crypto.Cipher
 import javax.crypto.SecretKeyFactory
@@ -132,6 +133,157 @@ class DesktopCredentialStore {
 
     fun isGpgSignEnabled(): Boolean = get("gpg_sign") == "true"
     fun setGpgSignEnabled(enabled: Boolean) = put("gpg_sign", enabled.toString())
+
+    // ---------- Multi-account (parity with Android AccountManager) ----------
+
+    enum class AccountProvider { GITHUB, GITLAB, GERRIT }
+
+    data class ManagedAccount(
+        val id: String,
+        val provider: AccountProvider,
+        val host: String,
+        val username: String,
+        val displayName: String? = null
+    ) {
+        val label: String
+            get() = when {
+                !displayName.isNullOrBlank() -> "$displayName (@$username)"
+                else -> "@$username"
+            }
+
+        fun providerLabel(): String = when (provider) {
+            AccountProvider.GITHUB -> "GitHub"
+            AccountProvider.GITLAB -> if (host.equals("gitlab.com", true)) "GitLab" else "GitLab ($host)"
+            AccountProvider.GERRIT -> "Gerrit ($host)"
+        }
+    }
+
+    fun listManagedAccounts(provider: AccountProvider? = null): List<ManagedAccount> {
+        val raw = get("managed_accounts_v1") ?: return emptyList()
+        val all = raw.split("\n").mapNotNull { line ->
+            val p = line.split('\t')
+            if (p.size < 4) return@mapNotNull null
+            val prov = runCatching { AccountProvider.valueOf(p[1]) }.getOrNull() ?: return@mapNotNull null
+            ManagedAccount(
+                id = p[0],
+                provider = prov,
+                host = p[2],
+                username = p[3],
+                displayName = p.getOrNull(4)?.takeIf { it.isNotBlank() }
+            )
+        }
+        // Dedup by provider+host+username
+        val seen = linkedSetOf<String>()
+        val deduped = all.filter {
+            val key = "${it.provider}|${it.host.lowercase()}|${it.username.lowercase()}"
+            seen.add(key)
+        }
+        return if (provider == null) deduped else deduped.filter { it.provider == provider }
+    }
+
+    fun getAccountToken(accountId: String): String? = get("acct_token_$accountId")
+
+    fun addOrUpdateManagedAccount(
+        provider: AccountProvider,
+        host: String,
+        username: String,
+        token: String,
+        displayName: String? = null,
+        existingId: String? = null
+    ): ManagedAccount {
+        val normalizedHost = host.trim()
+            .removePrefix("https://").removePrefix("http://").trimEnd('/').lowercase()
+        val accounts = listManagedAccounts().toMutableList()
+        val id = existingId
+            ?: accounts.find {
+                it.provider == provider &&
+                    it.host.equals(normalizedHost, true) &&
+                    it.username.equals(username, true)
+            }?.id
+            ?: UUID.randomUUID().toString()
+
+        put("acct_token_$id", token)
+        val account = ManagedAccount(id, provider, normalizedHost, username, displayName)
+        val idx = accounts.indexOfFirst { it.id == id }
+        if (idx >= 0) accounts[idx] = account else accounts.add(account)
+        saveManagedAccountsList(accounts)
+        // If first for provider or same as active, make active
+        val activeId = getActiveAccountId(provider)
+        if (activeId == null || activeId == id) {
+            setActiveAccount(id)
+        }
+        return account
+    }
+
+    fun removeManagedAccount(accountId: String) {
+        val accounts = listManagedAccounts().toMutableList()
+        val removed = accounts.find { it.id == accountId } ?: return
+        accounts.removeAll { it.id == accountId }
+        remove("acct_token_$accountId")
+        saveManagedAccountsList(accounts)
+        if (getActiveAccountId(removed.provider) == accountId) {
+            val next = accounts.firstOrNull { it.provider == removed.provider }
+            if (next != null) setActiveAccount(next.id)
+            else {
+                remove("active_account_${removed.provider.name}")
+                // Clear host-level token for that provider's common host
+                when (removed.provider) {
+                    AccountProvider.GITHUB -> {
+                        setGithubToken(null)
+                        setHttpsToken("github.com", null)
+                    }
+                    AccountProvider.GITLAB -> {
+                        setGitlabToken(null)
+                        setHttpsToken(removed.host, null)
+                    }
+                    AccountProvider.GERRIT -> setHttpsToken(removed.host, null)
+                }
+            }
+        }
+    }
+
+    fun getActiveAccountId(provider: AccountProvider): String? =
+        get("active_account_${provider.name}")
+
+    fun getActiveAccount(provider: AccountProvider): ManagedAccount? {
+        val id = getActiveAccountId(provider)
+        val all = listManagedAccounts(provider)
+        if (id != null) all.find { it.id == id }?.let { return it }
+        return all.firstOrNull()
+    }
+
+    fun setActiveAccount(accountId: String) {
+        val account = listManagedAccounts().find { it.id == accountId } ?: return
+        put("active_account_${account.provider.name}", accountId)
+        val token = getAccountToken(accountId) ?: return
+        // Sync host-level + legacy single-token keys used by the rest of the desktop app
+        when (account.provider) {
+            AccountProvider.GITHUB -> {
+                setGithubToken(token)
+                saveHttpsCredential(account.host.ifBlank { "github.com" }, account.username, token)
+            }
+            AccountProvider.GITLAB -> {
+                setGitlabToken(token)
+                setPreferredGitlabHost(account.host)
+                saveHttpsCredential(account.host, account.username, token)
+            }
+            AccountProvider.GERRIT -> {
+                setPreferredGerritHost(account.host)
+                saveHttpsCredential(account.host, account.username, token)
+            }
+        }
+    }
+
+    private fun saveManagedAccountsList(accounts: List<ManagedAccount>) {
+        if (accounts.isEmpty()) {
+            remove("managed_accounts_v1")
+            return
+        }
+        val encoded = accounts.joinToString("\n") { a ->
+            listOf(a.id, a.provider.name, a.host, a.username, a.displayName.orEmpty()).joinToString("\t")
+        }
+        put("managed_accounts_v1", encoded)
+    }
 
     fun clearAll() {
         synchronized(lock) {
