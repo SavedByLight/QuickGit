@@ -8,6 +8,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Redo
+import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -33,13 +35,15 @@ import com.quickgit.app.ui.components.SyntaxHighlight
 import com.quickgit.app.ui.components.rememberSyntaxPalette
 import com.quickgit.app.ui.theme.GitGreen
 import com.quickgit.app.viewmodel.EditorViewModel
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
  * Mobile-first text editor for repo files.
  *
  * Intentionally not a VS Code clone: Material 3 chrome, QuickGit accents,
- * bottom save bar, find-in-file, no activity bar / minimap / command palette.
+ * bottom save bar, find-in-file, undo/redo, no activity bar / minimap / command palette.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -53,6 +57,9 @@ fun EditorScreen(
     val state by vm.state.collectAsState()
     val snackbarHost = remember { SnackbarHostState() }
     var findOpen by remember { mutableStateOf(false) }
+
+    // Undo/redo bridge: CodeEditor writes into this holder; top bar reads it.
+    val historyBridge = remember { EditorHistoryBridge() }
 
     LaunchedEffect(state.savedMessage, state.error) {
         state.savedMessage?.let {
@@ -98,6 +105,18 @@ fun EditorScreen(
                 },
                 actions = {
                     if (!state.loading && state.error == null) {
+                        IconButton(
+                            onClick = { historyBridge.undo() },
+                            enabled = historyBridge.canUndo
+                        ) {
+                            Icon(Icons.AutoMirrored.Filled.Undo, contentDescription = "Undo")
+                        }
+                        IconButton(
+                            onClick = { historyBridge.redo() },
+                            enabled = historyBridge.canRedo
+                        ) {
+                            Icon(Icons.AutoMirrored.Filled.Redo, contentDescription = "Redo")
+                        }
                         IconButton(onClick = { findOpen = !findOpen }) {
                             Icon(
                                 Icons.Default.Search,
@@ -168,10 +187,57 @@ fun EditorScreen(
                     filePath = relativePath,
                     findOpen = findOpen,
                     onFindClose = { findOpen = false },
+                    historyBridge = historyBridge,
                     modifier = Modifier.fillMaxSize()
                 )
             }
         }
+    }
+}
+
+/**
+ * Mutable bridge so [CodeEditor] can register undo/redo handlers and the top bar
+ * can invoke them without stale Compose lambdas.
+ */
+private class EditorHistoryBridge {
+    var canUndo by mutableStateOf(false)
+    var canRedo by mutableStateOf(false)
+    var undo: () -> Unit = {}
+    var redo: () -> Unit = {}
+}
+
+/**
+ * Bounded undo/redo stack. Consecutive keystrokes within a short window are
+ * merged into one undo step so holding a key does not create hundreds of entries.
+ */
+private class EditHistory(private val maxDepth: Int = 100) {
+    private val undoStack = ArrayDeque<TextFieldValue>()
+    private val redoStack = ArrayDeque<TextFieldValue>()
+
+    val canUndo: Boolean get() = undoStack.isNotEmpty()
+    val canRedo: Boolean get() = redoStack.isNotEmpty()
+
+    fun clear() {
+        undoStack.clear()
+        redoStack.clear()
+    }
+
+    fun push(snapshot: TextFieldValue) {
+        undoStack.addLast(snapshot)
+        while (undoStack.size > maxDepth) undoStack.removeFirst()
+        redoStack.clear()
+    }
+
+    fun undo(current: TextFieldValue): TextFieldValue? {
+        if (undoStack.isEmpty()) return null
+        redoStack.addLast(current)
+        return undoStack.removeLast()
+    }
+
+    fun redo(current: TextFieldValue): TextFieldValue? {
+        if (redoStack.isEmpty()) return null
+        undoStack.addLast(current)
+        return redoStack.removeLast()
     }
 }
 
@@ -182,6 +248,7 @@ private fun CodeEditor(
     filePath: String,
     findOpen: Boolean,
     onFindClose: () -> Unit,
+    historyBridge: EditorHistoryBridge,
     modifier: Modifier = Modifier
 ) {
     val vScroll = rememberScrollState()
@@ -189,13 +256,56 @@ private fun CodeEditor(
     val scope = rememberCoroutineScope()
     val density = LocalDensity.current
 
-    // Keep a TextFieldValue so we can move the selection to search matches.
     var fieldValue by remember { mutableStateOf(TextFieldValue(text)) }
-    // Sync external content changes (load / undo from VM) without wiping selection
-    // when the user is typing (same string).
+    val history = remember { EditHistory() }
+    // Skip recording history while applying undo/redo or external loads.
+    var suppressHistory by remember { mutableStateOf(false) }
+    var coalesceJob by remember { mutableStateOf<Job?>(null) }
+    // Snapshot taken before the current coalesced edit burst.
+    var pendingSnapshot by remember { mutableStateOf<TextFieldValue?>(null) }
+
+    fun syncBridge() {
+        historyBridge.canUndo = history.canUndo
+        historyBridge.canRedo = history.canRedo
+        historyBridge.undo = {
+            // Flush any in-progress coalesced edit first.
+            coalesceJob?.cancel()
+            pendingSnapshot?.let { history.push(it) }
+            pendingSnapshot = null
+            val prev = history.undo(fieldValue) ?: return@undo
+            suppressHistory = true
+            fieldValue = prev
+            onTextChange(prev.text)
+            suppressHistory = false
+            historyBridge.canUndo = history.canUndo
+            historyBridge.canRedo = history.canRedo
+        }
+        historyBridge.redo = {
+            coalesceJob?.cancel()
+            pendingSnapshot = null
+            val next = history.redo(fieldValue) ?: return@redo
+            suppressHistory = true
+            fieldValue = next
+            onTextChange(next.text)
+            suppressHistory = false
+            historyBridge.canUndo = history.canUndo
+            historyBridge.canRedo = history.canRedo
+        }
+    }
+
+    // Register handlers once the editor is composed; keep flags current.
+    SideEffect { syncBridge() }
+
+    // Sync external content changes (load from VM). Reset history on full reload.
     LaunchedEffect(text) {
         if (text != fieldValue.text) {
+            suppressHistory = true
             fieldValue = TextFieldValue(text, TextRange(text.length))
+            history.clear()
+            pendingSnapshot = null
+            coalesceJob?.cancel()
+            suppressHistory = false
+            syncBridge()
         }
     }
 
@@ -206,7 +316,6 @@ private fun CodeEditor(
     val matches = remember(fieldValue.text, query) {
         findMatches(fieldValue.text, query)
     }
-    // Clamp index when the match list shrinks.
     LaunchedEffect(matches.size) {
         if (matches.isEmpty()) matchIndex = 0
         else if (matchIndex >= matches.size) matchIndex = matches.size - 1
@@ -218,7 +327,6 @@ private fun CodeEditor(
         matchIndex = i
         val (start, end) = matches[i]
         fieldValue = fieldValue.copy(selection = TextRange(start, end))
-        // Approximate vertical scroll so the match line is in view.
         val line = fieldValue.text.substring(0, start).count { it == '\n' }
         val lineHeightPx = with(density) { 20.sp.toPx() }
         val target = (line * lineHeightPx).toInt().coerceAtLeast(0)
@@ -236,7 +344,6 @@ private fun CodeEditor(
         }
     }
 
-    // When query changes and there are matches, jump to the first one.
     LaunchedEffect(query, matches) {
         if (findOpen && query.isNotEmpty() && matches.isNotEmpty()) {
             goToMatch(0)
@@ -280,9 +387,6 @@ private fun CodeEditor(
         }
 
         Row(Modifier.weight(1f).fillMaxWidth()) {
-            // Line-number gutter — fixed width, scrolls with content vertically.
-            // Gutter and editor share the same vertical scroll + identical lineHeight so
-            // line numbers stay aligned with the corresponding code lines.
             Column(
                 Modifier
                     .width(gutterWidth)
@@ -307,7 +411,6 @@ private fun CodeEditor(
                     )
                 }
             }
-            // Editable body with language-colored tokens
             Box(
                 Modifier
                     .weight(1f)
@@ -319,6 +422,19 @@ private fun CodeEditor(
                 BasicTextField(
                     value = fieldValue,
                     onValueChange = { newValue ->
+                        if (!suppressHistory && newValue.text != fieldValue.text) {
+                            // Capture pre-edit snapshot once per coalesced burst (~400ms).
+                            if (pendingSnapshot == null) {
+                                pendingSnapshot = fieldValue
+                            }
+                            coalesceJob?.cancel()
+                            coalesceJob = scope.launch {
+                                delay(400)
+                                pendingSnapshot?.let { history.push(it) }
+                                pendingSnapshot = null
+                                syncBridge()
+                            }
+                        }
                         fieldValue = newValue
                         if (newValue.text != text) onTextChange(newValue.text)
                     },
@@ -409,7 +525,6 @@ private fun findMatches(text: String, query: String): List<Pair<Int, Int>> {
         if (idx < 0) break
         out.add(idx to (idx + needle.length))
         from = idx + 1
-        // Cap pathological cases (e.g. searching "a" in a huge file)
         if (out.size >= 10_000) break
     }
     return out
