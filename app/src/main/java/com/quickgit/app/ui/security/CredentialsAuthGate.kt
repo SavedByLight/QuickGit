@@ -21,8 +21,9 @@ import androidx.fragment.app.FragmentActivity
 import com.quickgit.app.ui.theme.GitGreen
 
 /**
- * Chromebook / ARC devices skip the biometric gate (keyboard + trackpad class).
- * Phones and tablets require biometrics or device PIN/pattern/password when available.
+ * Chromebook / ARC detection. These devices typically lack biometrics but still
+ * have a screen-lock PIN/password that [BiometricPrompt] can request via
+ * [BiometricManager.Authenticators.DEVICE_CREDENTIAL].
  */
 fun Context.isChromebookDevice(): Boolean {
     val pm = packageManager
@@ -36,8 +37,12 @@ fun Context.isChromebookDevice(): Boolean {
 }
 
 /**
- * Wraps [content] so Credentials / account manager only shows after successful
- * biometric or device-credential auth on phones and tablets. Chromebooks open immediately.
+ * Wraps [content] so Credentials / account manager only shows after successful auth.
+ *
+ * - Phones & tablets: biometrics and/or device PIN/pattern/password
+ * - Chromebooks (Android app): device PIN/password only (no biometrics required)
+ *
+ * Only this screen is gated; the rest of the app stays unlocked.
  */
 @Composable
 fun CredentialsAuthGate(
@@ -45,43 +50,49 @@ fun CredentialsAuthGate(
     content: @Composable () -> Unit
 ) {
     val context = LocalContext.current
-    val skipAuth = remember(context) { context.isChromebookDevice() }
-    var unlocked by remember { mutableStateOf(skipAuth) }
+    val isChromebook = remember(context) { context.isChromebookDevice() }
+    var unlocked by remember { mutableStateOf(false) }
     var statusMessage by remember { mutableStateOf<String?>(null) }
     var authAttempted by remember { mutableStateOf(false) }
+
+    // Chromebooks: screen lock only. Phones/tablets: biometrics + device credential.
+    val authenticators = if (isChromebook) {
+        BiometricManager.Authenticators.DEVICE_CREDENTIAL
+    } else {
+        BiometricManager.Authenticators.BIOMETRIC_WEAK or
+            BiometricManager.Authenticators.DEVICE_CREDENTIAL
+    }
 
     fun launchPrompt() {
         val activity = context as? FragmentActivity
         if (activity == null) {
-            // Non-activity host — fail open rather than brick credentials
             unlocked = true
             return
         }
         val biometricManager = BiometricManager.from(context)
-        val canBio = biometricManager.canAuthenticate(
-            BiometricManager.Authenticators.BIOMETRIC_WEAK or
-                BiometricManager.Authenticators.DEVICE_CREDENTIAL
-        )
-        when (canBio) {
+        when (val can = biometricManager.canAuthenticate(authenticators)) {
             BiometricManager.BIOMETRIC_SUCCESS -> {
-                // proceed to prompt
+                // proceed
             }
             BiometricManager.BIOMETRIC_ERROR_NONE_ENROLLED -> {
-                statusMessage =
-                    "No fingerprint, face, or screen lock is set up. Add one in system Settings, or continue unprotected."
-                // Allow continue without lock when nothing enrolled
+                statusMessage = if (isChromebook) {
+                    "No screen lock is set up on this Chromebook. Add a PIN or password in system Settings to protect Credentials."
+                } else {
+                    "No fingerprint, face, or screen lock is set up. Add one in system Settings to protect Credentials."
+                }
+                // Nothing enrolled — open rather than brick the screen
                 unlocked = true
                 return
             }
             BiometricManager.BIOMETRIC_ERROR_NO_HARDWARE,
             BiometricManager.BIOMETRIC_ERROR_HW_UNAVAILABLE,
             BiometricManager.BIOMETRIC_ERROR_UNSUPPORTED -> {
-                // No usable authenticator — don't lock the user out
+                statusMessage = "Device lock unavailable (code $can). Opening Credentials."
                 unlocked = true
                 return
             }
             else -> {
-                statusMessage = "Biometric check unavailable (code $canBio). Opening Credentials."
+                statusMessage = "Authentication unavailable (code $can). Opening Credentials."
                 unlocked = true
                 return
             }
@@ -98,14 +109,7 @@ fun CredentialsAuthGate(
                 }
 
                 override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
-                    if (errorCode == BiometricPrompt.ERROR_USER_CANCELED ||
-                        errorCode == BiometricPrompt.ERROR_NEGATIVE_BUTTON ||
-                        errorCode == BiometricPrompt.ERROR_CANCELED
-                    ) {
-                        statusMessage = errString.toString()
-                    } else {
-                        statusMessage = errString.toString()
-                    }
+                    statusMessage = errString.toString()
                 }
 
                 override fun onAuthenticationFailed() {
@@ -115,20 +119,21 @@ fun CredentialsAuthGate(
         )
         val info = BiometricPrompt.PromptInfo.Builder()
             .setTitle("Unlock Credentials")
-            .setSubtitle("Confirm it's you to open accounts and tokens")
-            .setAllowedAuthenticators(
-                BiometricManager.Authenticators.BIOMETRIC_WEAK or
-                    BiometricManager.Authenticators.DEVICE_CREDENTIAL
+            .setSubtitle(
+                if (isChromebook) {
+                    "Only this screen — enter your Chromebook PIN or password"
+                } else {
+                    "Only this screen — confirm to view accounts and tokens"
+                }
             )
+            .setAllowedAuthenticators(authenticators)
             .build()
         authAttempted = true
         prompt.authenticate(info)
     }
 
-    LaunchedEffect(skipAuth) {
-        if (!skipAuth && !unlocked) {
-            launchPrompt()
-        }
+    LaunchedEffect(Unit) {
+        if (!unlocked) launchPrompt()
     }
 
     if (unlocked) {
@@ -146,7 +151,7 @@ fun CredentialsAuthGate(
             verticalArrangement = Arrangement.Center
         ) {
             Icon(
-                Icons.Default.Fingerprint,
+                if (isChromebook) Icons.Default.Lock else Icons.Default.Fingerprint,
                 contentDescription = null,
                 modifier = Modifier.size(56.dp),
                 tint = GitGreen
@@ -158,7 +163,13 @@ fun CredentialsAuthGate(
             )
             Spacer(Modifier.height(8.dp))
             Text(
-                "Use fingerprint, face, or your device PIN to open the account manager.",
+                if (isChromebook) {
+                    "Enter your Chromebook PIN or password to open Credentials only. " +
+                        "The rest of the app stays unlocked. Biometrics are not required."
+                } else {
+                    "Use fingerprint, face, or your device PIN to open Credentials only. " +
+                        "The rest of the app stays unlocked."
+                },
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center
