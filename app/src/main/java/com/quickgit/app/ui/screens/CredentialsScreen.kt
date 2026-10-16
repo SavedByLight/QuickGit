@@ -25,12 +25,25 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.quickgit.app.ui.adaptive.AdaptiveContent
+import com.quickgit.app.ui.security.CredentialsAuthGate
 import com.quickgit.app.ui.theme.GitGreen
 import com.quickgit.app.viewmodel.SettingsViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CredentialsScreen(
+    vm: SettingsViewModel,
+    initialHost: String? = null,
+    onBack: () -> Unit
+) {
+    CredentialsAuthGate(onCancel = onBack) {
+        CredentialsScreenContent(vm = vm, initialHost = initialHost, onBack = onBack)
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun CredentialsScreenContent(
     vm: SettingsViewModel,
     initialHost: String? = null,
     onBack: () -> Unit

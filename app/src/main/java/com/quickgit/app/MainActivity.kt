@@ -5,7 +5,6 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.view.Display
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -16,6 +15,7 @@ import androidx.compose.material3.windowsizeclass.calculateWindowSizeClass
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
+import androidx.fragment.app.FragmentActivity
 import com.quickgit.app.data.AppLog
 import com.quickgit.app.data.GitProgressNotifier
 import com.quickgit.app.navigation.QuickGitNavGraph
@@ -23,7 +23,8 @@ import com.quickgit.app.ui.adaptive.LocalWindowSizeClass
 import com.quickgit.app.ui.components.AutoUpdateHost
 import com.quickgit.app.ui.theme.QuickGitTheme
 
-class MainActivity : ComponentActivity() {
+/** FragmentActivity so [androidx.biometric.BiometricPrompt] can gate Credentials. */
+class MainActivity : FragmentActivity() {
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()

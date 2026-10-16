@@ -32,6 +32,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.OffsetMapping
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.input.TransformedText
 import androidx.compose.ui.text.input.VisualTransformation
@@ -198,11 +199,17 @@ fun QuickGitDesktopApp(
                         updateManager = updateManager,
                         onMessage = ::showMessage
                     )
-                    DesktopScreen.Credentials -> CredentialsScreen(
-                        repoManager = repoManager,
+                    DesktopScreen.Credentials -> CredentialsUnlockGate(
                         credentialStore = credentialStore,
+                        onCancel = { currentScreen = DesktopScreen.RepoList },
                         onMessage = ::showMessage
-                    )
+                    ) {
+                        CredentialsScreen(
+                            repoManager = repoManager,
+                            credentialStore = credentialStore,
+                            onMessage = ::showMessage
+                        )
+                    }
                 }
             }
         }
@@ -5846,6 +5853,102 @@ fun SettingsScreen(
         HorizontalDivider()
         Text("Appearance", style = MaterialTheme.typography.titleMedium)
         Text("Dark mode is always on for the desktop app.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+/**
+ * Password gate before Credentials. First visit creates a lock password
+ * (stored as a salted PBKDF2 hash). Later visits require that password —
+ * the desktop equivalent of Android biometrics for this screen.
+ */
+@Composable
+fun CredentialsUnlockGate(
+    credentialStore: DesktopCredentialStore,
+    onCancel: () -> Unit,
+    onMessage: (String) -> Unit,
+    content: @Composable () -> Unit
+) {
+    var unlocked by remember { mutableStateOf(false) }
+    val needsSetup = remember { !credentialStore.hasCredentialsLockPassword() }
+    var password by remember { mutableStateOf("") }
+    var confirm by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    if (unlocked) {
+        content()
+        return
+    }
+
+    Column(
+        Modifier.fillMaxSize().padding(32.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Icon(Icons.Default.Lock, contentDescription = null, modifier = Modifier.size(48.dp), tint = Color(0xFF7EE787))
+        Spacer(Modifier.height(16.dp))
+        Text(
+            if (needsSetup) "Protect Credentials" else "Unlock Credentials",
+            style = MaterialTheme.typography.titleLarge
+        )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            if (needsSetup)
+                "Create a password to open Credentials on this computer. Use the same password you use to sign in to this laptop if you prefer."
+            else
+                "Enter your password to open accounts and tokens.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(20.dp))
+        OutlinedTextField(
+            value = password,
+            onValueChange = { password = it; error = null },
+            label = { Text(if (needsSetup) "New password" else "Password") },
+            singleLine = true,
+            visualTransformation = PasswordVisualTransformation(),
+            modifier = Modifier.widthIn(max = 360.dp).fillMaxWidth()
+        )
+        if (needsSetup) {
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = confirm,
+                onValueChange = { confirm = it; error = null },
+                label = { Text("Confirm password") },
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+                modifier = Modifier.widthIn(max = 360.dp).fillMaxWidth()
+            )
+        }
+        error?.let {
+            Spacer(Modifier.height(8.dp))
+            Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+        }
+        Spacer(Modifier.height(16.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            OutlinedButton(onClick = onCancel) { Text("Cancel") }
+            Button(onClick = {
+                if (needsSetup) {
+                    if (password.length < 4) {
+                        error = "Password must be at least 4 characters"
+                        return@Button
+                    }
+                    if (password != confirm) {
+                        error = "Passwords do not match"
+                        return@Button
+                    }
+                    credentialStore.setCredentialsLockPassword(password)
+                    unlocked = true
+                    onMessage("Credentials password set")
+                } else {
+                    if (credentialStore.verifyCredentialsLockPassword(password)) {
+                        unlocked = true
+                    } else {
+                        error = "Incorrect password"
+                        password = ""
+                    }
+                }
+            }) { Text(if (needsSetup) "Set password & unlock" else "Unlock") }
+        }
     }
 }
 

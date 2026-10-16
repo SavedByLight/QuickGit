@@ -90,7 +90,7 @@ it just talks to whatever git remote you point it at.
   staging.
 - **Conflict resolution UI** is a simple ours/theirs/manual-edit dialog, not a 3-way visual
   merge view.
-- **No biometric lock** on the credentials screen — worth adding given it stores tokens/keys.
+- **Credentials lock** — phones/tablets use biometrics or device PIN (skipped on Chromebooks). Desktop uses a credentials password gate (set on first open).
 - **LFS** covers pointer detection and download/smudge for common HTTPS remotes; not a full
   `git-lfs` feature set (e.g. lock/unlock, custom transfer adapters).
 - Googlebook OS Intel models use a translation layer for many Android apps; QuickGit’s

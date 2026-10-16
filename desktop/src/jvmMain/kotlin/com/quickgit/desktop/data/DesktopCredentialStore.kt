@@ -134,6 +134,37 @@ class DesktopCredentialStore {
     fun isGpgSignEnabled(): Boolean = get("gpg_sign") == "true"
     fun setGpgSignEnabled(enabled: Boolean) = put("gpg_sign", enabled.toString())
 
+    // ---------- Credentials screen lock (desktop password gate) ----------
+
+    fun hasCredentialsLockPassword(): Boolean =
+        !get("creds_lock_salt").isNullOrBlank() && !get("creds_lock_hash").isNullOrBlank()
+
+    fun setCredentialsLockPassword(password: String) {
+        val salt = ByteArray(16).also { SecureRandom().nextBytes(it) }
+        val saltB64 = Base64.getEncoder().encodeToString(salt)
+        val hash = hashCredentialsPassword(password, salt)
+        put("creds_lock_salt", saltB64)
+        put("creds_lock_hash", Base64.getEncoder().encodeToString(hash))
+    }
+
+    fun verifyCredentialsLockPassword(password: String): Boolean {
+        val saltB64 = get("creds_lock_salt") ?: return false
+        val expectedB64 = get("creds_lock_hash") ?: return false
+        val salt = runCatching { Base64.getDecoder().decode(saltB64) }.getOrNull() ?: return false
+        val expected = runCatching { Base64.getDecoder().decode(expectedB64) }.getOrNull() ?: return false
+        val actual = hashCredentialsPassword(password, salt)
+        if (actual.size != expected.size) return false
+        var diff = 0
+        for (i in actual.indices) diff = diff or (actual[i].toInt() xor expected[i].toInt())
+        return diff == 0
+    }
+
+    private fun hashCredentialsPassword(password: String, salt: ByteArray): ByteArray {
+        val factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
+        val spec = PBEKeySpec(password.toCharArray(), salt, 120_000, 256)
+        return factory.generateSecret(spec).encoded
+    }
+
     // ---------- Multi-account (parity with Android AccountManager) ----------
 
     enum class AccountProvider { GITHUB, GITLAB, GERRIT }
