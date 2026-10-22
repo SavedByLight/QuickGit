@@ -1,5 +1,6 @@
 package com.quickgit.app.ui.screens
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -11,12 +12,15 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.quickgit.app.data.models.FileChange
 import com.quickgit.app.data.models.GitOpResult
+import com.quickgit.app.ui.theme.GitAmber
+import com.quickgit.app.ui.theme.GitGreen
 import com.quickgit.app.viewmodel.BranchesViewModel
 import com.quickgit.app.viewmodel.FilesViewModel
 import com.quickgit.app.viewmodel.HistoryViewModel
@@ -431,10 +435,10 @@ fun RepoDetailScreenDesktop(
 }
 
 /**
- * Changes tab matching the desktop app's [com.quickgit.desktop.ui.ChangesTab]: one flat
- * selectable list of changed files (no separate staged/unstaged sections), Stage
- * all / Stage / Unstage / Discard acting on the selection, and a plain commit message
- * field with a single Commit button — no sign-off, amend, or suggested message.
+ * Changes tab for tablet / rail layout.
+ *
+ * Shows **Staged** and **Changes** as separate sections so staging is obvious,
+ * with Stage all / Stage / Unstage / Discard on the selection and a Commit button.
  */
 @Composable
 private fun ChangesTabDesktop(vm: RepoDetailViewModel) {
@@ -442,28 +446,28 @@ private fun ChangesTabDesktop(vm: RepoDetailViewModel) {
     val status = state.status
     var selected by remember { mutableStateOf(setOf<String>()) }
 
+    val staged = status?.staged.orEmpty()
+    val unstagedAll = status?.unstaged.orEmpty() + status?.untracked.orEmpty() + status?.conflicting.orEmpty()
+    val stagedPaths = remember(staged) { staged.map { it.path }.toSet() }
+
     Column(Modifier.fillMaxSize().padding(16.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onClick = { vm.stageAll() }, enabled = !state.busy) { Text("Stage all") }
             OutlinedButton(
                 onClick = {
-                    selected.forEach { path ->
-                        val staged = status?.staged?.any { it.path == path } == true
-                        if (!staged) vm.toggleStage(path, false)
-                    }
+                    val toStage = selected.filter { it !in stagedPaths }
+                    if (toStage.isNotEmpty()) vm.stagePaths(toStage)
                     selected = emptySet()
                 },
-                enabled = selected.isNotEmpty() && !state.busy
+                enabled = selected.any { it !in stagedPaths } && !state.busy
             ) { Text("Stage") }
             OutlinedButton(
                 onClick = {
-                    selected.forEach { path ->
-                        val staged = status?.staged?.any { it.path == path } == true
-                        if (staged) vm.toggleStage(path, true)
-                    }
+                    val toUnstage = selected.filter { it in stagedPaths }
+                    if (toUnstage.isNotEmpty()) vm.unstagePaths(toUnstage)
                     selected = emptySet()
                 },
-                enabled = selected.isNotEmpty() && !state.busy
+                enabled = selected.any { it in stagedPaths } && !state.busy
             ) { Text("Unstage") }
             OutlinedButton(
                 onClick = {
@@ -473,41 +477,73 @@ private fun ChangesTabDesktop(vm: RepoDetailViewModel) {
                 enabled = selected.isNotEmpty() && !state.busy
             ) { Text("Discard") }
             Spacer(Modifier.weight(1f))
+            if (staged.isNotEmpty()) {
+                Text(
+                    "${staged.size} staged",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = GitGreen,
+                    modifier = Modifier.align(Alignment.CenterVertically)
+                )
+            }
             IconButton(onClick = { vm.refresh() }) { Icon(Icons.Default.Refresh, null) }
         }
         Spacer(Modifier.height(8.dp))
 
-        val allChanges: List<FileChange> = remember(status) {
-            (status?.staged.orEmpty() + status?.unstaged.orEmpty() +
-                status?.untracked.orEmpty() + status?.conflicting.orEmpty())
-        }
-
         if (state.busy && status == null) {
             CircularProgressIndicator()
-        } else if (allChanges.isEmpty()) {
+        } else if (staged.isEmpty() && unstagedAll.isEmpty()) {
             Text("Working tree clean", color = MaterialTheme.colorScheme.onSurfaceVariant)
         } else {
             LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                items(allChanges, key = { it.path }) { fc ->
-                    val isSelected = fc.path in selected
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .clickable { selected = if (isSelected) selected - fc.path else selected + fc.path }
-                            .padding(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Checkbox(
-                            checked = isSelected,
-                            onCheckedChange = { selected = if (it) selected + fc.path else selected - fc.path }
+                if (staged.isNotEmpty()) {
+                    item(key = "hdr_staged") {
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                "Staged changes (${staged.size})",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = GitGreen,
+                                modifier = Modifier.weight(1f)
+                            )
+                            TextButton(
+                                onClick = { vm.unstageAll() },
+                                enabled = !state.busy
+                            ) { Text("Unstage all") }
+                        }
+                    }
+                    items(staged, key = { "s_${it.path}" }) { fc ->
+                        DesktopChangeRow(
+                            fc = fc,
+                            isStaged = true,
+                            isSelected = fc.path in selected,
+                            onSelect = {
+                                selected = if (fc.path in selected) selected - fc.path else selected + fc.path
+                            }
                         )
+                    }
+                }
+                if (unstagedAll.isNotEmpty()) {
+                    item(key = "hdr_unstaged") {
                         Text(
-                            fc.type.badge(),
-                            color = fc.type.color(),
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.width(24.dp)
+                            "Changes (${unstagedAll.size})",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = GitAmber,
+                            modifier = Modifier.padding(top = if (staged.isNotEmpty()) 12.dp else 0.dp, bottom = 8.dp)
                         )
-                        Text(fc.path, modifier = Modifier.weight(1f))
+                    }
+                    items(unstagedAll, key = { "u_${it.path}" }) { fc ->
+                        DesktopChangeRow(
+                            fc = fc,
+                            isStaged = false,
+                            isSelected = fc.path in selected,
+                            onSelect = {
+                                selected = if (fc.path in selected) selected - fc.path else selected + fc.path
+                            }
+                        )
                     }
                 }
             }
@@ -524,8 +560,51 @@ private fun ChangesTabDesktop(vm: RepoDetailViewModel) {
         )
         Button(
             onClick = vm::commit,
-            enabled = state.commitMessage.isNotBlank() && status?.staged?.isNotEmpty() == true && !state.busy,
+            enabled = state.commitMessage.isNotBlank() && staged.isNotEmpty() && !state.busy,
             modifier = Modifier.align(Alignment.End)
-        ) { Text("Commit") }
+        ) {
+            Text(if (staged.isEmpty()) "Commit (nothing staged)" else "Commit (${staged.size})")
+        }
+    }
+}
+
+@Composable
+private fun DesktopChangeRow(
+    fc: FileChange,
+    isStaged: Boolean,
+    isSelected: Boolean,
+    onSelect: () -> Unit
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .background(
+                when {
+                    isSelected -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
+                    isStaged -> GitGreen.copy(alpha = 0.10f)
+                    else -> Color.Transparent
+                }
+            )
+            .clickable(onClick = onSelect)
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Checkbox(checked = isSelected, onCheckedChange = { onSelect() })
+        Text(
+            if (isStaged) "S" else fc.type.badge(),
+            color = if (isStaged) GitGreen else fc.type.color(),
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.width(24.dp)
+        )
+        Column(Modifier.weight(1f)) {
+            Text(fc.path, maxLines = 1)
+            if (isStaged) {
+                Text(
+                    "Staged · ${fc.type.name.lowercase()}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = GitGreen
+                )
+            }
+        }
     }
 }

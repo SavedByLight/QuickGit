@@ -132,6 +132,28 @@ class RepoDetailViewModel(
         }
     }
 
+    /** Stage multiple paths in one JGit call, then refresh status (tablet / desktop Changes tab). */
+    fun stagePaths(paths: List<String>) {
+        if (paths.isEmpty()) return
+        viewModelScope.launch {
+            _state.value = _state.value.copy(busy = true)
+            val result = withContext(Dispatchers.IO) { repoManager.stage(repoPath, paths) }
+            _state.value = _state.value.copy(busy = false, lastResult = result)
+            if (result is GitOpResult.Success) loadStatus(showRefreshing = false)
+        }
+    }
+
+    /** Unstage multiple paths in one JGit call, then refresh status. */
+    fun unstagePaths(paths: List<String>) {
+        if (paths.isEmpty()) return
+        viewModelScope.launch {
+            _state.value = _state.value.copy(busy = true)
+            val result = withContext(Dispatchers.IO) { repoManager.unstage(repoPath, paths) }
+            _state.value = _state.value.copy(busy = false, lastResult = result)
+            if (result is GitOpResult.Success) loadStatus(showRefreshing = false)
+        }
+    }
+
     fun stageAll() {
         viewModelScope.launch {
             _state.value = _state.value.copy(busy = true)
