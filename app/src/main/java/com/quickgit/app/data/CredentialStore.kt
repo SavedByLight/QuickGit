@@ -252,6 +252,48 @@ class CredentialStore(private val context: Context) {
         prefs.edit().putString("draft_$repoId", message).apply()
     }
 
+    // ==================== Credentials screen lock password (in-app) ====================
+    // Used on Chromebooks and whenever system biometrics / device credential is unavailable.
+
+    fun hasCredentialsLockPassword(): Boolean =
+        !prefs.getString("creds_lock_salt", null).isNullOrBlank() &&
+            !prefs.getString("creds_lock_hash", null).isNullOrBlank()
+
+    fun setCredentialsLockPassword(password: String) {
+        val salt = ByteArray(16).also { java.security.SecureRandom().nextBytes(it) }
+        val saltB64 = android.util.Base64.encodeToString(salt, android.util.Base64.NO_WRAP)
+        val hash = hashCredentialsPassword(password, salt)
+        prefs.edit()
+            .putString("creds_lock_salt", saltB64)
+            .putString(
+                "creds_lock_hash",
+                android.util.Base64.encodeToString(hash, android.util.Base64.NO_WRAP)
+            )
+            .apply()
+    }
+
+    fun verifyCredentialsLockPassword(password: String): Boolean {
+        val saltB64 = prefs.getString("creds_lock_salt", null) ?: return false
+        val expectedB64 = prefs.getString("creds_lock_hash", null) ?: return false
+        val salt = runCatching {
+            android.util.Base64.decode(saltB64, android.util.Base64.NO_WRAP)
+        }.getOrNull() ?: return false
+        val expected = runCatching {
+            android.util.Base64.decode(expectedB64, android.util.Base64.NO_WRAP)
+        }.getOrNull() ?: return false
+        val actual = hashCredentialsPassword(password, salt)
+        if (actual.size != expected.size) return false
+        var diff = 0
+        for (i in actual.indices) diff = diff or (actual[i].toInt() xor expected[i].toInt())
+        return diff == 0
+    }
+
+    private fun hashCredentialsPassword(password: String, salt: ByteArray): ByteArray {
+        val factory = javax.crypto.SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
+        val spec = javax.crypto.spec.PBEKeySpec(password.toCharArray(), salt, 120_000, 256)
+        return factory.generateSecret(spec).encoded
+    }
+
     // ==================== Clear ====================
     fun clear() {
         prefs.edit().clear().apply()
